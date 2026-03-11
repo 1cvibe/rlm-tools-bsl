@@ -409,8 +409,15 @@ def make_bsl_helpers(
                 break
         return results
 
+    _proc_cache: dict[str, list[dict]] = {}
+    _prefilter_cache: dict[str, list[tuple[str, BslFileInfo]]] = {}
+
     def extract_procedures(path: str) -> list[dict]:
-        """Parse BSL file and return list of procedures/functions with metadata."""
+        """Parse BSL file and return list of procedures/functions with metadata.
+        Results are memoized per file path within the session."""
+        if path in _proc_cache:
+            return _proc_cache[path]
+
         content = read_file_fn(path)
         lines = content.splitlines()
 
@@ -450,6 +457,7 @@ def make_bsl_helpers(
             current["end_line"] = len(lines)
             procedures.append(current)
 
+        _proc_cache[path] = procedures
         return procedures
 
     def find_exports(path: str) -> list[dict]:
@@ -501,6 +509,162 @@ def make_bsl_helpers(
         escaped = re.escape(proc_name)
         return safe_grep(escaped, name_hint=module_hint, max_files=max_files)
 
+    # --- Regex for stripping comments and string literals ---
+    _re_string_literal = re.compile(r'"[^"\r\n]*"')
+
+    def _strip_code_line(line: str) -> str:
+        """Remove comments and string literals from a BSL code line."""
+        # Strip comment (// with or without space)
+        ci = line.find("//")
+        if ci >= 0:
+            line = line[:ci]
+        # Strip string literals
+        line = _re_string_literal.sub("", line)
+        return line
+
+    def find_callers_context(
+        proc_name: str,
+        module_hint: str = "",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        """Find callers of a procedure with full context: which procedure
+        in which module calls the target. Returns structured result with
+        caller_name, caller_is_export, file metadata, and pagination info.
+
+        Unlike find_callers() which is a flat grep, this helper identifies
+        the exact calling procedure and filters out comments/strings.
+
+        Args:
+            proc_name: Name of the target procedure/function.
+            module_hint: Optional module name to determine export scope.
+            offset: File offset for pagination (0-based).
+            limit: Max files to scan per call (default 50).
+
+        Returns:
+            dict with "callers" list and "_meta" pagination info.
+        """
+        _ensure_index()
+
+        name_esc = re.escape(proc_name)
+        # Patterns: direct call, qualified call (Module.Proc)
+        call_patterns = [
+            re.compile(r"(?<!\w)" + name_esc + r"\s*\(", re.IGNORECASE),
+            re.compile(r"\." + name_esc + r"\s*\(", re.IGNORECASE),
+            re.compile(r"(?<!\w)" + name_esc + r"(?!\w)", re.IGNORECASE),
+        ]
+
+        # --- Step 1: Determine scope based on export status ---
+        target_files: list[str] | None = None  # None = search all
+
+        if module_hint:
+            hint_modules = find_module(module_hint)
+            if hint_modules:
+                # Find the target procedure in hint modules
+                for hm in hint_modules:
+                    try:
+                        procs = extract_procedures(hm["path"])
+                        for p in procs:
+                            if p["name"].lower() == proc_name.lower():
+                                if not p["is_export"] or "Form" in (hm.get("module_type") or ""):
+                                    # Not exported or form module -> only search same file
+                                    target_files = [hm["path"]]
+                                break
+                    except Exception:
+                        pass
+                    if target_files is not None:
+                        break
+
+        # --- Step 2: Build candidate file list ---
+        if target_files is not None:
+            # Scoped to specific files (non-export or form)
+            candidate_files = [
+                (rel, info)
+                for rel, info in _index_state
+                if rel in target_files
+            ]
+        else:
+            candidate_files = list(_index_state)
+
+        # --- Step 3: Prefilter by substring (cached) ---
+        proc_lower = proc_name.lower()
+
+        if target_files is not None:
+            # Scoped search — don't use global prefilter cache
+            filtered_files: list[tuple[str, BslFileInfo]] = []
+            for rel, info in candidate_files:
+                try:
+                    content = read_file_fn(rel)
+                    if proc_lower in content.lower():
+                        filtered_files.append((rel, info))
+                except Exception:
+                    pass
+        elif proc_lower in _prefilter_cache:
+            filtered_files = _prefilter_cache[proc_lower]
+        else:
+            filtered_files = []
+            for rel, info in candidate_files:
+                try:
+                    content = read_file_fn(rel)
+                    if proc_lower in content.lower():
+                        filtered_files.append((rel, info))
+                except Exception:
+                    pass
+            _prefilter_cache[proc_lower] = filtered_files
+
+        total_files = len(filtered_files)
+
+        # --- Step 4: Apply pagination ---
+        page_files = filtered_files[offset:offset + limit]
+        scanned_files = len(page_files)
+
+        # --- Step 5: Scan each file for callers ---
+        callers: list[dict] = []
+
+        for rel, info in page_files:
+            try:
+                content = read_file_fn(rel)
+                lines = content.splitlines()
+                procs = extract_procedures(rel)
+
+                for proc in procs:
+                    # Skip the definition line itself
+                    body_start = proc["line"]  # 1-based, this is the def line
+                    body_end = proc["end_line"] if proc["end_line"] else len(lines)
+
+                    for line_idx in range(body_start, body_end):  # body_start is def line (skip it)
+                        if line_idx >= len(lines):
+                            break
+                        raw_line = lines[line_idx]
+                        cleaned = _strip_code_line(raw_line)
+                        if not cleaned.strip():
+                            continue
+
+                        for pattern in call_patterns:
+                            if pattern.search(cleaned):
+                                callers.append({
+                                    "file": rel,
+                                    "caller_name": proc["name"],
+                                    "caller_is_export": proc["is_export"],
+                                    "line": line_idx + 1,  # 1-based
+                                    "context": raw_line.rstrip(),
+                                    "object_name": info.object_name,
+                                    "category": info.category,
+                                    "module_type": info.module_type,
+                                })
+                                break  # one match per line is enough
+            except Exception:
+                pass
+
+        return {
+            "callers": callers,
+            "_meta": {
+                "total_files": total_files,
+                "scanned_files": scanned_files,
+                "has_more": (offset + limit) < total_files,
+            },
+        }
+
     def parse_object_xml(path: str) -> dict:
         """Read a 1C metadata XML file and extract its structure:
         name, synonym, attributes, tabular sections, dimensions, resources,
@@ -517,5 +681,6 @@ def make_bsl_helpers(
         "safe_grep": safe_grep,
         "read_procedure": read_procedure,
         "find_callers": find_callers,
+        "find_callers_context": find_callers_context,
         "parse_object_xml": parse_object_xml,
     }

@@ -156,7 +156,7 @@ def test_new_defaults():
         data = json.loads(result)
         assert data["limits"]["max_execute_calls"] == 25  # medium effort
         assert data["limits"]["max_llm_calls"] == 15  # medium effort
-        assert data["limits"]["execution_timeout_seconds"] == 30
+        assert data["limits"]["execution_timeout_seconds"] == 45
 
         _rlm_end(data["session_id"])
 

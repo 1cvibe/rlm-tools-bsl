@@ -130,7 +130,7 @@ def _rlm_start(
     max_output_chars: int = 15_000,
     max_llm_calls: int | None = None,
     max_execute_calls: int | None = None,
-    execution_timeout_seconds: int = 30,
+    execution_timeout_seconds: int = 45,
     include_metadata: bool = False,
 ) -> str:
     _cleanup_expired_resources()
@@ -293,7 +293,7 @@ async def rlm_start(
     max_output_chars: Annotated[int, Field(description="Max characters per execute output", ge=100, le=100_000)] = 15_000,
     max_llm_calls: Annotated[int | None, Field(description="Override max llm_query calls (default from effort level)")] = None,
     max_execute_calls: Annotated[int | None, Field(description="Override max rlm_execute calls (default from effort level)")] = None,
-    execution_timeout_seconds: Annotated[int, Field(description="Per-rlm_execute timeout in seconds", ge=1, le=300)] = 30,
+    execution_timeout_seconds: Annotated[int, Field(description="Per-rlm_execute timeout in seconds", ge=1, le=300)] = 45,
     include_metadata: Annotated[bool, Field(description="Scan directory and include file counts/types in response (slow on large configs, disabled by default)")] = False,
 ) -> str:
     """Start a BSL code exploration session on a 1C codebase. Returns session_id, detected config format, BSL helper functions, and exploration strategy. IMPORTANT: For large 1C configs (23K+ files), NEVER grep on broad paths -- use find_module() first."""

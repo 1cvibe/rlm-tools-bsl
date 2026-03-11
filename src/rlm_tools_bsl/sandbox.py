@@ -49,7 +49,7 @@ class Sandbox:
         self,
         base_path: str,
         max_output_chars: int = 15_000,
-        execution_timeout_seconds: int = 30,
+        execution_timeout_seconds: int = 45,
         format_info=None,
     ):
         self._base_path = base_path
@@ -103,27 +103,55 @@ class Sandbox:
 
     @contextmanager
     def _execution_timeout(self):
-        if (
-            self._execution_timeout_seconds <= 0
-            or threading.current_thread() is not threading.main_thread()
-            or not hasattr(signal, "SIGALRM")
-        ):
+        if self._execution_timeout_seconds <= 0:
             yield
             return
 
-        def _raise_timeout(_signum, _frame):
-            raise TimeoutError(
-                f"Execution timed out after {self._execution_timeout_seconds} seconds"
-            )
+        if (
+            threading.current_thread() is threading.main_thread()
+            and hasattr(signal, "SIGALRM")
+        ):
+            # Unix: signal-based timeout (precise, interrupts C extensions)
+            def _raise_timeout(_signum, _frame):
+                raise TimeoutError(
+                    f"Execution timed out after {self._execution_timeout_seconds} seconds"
+                )
 
-        previous_handler = signal.getsignal(signal.SIGALRM)
-        signal.signal(signal.SIGALRM, _raise_timeout)
-        signal.setitimer(signal.ITIMER_REAL, self._execution_timeout_seconds)
-        try:
-            yield
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, previous_handler)
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, _raise_timeout)
+            signal.setitimer(signal.ITIMER_REAL, self._execution_timeout_seconds)
+            try:
+                yield
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous_handler)
+        else:
+            # Windows / non-main thread: threading-based timeout
+            # Sets a flag that we check — cannot interrupt blocking I/O,
+            # but catches long-running Python loops.
+            import ctypes
+            timed_out = threading.Event()
+            target_tid = threading.current_thread().ident
+
+            def _timeout_watchdog():
+                timed_out.set()
+                if target_tid is not None:
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                        ctypes.c_ulong(target_tid),
+                        ctypes.py_object(TimeoutError),
+                    )
+
+            timer = threading.Timer(self._execution_timeout_seconds, _timeout_watchdog)
+            timer.daemon = True
+            timer.start()
+            try:
+                yield
+            finally:
+                timer.cancel()
+                if timed_out.is_set():
+                    raise TimeoutError(
+                        f"Execution timed out after {self._execution_timeout_seconds} seconds"
+                    )
 
     def execute(self, code: str) -> ExecutionResult:
         stdout_capture = io.StringIO()

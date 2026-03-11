@@ -29,6 +29,12 @@ BSL_CALLER_CODE = """\
 Процедура ОбработкаЗаполнения() Экспорт
     МойМодуль.ЗаполнитьДанные(1, 2);
 КонецПроцедуры
+
+Процедура НеВызывает()
+    // ЗаполнитьДанные(1, 2);
+    //ЗаполнитьДанные(1, 2);
+    Сообщить("ЗаполнитьДанные");
+КонецПроцедуры
 """
 
 
@@ -589,3 +595,117 @@ def test_parse_mdo_subsystem():
     assert "Catalog.ВидыСпецодежды" in result["content"]
     assert "Document.ЗаявкаНаВыдачу" in result["content"]
     assert "AccumulationRegister.ТоварыНаСкладах" in result["content"]
+
+
+# --- find_callers_context ---
+
+def test_find_callers_context_basic():
+    """Basic: finds caller with all required fields."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        callers = result["callers"]
+        assert len(callers) >= 1
+        c = callers[0]
+        # All required fields present
+        assert "file" in c
+        assert "caller_name" in c
+        assert "caller_is_export" in c
+        assert "line" in c
+        assert "context" in c
+        assert "object_name" in c
+        assert "category" in c
+        assert "module_type" in c
+        # Caller is ОбработкаЗаполнения
+        assert c["caller_name"] == "ОбработкаЗаполнения"
+
+
+def test_find_callers_context_with_hint():
+    """With module_hint: determines export scope, finds caller across files."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ЗаполнитьДанные", module_hint="МойМодуль")
+        callers = result["callers"]
+        assert len(callers) >= 1
+        assert any(c["caller_name"] == "ОбработкаЗаполнения" for c in callers)
+
+
+def test_find_callers_context_no_callers():
+    """Internal procedure with no callers returns empty list."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ВнутренняяПроцедура")
+        assert result["callers"] == []
+
+
+def test_find_callers_context_ignores_comments():
+    """Calls in comments (// with and without space) should be ignored."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        caller_names = [c["caller_name"] for c in result["callers"]]
+        assert "НеВызывает" not in caller_names
+
+
+def test_find_callers_context_ignores_strings():
+    """Calls inside string literals should be ignored."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        caller_names = [c["caller_name"] for c in result["callers"]]
+        # НеВызывает has the name only in a string literal (after comment lines are stripped)
+        assert "НеВызывает" not in caller_names
+
+
+def test_find_callers_context_caller_metadata():
+    """Verify caller metadata: category, object_name, module_type."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        callers = result["callers"]
+        c = next(c for c in callers if c["caller_name"] == "ОбработкаЗаполнения")
+        assert c["category"] == "Documents"
+        assert c["object_name"] == "АвансовыйОтчет"
+        assert c["module_type"] == "ObjectModule"
+
+
+def test_find_callers_context_qualified_call():
+    """Qualified call МойМодуль.ЗаполнитьДанные() is found by proc name alone."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        callers = result["callers"]
+        # The call is МойМодуль.ЗаполнитьДанные(1, 2) — should be found
+        assert any(
+            "МойМодуль.ЗаполнитьДанные" in c["context"]
+            for c in callers
+        )
+
+
+def test_find_callers_context_meta():
+    """Result contains _meta with total_files, scanned_files, has_more."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        meta = result["_meta"]
+        assert "total_files" in meta
+        assert "scanned_files" in meta
+        assert "has_more" in meta
+        assert meta["has_more"] is False  # small fixture, all scanned
+
+
+def test_find_callers_context_pagination():
+    """Pagination: limit=1 → has_more=True, offset=1 → next batch."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        # First page: limit=1
+        result1 = bsl["find_callers_context"]("ЗаполнитьДанные", limit=1)
+        meta1 = result1["_meta"]
+        if meta1["total_files"] > 1:
+            assert meta1["has_more"] is True
+            # Second page
+            result2 = bsl["find_callers_context"]("ЗаполнитьДанные", offset=1, limit=1)
+            assert result2["_meta"]["scanned_files"] >= 1
+        else:
+            # Only 1 file contains it — pagination not applicable, still valid
+            assert meta1["has_more"] is False
