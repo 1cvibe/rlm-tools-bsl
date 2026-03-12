@@ -1,6 +1,9 @@
 from __future__ import annotations
+import concurrent.futures
+import os
 import re
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from rlm_tools_bsl.format_detector import parse_bsl_path, BslFileInfo, FormatInfo, METADATA_CATEGORIES
 from rlm_tools_bsl.bsl_knowledge import BSL_PATTERNS
 from rlm_tools_bsl.cache import load_index, save_index
@@ -26,6 +29,46 @@ _NS_MDO = {
 
 _MDO_NS_URI = "http://g5.1c.ru/v8/dt/metadata/mdclass"
 _CF_NS_URI = "http://v8.1c.ru/8.3/MDClasses"
+
+# Aliases for metadata categories: singular -> plural, Russian -> English
+_CATEGORY_ALIASES: dict[str, str] = {
+    # English singular -> plural
+    "informationregister": "informationregisters",
+    "accumulationregister": "accumulationregisters",
+    "accountingregister": "accountingregisters",
+    "calculationregister": "calculationregisters",
+    "document": "documents",
+    "catalog": "catalogs",
+    "report": "reports",
+    "dataprocessor": "dataprocessors",
+    "commonmodule": "commonmodules",
+    "constant": "constants",
+    # Russian aliases
+    "регистрсведений": "informationregisters",
+    "регистрнакопления": "accumulationregisters",
+    "регистрбухгалтерии": "accountingregisters",
+    "регистррасчета": "calculationregisters",
+    "документ": "documents",
+    "справочник": "catalogs",
+    "отчет": "reports",
+    "обработка": "dataprocessors",
+    "общиймодуль": "commonmodules",
+    "константа": "constants",
+}
+
+
+def _normalize_category(meta_type: str) -> str:
+    """Normalize a metadata category name to the canonical folder form."""
+    key = meta_type.lower().replace(" ", "").replace("_", "")
+    resolved = _CATEGORY_ALIASES.get(key)
+    if resolved:
+        return resolved
+    # Fallback: if it doesn't end with 's', try adding 's'
+    if not key.endswith("s"):
+        candidate = key + "s"
+        if candidate in {c.lower() for c in METADATA_CATEGORIES}:
+            return candidate
+    return key
 
 
 def _xml_find_text(element, tag: str, ns: dict) -> str:
@@ -377,7 +420,9 @@ def make_bsl_helpers(
         }
 
     def find_module(name: str) -> list[dict]:
-        """Find BSL modules by name fragment (case-insensitive)."""
+        """Find BSL modules by name fragment (case-insensitive).
+
+        Returns: list of dicts {path, category, object_name, module_type, form_name}."""
         _ensure_index()
         name_lower = name.lower()
         results = []
@@ -394,9 +439,17 @@ def make_bsl_helpers(
         return results
 
     def find_by_type(meta_type: str, name: str = "") -> list[dict]:
-        """Find BSL modules by metadata category, optionally filtered by object name."""
+        """Find BSL modules by metadata category, optionally filtered by object name.
+
+        Accepts plural folder names (InformationRegisters), singular (InformationRegister),
+        and Russian names (РегистрСведений).
+        Categories: CommonModules, Documents, Catalogs, InformationRegisters,
+        AccumulationRegisters, AccountingRegisters, CalculationRegisters,
+        Reports, DataProcessors, Constants.
+
+        Returns: list of dicts {path, category, object_name, module_type, form_name}."""
         _ensure_index()
-        meta_type_lower = meta_type.lower()
+        meta_type_lower = _normalize_category(meta_type)
         name_lower = name.lower()
         results = []
         for relative_path, info in _index_state:
@@ -414,7 +467,9 @@ def make_bsl_helpers(
 
     def extract_procedures(path: str) -> list[dict]:
         """Parse BSL file and return list of procedures/functions with metadata.
-        Results are memoized per file path within the session."""
+        Results are memoized per file path within the session.
+
+        Returns: list of dicts {name, type, line, end_line, is_export, params}."""
         if path in _proc_cache:
             return _proc_cache[path]
 
@@ -461,7 +516,9 @@ def make_bsl_helpers(
         return procedures
 
     def find_exports(path: str) -> list[dict]:
-        """Return only exported procedures/functions from a BSL file."""
+        """Return only exported procedures/functions from a BSL file.
+
+        Returns: list of dicts {name, type, line, end_line, is_export, params}."""
         return [p for p in extract_procedures(path) if p["is_export"]]
 
     def safe_grep(pattern: str, name_hint: str = "", max_files: int = 20) -> list[dict]:
@@ -505,9 +562,48 @@ def make_bsl_helpers(
         return "\n".join(extracted)
 
     def find_callers(proc_name: str, module_hint: str = "", max_files: int = 20) -> list[dict]:
-        """Find all callers of a procedure by name across BSL files."""
-        escaped = re.escape(proc_name)
-        return safe_grep(escaped, name_hint=module_hint, max_files=max_files)
+        """Find all callers of a procedure by name across BSL files.
+        Delegates to find_callers_context for thorough cross-module search.
+
+        Returns: list of dicts {file, line, text}."""
+        result = find_callers_context(proc_name, module_hint, 0, max_files)
+        return [
+            {"file": c["file"], "line": c["line"], "text": c.get("context", "")}
+            for c in result["callers"]
+        ]
+
+    # --- Parallel prefilter for find_callers_context ---
+    _base = Path(base_path)
+
+    def _parallel_prefilter(
+        files: list[tuple[str, BslFileInfo]],
+        needle: str,
+        base: str,
+        max_workers: int = 12,
+    ) -> list[tuple[str, BslFileInfo]]:
+        """Scan all BSL files for substring in parallel using ThreadPoolExecutor.
+        Bypasses sandbox read_file to avoid cache contention between threads.
+        All paths come from the trusted index (built from glob inside base_path)."""
+        base_p = Path(base)
+
+        def _check(item: tuple[str, BslFileInfo]) -> tuple[str, BslFileInfo] | None:
+            rel, info = item
+            try:
+                full = base_p / rel
+                with open(full, "r", encoding="utf-8-sig", errors="replace") as f:
+                    content = f.read()
+                if needle in content.lower():
+                    return (rel, info)
+            except Exception:
+                pass
+            return None
+
+        matched: list[tuple[str, BslFileInfo]] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for result in pool.map(_check, files):
+                if result is not None:
+                    matched.append(result)
+        return matched
 
     # --- Regex for stripping comments and string literals ---
     _re_string_literal = re.compile(r'"[^"\r\n]*"')
@@ -586,7 +682,7 @@ def make_bsl_helpers(
         else:
             candidate_files = list(_index_state)
 
-        # --- Step 3: Prefilter by substring (cached) ---
+        # --- Step 3: Prefilter by substring (parallel scan, cached) ---
         proc_lower = proc_name.lower()
 
         if target_files is not None:
@@ -602,14 +698,9 @@ def make_bsl_helpers(
         elif proc_lower in _prefilter_cache:
             filtered_files = _prefilter_cache[proc_lower]
         else:
-            filtered_files = []
-            for rel, info in candidate_files:
-                try:
-                    content = read_file_fn(rel)
-                    if proc_lower in content.lower():
-                        filtered_files.append((rel, info))
-                except Exception:
-                    pass
+            filtered_files = _parallel_prefilter(
+                candidate_files, proc_lower, base_path,
+            )
             _prefilter_cache[proc_lower] = filtered_files
 
         total_files = len(filtered_files)
@@ -669,11 +760,107 @@ def make_bsl_helpers(
         """Read a 1C metadata XML file and extract its structure:
         name, synonym, attributes, tabular sections, dimensions, resources,
         subsystem content. Works with any metadata XML (catalogs, documents,
-        registers, subsystems, etc.)."""
+        registers, subsystems, etc.).
+
+        Returns: dict with keys like name, synonym, attributes, tabular_sections,
+        dimensions, resources (depends on metadata type)."""
         content = read_file_fn(path)
         return parse_metadata_xml(content)
 
+    _help_recipes: dict[str, dict] = {
+        "exports": {
+            "keywords": ["export", "экспорт", "find_exports", "процедур", "функци"],
+            "text": (
+                "FIND EXPORTS:\n"
+                "  modules = find_module('Name')  # replace 'Name'\n"
+                "  path = modules[0]['path']\n"
+                "  exports = find_exports(path)\n"
+                "  for e in exports:\n"
+                "      print(e['name'], 'line:', e['line'], 'export:', e['is_export'])"
+            ),
+        },
+        "callers": {
+            "keywords": ["caller", "call graph", "граф", "вызов", "вызыва",
+                         "кто вызывает", "find_callers"],
+            "text": (
+                "BUILD CALL GRAPH:\n"
+                "  exports = find_exports('path/to/Module.bsl')\n"
+                "  for e in exports:\n"
+                "      data = find_callers_context(e['name'], 'ModuleHint', 0, 20)\n"
+                "      for c in data['callers']:\n"
+                "          print(e['name'], '<-', c['caller_name'], c['file'], 'line:', c['line'])\n"
+                "      if data['_meta']['has_more']:\n"
+                "          print('  ... more callers, increase offset')"
+            ),
+        },
+        "metadata": {
+            "keywords": ["metadata", "метаданн", "реквизит", "attribute", "dimension",
+                         "измерен", "ресурс", "resource", "табличн", "tabular",
+                         "xml", "parse_object"],
+            "text": (
+                "READ METADATA:\n"
+                "  # CF XML paths: Catalogs/Name/Ext/Catalog.xml,\n"
+                "  #   Documents/Name/Ext/Document.xml,\n"
+                "  #   InformationRegisters/Name/Ext/RecordSet.xml\n"
+                "  meta = parse_object_xml('path/to/Object.xml')\n"
+                "  for key in meta:\n"
+                "      print(key, ':', meta[key])"
+            ),
+        },
+        "search": {
+            "keywords": ["search", "grep", "поиск", "искать", "найти",
+                         "pattern", "шаблон"],
+            "text": (
+                "SEARCH FOR CODE:\n"
+                "  results = safe_grep('SearchPattern', 'ModuleHint', max_files=20)\n"
+                "  for r in results:\n"
+                "      print(r['file'], 'line:', r['line'], r['text'])\n"
+                "  # Or find modules by name:\n"
+                "  modules = find_module('PartOfName')\n"
+                "  for m in modules:\n"
+                "      print(m['path'], m['category'], m['object_name'])"
+            ),
+        },
+        "read": {
+            "keywords": ["read", "чтени", "читать", "содержим", "content",
+                         "тело", "body"],
+            "text": (
+                "READ PROCEDURE BODY:\n"
+                "  body = read_procedure('path/to/Module.bsl', 'ProcedureName')\n"
+                "  print(body)\n"
+                "  # Or read full file:\n"
+                "  content = read_file('path/to/Module.bsl')\n"
+                "  print(content[:2000])"
+            ),
+        },
+    }
+
+    def bsl_help(task: str = "") -> str:
+        """Get a recipe for your task. Call help() to see all recipes,
+        or help('find exports') / help('граф вызовов') for a specific one.
+
+        Returns: str with Python code example."""
+        task_lower = task.lower()
+
+        if not task_lower:
+            lines = ["Available recipes (call help('keyword') for details):\n"]
+            for name, recipe in _help_recipes.items():
+                first_line = recipe["text"].split("\n")[0]
+                lines.append(f"  help('{name}') - {first_line}")
+            return "\n".join(lines)
+
+        for name, recipe in _help_recipes.items():
+            if name in task_lower:
+                return recipe["text"]
+            for kw in recipe["keywords"]:
+                if kw in task_lower:
+                    return recipe["text"]
+
+        # Fallback: show all recipes
+        return bsl_help("")
+
     return {
+        "help": bsl_help,
         "find_module": find_module,
         "find_by_type": find_by_type,
         "extract_procedures": extract_procedures,

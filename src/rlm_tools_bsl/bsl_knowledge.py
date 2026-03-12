@@ -33,25 +33,65 @@ EFFORT_LEVELS = {
 }
 
 _BASE_STRATEGY = """\
-You are exploring a 1C BSL codebase.
+You are exploring a 1C BSL codebase via Python sandbox.
+Write Python code in rlm_execute. Use print() to output results.
+Call help() for task-specific recipes, or help('keyword') for a specific recipe.
 
 CRITICAL: Large configs have 23,000+ files. grep/grep_read on broad paths
 (path='.' or path='CommonModules') WILL timeout. ALWAYS:
   1. find_module('name_fragment') -> get file paths
   2. read_file(path) or grep(pattern, path=exact_file)
 
+RECIPES (pick the one matching your task and paste into rlm_execute code):
+
+  FIND EXPORTS of a module:
+    modules = find_module('ModuleName')
+    path = modules[0]['path']
+    exports = find_exports(path)
+    for e in exports:
+        print(e['name'], 'line:', e['line'], 'export:', e['is_export'])
+
+  BUILD CALL GRAPH:
+    exports = find_exports('path/to/Module.bsl')
+    for e in exports:
+        data = find_callers_context(e['name'], 'ModuleHint', 0, 20)
+        for c in data['callers']:
+            print(e['name'], '<-', c['caller_name'], c['file'])
+        if data['_meta']['has_more']:
+            print('  ... more callers, increase offset')
+
+  READ METADATA (attributes, tabular sections, dimensions):
+    meta = parse_object_xml('Catalogs/Name/Ext/Catalog.xml')
+    for key in meta:
+        print(key, ':', meta[key])
+
+  SEARCH FOR CODE PATTERN:
+    results = safe_grep('PatternToFind', 'ModuleHint', max_files=20)
+    for r in results:
+        print(r['file'], 'line:', r['line'], r['text'])
+
+RETURN FORMATS:
+  find_module(name) -> [{"path", "category", "object_name", "module_type", "form_name"}]
+  find_exports(path) -> [{"name", "line", "is_export", "type", "params"}]
+  find_callers_context(proc, hint, offset, limit) -> {"callers": [{"file", "caller_name", "caller_is_export", "line", "context", "category", "object_name"}], "_meta": {"total_files", "scanned_files", "has_more"}}
+  find_callers(proc, hint, max_files) -> [{"file", "line", "text"}]
+  extract_procedures(path) -> [{"name", "type", "line", "end_line", "is_export", "params"}]
+  find_by_type(category, name) -> same as find_module. Categories: CommonModules, Documents, Catalogs, InformationRegisters, AccumulationRegisters, Reports, DataProcessors
+  safe_grep(pattern, hint, max_files) -> [{"file", "line", "text"}]
+  parse_object_xml(path) -> {"name", "synonym", "attributes", "tabular_sections", "dimensions", "resources", ...}
+
 BSL HELPERS available in sandbox:
+  help(task)                  -- get recipe for your task, e.g. help('find exports')
   find_module(name)           -- find BSL modules by name fragment
-  find_by_type(type, name)    -- find by metadata category
+  find_by_type(category, name) -- find by metadata category (accepts singular/Russian names)
   extract_procedures(path)    -- list all procedures in a file
   find_exports(path)          -- list exported procedures
   safe_grep(pattern, hint)    -- timeout-safe grep across files
   read_procedure(path, name)  -- extract single procedure body
   find_callers(proc, hint)    -- find who calls this procedure (flat grep)
   find_callers_context(proc, hint, offset, limit)
-                              -- find callers with context: returns caller procedure name,
-                                 export flag, module metadata. Use for building call graphs.
-                                 Filters comments/strings. Supports pagination (offset/limit).
+                              -- find callers with context and pagination
+  parse_object_xml(path)      -- parse 1C metadata XML
 
 FILE PATHS depend on format:
   CF:  CommonModules/Name/Ext/Module.bsl
@@ -99,8 +139,10 @@ RLM_START_DESCRIPTION = (
 )
 
 RLM_EXECUTE_DESCRIPTION = (
-    "Execute Python in the BSL sandbox.\n"
-    "BSL helpers: find_module, find_by_type, extract_procedures, find_exports,\n"
+    "Execute Python code in the BSL sandbox. The 'code' parameter is Python code.\n"
+    "Call helper functions and use print() to see results. Variables persist between calls.\n"
+    "Example: code=\"modules = find_module('MyModule')\\nfor m in modules:\\n    print(m['path'])\"\n"
+    "BSL helpers: help, find_module, find_by_type, extract_procedures, find_exports,\n"
     "safe_grep, read_procedure, find_callers, find_callers_context, parse_object_xml.\n"
     "Standard: read_file, read_files, grep, grep_summary, grep_read, glob_files, tree.\n"
     "CRITICAL: grep on path='.' ALWAYS times out on large 1C configs. Use find_module() first."

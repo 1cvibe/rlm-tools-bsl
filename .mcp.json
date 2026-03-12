@@ -1,11 +1,16 @@
 {
-  "mcpServers": {
-    "rlm-tools-bsl": {
-      "command": "uv",
-      "args": ["run", "rlm-tools-bsl"],
-      "env": {
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
-      }
+    "mcpServers": {
+        "rlm-tools-bsl": {
+            "command": "uv",
+            "args": [
+                "run",
+                "rlm-tools-bsl"
+            ],
+            "env": {
+                "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+            },
+            "disabled": true,
+            "alwaysAllow": []
+        }
     }
-  }
 }

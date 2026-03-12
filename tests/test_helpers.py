@@ -33,7 +33,7 @@ def test_grep():
         helpers, _ = make_helpers(tmpdir)
         results = helpers["grep"]("def.*hello")
         assert len(results) > 0
-        assert "hello" in results[0]["line"]
+        assert "hello" in results[0]["text"]
 
 
 def test_glob_files():

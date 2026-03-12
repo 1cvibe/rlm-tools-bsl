@@ -176,22 +176,24 @@ def _rlm_start(
     _sandboxes[session_id] = sandbox
 
     available_functions = [
-        "read_file(path)",
+        "help(task='') -> str  # get recipe for your task, e.g. help('find exports') or help('граф вызовов')",
+        "find_module(name) -> list[dict] keys: path, category, object_name, module_type",
+        "find_by_type(category, name='') -> list[dict]. Categories: CommonModules, Documents, Catalogs, InformationRegisters, AccumulationRegisters, Reports, DataProcessors",
+        "find_exports(path) -> list[dict] keys: name, line, is_export, type, params",
+        "extract_procedures(path) -> list[dict] keys: name, type, line, end_line, is_export, params",
+        "find_callers_context(proc_name, module_hint='', offset=0, limit=50) -> {callers: [...], _meta: {total_files, has_more}}",
+        "find_callers(proc_name, module_hint='', max_files=20) -> list[dict] keys: file, line, text",
+        "safe_grep(pattern, name_hint='', max_files=20) -> list[dict] keys: file, line, text",
+        "read_procedure(path, proc_name) -> str|None",
+        "parse_object_xml(path) -> dict  # parse 1C metadata XML: attributes, tabular sections, dimensions, resources",
+        "read_file(path) -> str",
         "read_files(paths) -> dict[path, content]",
-        "grep(pattern, path='.')",
+        "grep(pattern, path='.') -> list[dict] keys: file, line, text",
         "grep_summary(pattern, path='.') -> compact grouped string",
         "grep_read(pattern, path='.', max_files=10, context_lines=0) -> {matches, files, summary}",
-        "glob_files(pattern)",
-        "tree(path='.', max_depth=3)",
+        "glob_files(pattern) -> list[str]",
+        "tree(path='.', max_depth=3) -> str",
         "find_files(name) -> list[str]",
-        "find_module(name) -> list[dict]",
-        "find_by_type(meta_type, name='') -> list[dict]",
-        "extract_procedures(path) -> list[dict]",
-        "find_exports(path) -> list[dict]",
-        "safe_grep(pattern, name_hint='', max_files=20) -> list[dict]",
-        "read_procedure(path, proc_name) -> str|None",
-        "find_callers(proc_name, module_hint='', max_files=20) -> list[dict]",
-        "parse_object_xml(path) -> dict  # parse 1C metadata XML: attributes, tabular sections, dimensions, resources, subsystem content",
     ]
     if has_llm_tools:
         available_functions.extend([
@@ -296,7 +298,7 @@ async def rlm_start(
     execution_timeout_seconds: Annotated[int, Field(description="Per-rlm_execute timeout in seconds", ge=1, le=300)] = 45,
     include_metadata: Annotated[bool, Field(description="Scan directory and include file counts/types in response (slow on large configs, disabled by default)")] = False,
 ) -> str:
-    """Start a BSL code exploration session on a 1C codebase. Returns session_id, detected config format, BSL helper functions, and exploration strategy. IMPORTANT: For large 1C configs (23K+ files), NEVER grep on broad paths -- use find_module() first."""
+    """Start a BSL code exploration session on a 1C codebase. Returns JSON with session_id. Then call rlm_execute(session_id, code) where code is Python that calls helper functions and uses print() to output results. IMPORTANT: For large 1C configs (23K+ files), NEVER grep on broad paths -- use find_module() first."""
     return _rlm_start(
         path=path,
         query=query,
@@ -326,7 +328,7 @@ async def rlm_execute(
         le=200,
     )] = 20,
 ) -> str:
-    """Execute Python in the BSL sandbox. BSL helpers: find_module, find_by_type, extract_procedures, find_exports, safe_grep, read_procedure, find_callers, parse_object_xml. Standard: read_file, read_files, grep, grep_summary, grep_read, glob_files, tree. CRITICAL: grep on path='.' ALWAYS times out on large 1C configs. Use find_module() first."""
+    """Execute Python code in the BSL sandbox. The 'code' parameter is Python code. Call helper functions and use print() to see results. Variables persist between calls. Example: code="modules = find_module('MyModule')\\nfor m in modules:\\n    print(m['path'])". BSL helpers: help, find_module, find_by_type, extract_procedures, find_exports, safe_grep, read_procedure, find_callers, find_callers_context, parse_object_xml. Standard: read_file, read_files, grep, grep_summary, grep_read, glob_files, tree. CRITICAL: grep on path='.' ALWAYS times out on large 1C configs. Use find_module() first."""
     return _rlm_execute(session_id, code, detail_level, max_new_variables)
 
 

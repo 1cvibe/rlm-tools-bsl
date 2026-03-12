@@ -45,6 +45,7 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         return resolved
 
     def read_file(path: str) -> str:
+        """Read file content as string. Returns str."""
         target = _resolve_safe(path)
         cache_key = str(target)
         if cache_key in _file_cache:
@@ -68,7 +69,34 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
 
     _grep_cache: collections.OrderedDict[tuple[str, str], list[dict]] = collections.OrderedDict()
 
+    _BROAD_DIR_THRESHOLD = 5000
+
+    def _is_broad_directory(target: pathlib.Path) -> bool:
+        """Check if target is a directory with >5000 files (would cause timeout).
+        Uses fast os.scandir recursion with early exit."""
+        if not target.is_dir():
+            return False
+        count = 0
+        stack = [target]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        if entry.name.startswith(".") or entry.name in _SKIP_DIRS:
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            count += 1
+                            if count > _BROAD_DIR_THRESHOLD:
+                                return True
+            except OSError:
+                continue
+        return False
+
     def grep(pattern: str, path: str = ".") -> list[dict]:
+        """Search for regex pattern in files. Returns list of dicts {file, line, text}."""
         cache_key = (pattern, path)
         if cache_key in _grep_cache:
             _grep_cache.move_to_end(cache_key)
@@ -80,6 +108,13 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
 
         if target.is_file():
             search_paths = [target]
+        elif _is_broad_directory(target):
+            raise ValueError(
+                f"grep on '{path}' would scan too many files and timeout. "
+                "Use safe_grep(pattern, 'ModuleHint') or "
+                "find_module('name') to get specific file paths first, "
+                "then grep(pattern, 'path/to/specific/file.bsl')."
+            )
         else:
             search_paths = _walk_files(target)
 
@@ -94,8 +129,8 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
                     if compiled.search(line):
                         results.append({
                             "file": str(file_path.relative_to(base)),
-                            "line_number": i,
-                            "line": line.strip(),
+                            "line": i,
+                            "text": line.strip(),
                         })
             except (OSError, UnicodeDecodeError):
                 continue
@@ -110,6 +145,8 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         results = grep(pattern, path)
         if not results:
             return "No matches found."
+        if results and "error" in results[0]:
+            return results[0]["error"]
 
         grouped: dict[str, list[dict]] = {}
         for r in results:
@@ -119,7 +156,7 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         for file, matches in grouped.items():
             lines.append(f"\n  {file} ({len(matches)} matches):")
             for m in matches:
-                lines.append(f"    L{m['line_number']}: {m['line']}")
+                lines.append(f"    L{m['line']}: {m['text']}")
         return "\n".join(lines)
 
     def grep_read(
@@ -142,6 +179,8 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         results = grep(pattern, path)
         if not results:
             return {"matches": {}, "files": {}, "summary": "No matches found."}
+        if results and "error" in results[0]:
+            return {"matches": {}, "files": {}, "summary": results[0]["error"]}
 
         grouped: dict[str, list[dict]] = {}
         for r in results:
@@ -156,7 +195,7 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
                     content_lines = content.splitlines()
                     relevant = set()
                     for m in grouped[fp]:
-                        line_idx = m["line_number"] - 1
+                        line_idx = m["line"] - 1
                         start = max(0, line_idx - context_lines)
                         end = min(len(content_lines), line_idx + context_lines + 1)
                         for i in range(start, end):
@@ -182,6 +221,7 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         }
 
     def glob_files(pattern: str) -> list[str]:
+        """Find files by glob pattern. Returns list of relative path strings."""
         matches = list(base.glob(pattern))
         safe_matches: list[str] = []
         for match in matches:
@@ -197,6 +237,7 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         return safe_matches
 
     def tree(path: str = ".", max_depth: int = 3) -> str:
+        """Print directory tree. Returns formatted string."""
         target = _resolve_safe(path)
         lines = []
 
