@@ -11,7 +11,7 @@ from pydantic import Field
 
 from rlm_tools_bsl.session import SessionManager
 from rlm_tools_bsl.sandbox import Sandbox
-from rlm_tools_bsl.llm_bridge import make_llm_query, make_llm_query_batched
+from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched
 from rlm_tools_bsl.format_detector import detect_format
 from rlm_tools_bsl.bsl_knowledge import (
     EFFORT_LEVELS,
@@ -86,12 +86,10 @@ def _cleanup_expired_resources() -> None:
 
 
 def _install_session_llm_tools(session, sandbox: Sandbox) -> bool:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return False
-
     try:
-        base_llm_query = make_llm_query()
+        base_llm_query = get_llm_query_fn()
+        if base_llm_query is None:
+            return False
         base_llm_query_batched = make_llm_query_batched(base_llm_query)
         lock = threading.Lock()
 
@@ -342,6 +340,13 @@ async def rlm_end(
 
 
 def main():
+    # Load .env file (next to the executable, cwd, or project root)
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(description="rlm-tools-bsl MCP server")
     parser.add_argument(
         "--transport",

@@ -235,31 +235,6 @@ uv tool install . --force
 claude mcp add rlm-tools-bsl -- rlm-tools-bsl
 ```
 
-### StreamableHTTP (альтернативный транспорт)
-
-По умолчанию сервер работает через stdio. Если клиент некорректно работает с stdio (переподключает сервер при ошибках — наблюдалось в Kilo Code и некоторых других), можно использовать StreamableHTTP:
-
-```bash
-# Запустить сервер (по умолчанию 127.0.0.1:9000)
-rlm-tools-bsl --transport streamable-http
-
-# Или с кастомным портом/хостом
-rlm-tools-bsl --transport streamable-http --host 0.0.0.0 --port 3000
-```
-
-Конфиг клиента:
-```json
-{
-  "mcpServers": {
-    "rlm-tools-bsl": {
-      "url": "http://127.0.0.1:9000/mcp"
-    }
-  }
-}
-```
-
-Также поддерживаются переменные окружения: `RLM_TRANSPORT`, `RLM_HOST`, `RLM_PORT`.
-
 ## Лицензия
 
 MIT (наследуется от [rlm-tools](https://github.com/stefanoshea/rlm-tools))

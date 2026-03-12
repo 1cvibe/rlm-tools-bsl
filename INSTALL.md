@@ -55,11 +55,33 @@ pip install .
 
 </details>
 
-## 3. (Опционально) ANTHROPIC_API_KEY
+## 3. (Опционально) Настройка llm_query
 
-В песочнице есть хелпер `llm_query(prompt, context)` — он вызывает «маленькую» LLM (по умолчанию Claude Haiku) прямо из `rlm_execute`, не возвращаясь в основной контекст. Это полезно, когда агент нашёл много данных и хочет классифицировать или суммировать их на стороне сервера.
+В песочнице есть хелпер `llm_query(prompt, context)` — он вызывает «маленькую» LLM прямо из `rlm_execute`, не возвращаясь в основной контекст. Это полезно, когда агент нашёл много данных и хочет классифицировать или суммировать их на стороне сервера.
 
-Для работы `llm_query` нужен API-ключ Anthropic:
+Поддерживаются два варианта подключения LLM-провайдера (достаточно одного):
+
+### Вариант A: OpenAI-совместимый endpoint (OpenRouter, LiteLLM, Ollama, vLLM)
+
+```bash
+# Windows
+set RLM_LLM_BASE_URL=http://localhost:11434/v1
+set RLM_LLM_API_KEY=
+set RLM_LLM_MODEL=qwen2.5:7b
+
+# Linux/macOS
+export RLM_LLM_BASE_URL=http://localhost:11434/v1
+export RLM_LLM_API_KEY=
+export RLM_LLM_MODEL=qwen2.5:7b
+```
+
+- `RLM_LLM_BASE_URL` — базовый URL endpoint'а (обязателен для этого варианта)
+- `RLM_LLM_MODEL` — имя модели (обязателен)
+- `RLM_LLM_API_KEY` — API-ключ (может быть пустым, например для Ollama)
+
+Требует пакет `openai` (входит в основные зависимости, ставится автоматически).
+
+### Вариант B: Anthropic API
 
 ```bash
 # Windows
@@ -69,9 +91,23 @@ set ANTHROPIC_API_KEY=sk-ant-api03-...
 export ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Ключ получается на [console.anthropic.com](https://console.anthropic.com) → API Keys. Вызовы `llm_query` тарифицируются отдельно по ценам Anthropic API.
+Ключ получается на [console.anthropic.com](https://console.anthropic.com) → API Keys. По умолчанию используется модель Claude Haiku; переопределяется через `RLM_SUB_MODEL`.
 
-**Без ключа всё остальное работает нормально** — `find_module`, `grep`, `read_file`, `parse_object_xml` и все прочие хелперы не требуют API-ключа. Просто `llm_query()` будет недоступен.
+> Если заданы и `RLM_LLM_BASE_URL`, и `ANTHROPIC_API_KEY` — приоритет у OpenAI-совместимого endpoint'а.
+
+**Как передать переменные окружения:**
+
+- **stdio** — через секцию `env` в конфиге MCP (см. раздел 4)
+- **StreamableHTTP** — через файл `.env` рядом с рабочим каталогом, откуда запускается сервер. Сервер вызывает `load_dotenv(override=True)` при старте
+
+Пример `.env`:
+```
+RLM_LLM_BASE_URL=https://api.kilo.ai/api/gateway
+RLM_LLM_API_KEY=your-api-key
+RLM_LLM_MODEL=minimax/minimax-m2.5:free
+```
+
+**Без настройки LLM всё остальное работает нормально** — `find_module`, `grep`, `read_file`, `parse_object_xml` и все прочие хелперы не требуют API-ключа. Просто `llm_query()` будет недоступен.
 
 ## 4. Настроить MCP
 
@@ -91,7 +127,23 @@ claude mcp add rlm-tools-bsl -- rlm-tools-bsl
 }
 ```
 
-**Для разработки (запуск из исходников):**
+**С llm_query (передача ключей через env):**
+```json
+{
+  "mcpServers": {
+    "rlm-tools-bsl": {
+      "command": "rlm-tools-bsl",
+      "env": {
+        "RLM_LLM_BASE_URL": "https://api.kilo.ai/api/gateway",
+        "RLM_LLM_API_KEY": "your-api-key",
+        "RLM_LLM_MODEL": "minimax/minimax-m2.5:free"
+      }
+    }
+  }
+}
+```
+
+**Для разработки (запуск из исходников без сборки пакета):**
 ```json
 {
   "mcpServers": {
@@ -107,9 +159,12 @@ claude mcp add rlm-tools-bsl -- rlm-tools-bsl
 
 Некоторые клиенты (например, Kilo Code) могут некорректно работать с stdio-транспортом — переподключают сервер при ошибках. StreamableHTTP решает эту проблему.
 
-1. Запустите сервер отдельным процессом:
+1. Запустите сервер отдельным процессом (предварительно настройте `.env` - при необходимости):
 ```bash
 rlm-tools-bsl --transport streamable-http
+
+# Или с кастомным портом/хостом
+rlm-tools-bsl --transport streamable-http --host 0.0.0.0 --port 3000
 ```
 
 2. Укажите URL в конфиге клиента:
@@ -117,18 +172,21 @@ rlm-tools-bsl --transport streamable-http
 {
   "mcpServers": {
     "rlm-tools-bsl": {
+      "type": "http",
       "url": "http://127.0.0.1:9000/mcp"
     }
   }
 }
 ```
 
+> **Важно:** для Claude Code Extension (VSCode) обязателен `"type": "http"`, иначе сервер не будет обнаружен.
+
 Дополнительные параметры: `--host 0.0.0.0` (слушать все интерфейсы), `--port 3000` (другой порт).
 Или через переменные окружения: `RLM_TRANSPORT`, `RLM_HOST`, `RLM_PORT`.
 
 > **Результат тестирования StreamableHTTP:** транспорт работает стабильно — 26 вызовов `rlm_execute` подряд (сканирование 23 000+ BSL-файлов, ~350 сек) без единого обрыва. Это именно тот сценарий, где stdio мог бы дать сбой при долгой сессии.
 
-## 5. Проверить
+## 5. Проверить работоспособность
 
 Откройте проект с исходниками 1С в Claude Code и спросите:
 ```
