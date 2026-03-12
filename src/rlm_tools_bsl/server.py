@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import os
@@ -341,4 +342,28 @@ async def rlm_end(
 
 
 def main():
-    mcp.run(transport="stdio")
+    parser = argparse.ArgumentParser(description="rlm-tools-bsl MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default=os.environ.get("RLM_TRANSPORT", "stdio"),
+        help="Transport protocol (env: RLM_TRANSPORT, default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("RLM_HOST", "127.0.0.1"),
+        help="Bind host for HTTP transport (env: RLM_HOST, default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("RLM_PORT", "9000")),
+        help="Bind port for HTTP transport (env: RLM_PORT, default: 9000)",
+    )
+    args = parser.parse_args()
+
+    if args.transport != "stdio":
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+
+    mcp.run(transport=args.transport)

@@ -1,6 +1,9 @@
 import json
 import os
+import sys
 import tempfile
+from unittest.mock import patch
+
 from rlm_tools_bsl.server import _rlm_start, _rlm_execute, _rlm_end
 
 
@@ -274,3 +277,145 @@ def test_override_effort_limits():
         assert data["limits"]["max_llm_calls"] == 77
 
         _rlm_end(data["session_id"])
+
+
+# ---------------------------------------------------------------------------
+# Transport / main() tests
+# ---------------------------------------------------------------------------
+
+def test_main_default_stdio():
+    """main() without args calls mcp.run(transport='stdio')."""
+    from rlm_tools_bsl import server
+
+    with patch.object(server.mcp, "run") as mock_run, \
+         patch.object(sys, "argv", ["rlm-tools-bsl"]):
+        server.main()
+        mock_run.assert_called_once_with(transport="stdio")
+
+
+def test_main_streamable_http_arg():
+    """--transport streamable-http sets transport and updates settings."""
+    from rlm_tools_bsl import server
+
+    original_host = server.mcp.settings.host
+    original_port = server.mcp.settings.port
+    try:
+        with patch.object(server.mcp, "run") as mock_run, \
+             patch.object(sys, "argv", ["rlm-tools-bsl", "--transport", "streamable-http"]):
+            server.main()
+            mock_run.assert_called_once_with(transport="streamable-http")
+            assert server.mcp.settings.host == "127.0.0.1"
+            assert server.mcp.settings.port == 9000
+    finally:
+        server.mcp.settings.host = original_host
+        server.mcp.settings.port = original_port
+
+
+def test_main_custom_port():
+    """--port overrides default port in mcp.settings."""
+    from rlm_tools_bsl import server
+
+    original_port = server.mcp.settings.port
+    try:
+        with patch.object(server.mcp, "run") as mock_run, \
+             patch.object(sys, "argv", [
+                 "rlm-tools-bsl", "--transport", "streamable-http", "--port", "3000"
+             ]):
+            server.main()
+            mock_run.assert_called_once_with(transport="streamable-http")
+            assert server.mcp.settings.port == 3000
+    finally:
+        server.mcp.settings.port = original_port
+
+
+def test_main_env_transport():
+    """RLM_TRANSPORT env var is used as fallback when no CLI arg given."""
+    from rlm_tools_bsl import server
+
+    original_host = server.mcp.settings.host
+    original_port = server.mcp.settings.port
+    try:
+        with patch.object(server.mcp, "run") as mock_run, \
+             patch.object(sys, "argv", ["rlm-tools-bsl"]), \
+             patch.dict(os.environ, {"RLM_TRANSPORT": "streamable-http"}):
+            server.main()
+            mock_run.assert_called_once_with(transport="streamable-http")
+    finally:
+        server.mcp.settings.host = original_host
+        server.mcp.settings.port = original_port
+
+
+def test_main_stdio_does_not_change_settings():
+    """When transport is stdio, mcp.settings.host/port are NOT modified."""
+    from rlm_tools_bsl import server
+
+    original_host = server.mcp.settings.host
+    original_port = server.mcp.settings.port
+    try:
+        with patch.object(server.mcp, "run") as mock_run, \
+             patch.object(sys, "argv", ["rlm-tools-bsl"]):
+            server.main()
+            mock_run.assert_called_once_with(transport="stdio")
+            assert server.mcp.settings.host == original_host
+            assert server.mcp.settings.port == original_port
+    finally:
+        server.mcp.settings.host = original_host
+        server.mcp.settings.port = original_port
+
+
+def test_streamable_http_server_starts():
+    """Integration: streamable-http server starts and responds to MCP initialize."""
+    import socket
+    import subprocess
+    import time
+
+    # Find a free port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "rlm_tools_bsl",
+         "--transport", "streamable-http", "--port", str(port)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # Wait for server to start
+        import httpx
+        client = httpx.Client()
+        mcp_url = f"http://127.0.0.1:{port}/mcp"
+        initialize_request = {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0.1.0"},
+            },
+            "id": 1,
+        }
+
+        # Retry a few times while server starts up
+        response = None
+        for _ in range(20):
+            try:
+                response = client.post(
+                    mcp_url,
+                    json=initialize_request,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                    timeout=2,
+                )
+                break
+            except httpx.ConnectError:
+                time.sleep(0.5)
+
+        assert response is not None, "Server did not start in time"
+        assert response.status_code == 200
+        assert len(response.content) > 0
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
