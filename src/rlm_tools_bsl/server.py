@@ -88,6 +88,41 @@ def _cleanup_expired_resources() -> None:
             _sandboxes.pop(session_id, None)
 
 
+def _resolve_mapped_drive(path: str) -> str | None:
+    """Resolve mapped drive letter to UNC path via Windows registry.
+
+    Services in Session 0 cannot see interactive session drive mappings.
+    This reads HKEY_USERS\\<SID>\\Network\\<letter>\\RemotePath instead.
+    """
+    if os.name != "nt" or len(path) < 2 or path[1] != ":":
+        return None
+    drive_letter = path[0].upper()
+    try:
+        import winreg
+
+        i = 0
+        while True:
+            try:
+                sid = winreg.EnumKey(winreg.HKEY_USERS, i)
+            except OSError:
+                break
+            i += 1
+            if sid.startswith(".") or sid.endswith("_Classes"):
+                continue
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_USERS, f"{sid}\\Network\\{drive_letter}"
+                ) as key:
+                    remote_path, _ = winreg.QueryValueEx(key, "RemotePath")
+                    if remote_path:
+                        return remote_path + path[2:]
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def _install_session_llm_tools(session, sandbox: Sandbox) -> bool:
     try:
         base_llm_query = get_llm_query_fn()
@@ -140,7 +175,21 @@ def _rlm_start(
 
     resolved = str(pathlib.Path(path).resolve())
     if not os.path.isdir(resolved):
-        return json.dumps({"error": f"Directory not found: {path}"}, ensure_ascii=False)
+        # Try resolving mapped drive via registry (Windows service in Session 0)
+        unc_path = _resolve_mapped_drive(path)
+        if unc_path:
+            resolved = str(pathlib.Path(unc_path).resolve())
+        if not os.path.isdir(resolved):
+            hint = ""
+            if len(path) >= 2 and path[1] == ":" and not os.path.isdir(path[:3]):
+                hint = (
+                    f" (drive {path[:2]} is not accessible to this process; "
+                    "use UNC path like \\\\server\\share\\... instead)"
+                )
+            return json.dumps(
+                {"error": f"Directory not found: {path}{hint}"},
+                ensure_ascii=False,
+            )
 
     effort_config = EFFORT_LEVELS.get(effort, EFFORT_LEVELS["medium"])
     if max_llm_calls is None:

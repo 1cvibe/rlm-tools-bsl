@@ -2,7 +2,7 @@ import json
 import os
 import sys
 import tempfile
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from rlm_tools_bsl.server import _rlm_start, _rlm_execute, _rlm_end
 
@@ -47,6 +47,76 @@ def test_invalid_directory():
     result = _rlm_start(path="/nonexistent/path", query="test")
     data = json.loads(result)
     assert "error" in data
+
+
+def test_resolve_mapped_drive_returns_unc():
+    from rlm_tools_bsl.server import _resolve_mapped_drive
+
+    if sys.platform != "win32":
+        assert _resolve_mapped_drive("U:\\some\\path") is None
+        return
+
+    import winreg
+
+    fake_sids = ["S-1-5-21-fake"]
+
+    def fake_enum_key(hkey, index):
+        if index < len(fake_sids):
+            return fake_sids[index]
+        raise OSError
+
+    fake_key = MagicMock()
+
+    def fake_open_key(hkey, sub_key):
+        if sub_key == "S-1-5-21-fake\\Network\\U":
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=fake_key)
+            cm.__exit__ = MagicMock(return_value=False)
+            return cm
+        raise OSError
+
+    def fake_query(key, name):
+        if key is fake_key and name == "RemotePath":
+            return ("\\\\server\\share", winreg.REG_SZ)
+        raise OSError
+
+    with patch.object(winreg, "EnumKey", side_effect=fake_enum_key), \
+         patch.object(winreg, "OpenKey", side_effect=fake_open_key), \
+         patch.object(winreg, "QueryValueEx", side_effect=fake_query):
+        result = _resolve_mapped_drive("U:\\ERP\\mainconf")
+        assert result == "\\\\server\\share\\ERP\\mainconf"
+
+
+def test_resolve_mapped_drive_no_mapping():
+    from rlm_tools_bsl.server import _resolve_mapped_drive
+
+    if sys.platform != "win32":
+        return
+
+    import winreg
+
+    def fake_enum_key(hkey, index):
+        raise OSError  # no SIDs
+
+    with patch.object(winreg, "EnumKey", side_effect=fake_enum_key):
+        result = _resolve_mapped_drive("Z:\\nonexistent")
+        assert result is None
+
+
+def test_resolve_mapped_drive_not_windows():
+    from rlm_tools_bsl.server import _resolve_mapped_drive
+
+    with patch("rlm_tools_bsl.server.os.name", "posix"):
+        assert _resolve_mapped_drive("U:\\some\\path") is None
+
+
+def test_invalid_directory_hint_inaccessible_drive():
+    """Error should include UNC hint when drive root is inaccessible."""
+    result = _rlm_start(path="Z:\\nonexistent\\path", query="test")
+    data = json.loads(result)
+    assert "error" in data
+    if sys.platform == "win32" and not os.path.isdir("Z:\\"):
+        assert "UNC" in data["error"] or "drive Z:" in data["error"]
 
 
 def test_metadata_includes_file_types():
