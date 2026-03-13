@@ -187,6 +187,40 @@ rlm-tools-bsl --transport streamable-http --host 0.0.0.0 --port 3000
 
 > **Результат тестирования StreamableHTTP:** транспорт работает стабильно — множество вызовов `rlm_execute` подряд (сканирование 23 000+ BSL-файлов, ~350 сек) без единого обрыва. Это именно тот сценарий, где stdio мог бы дать сбой при долгой сессии.
 
+### Запуск как системная служба
+
+Чтобы HTTP-сервер запускался автоматически при входе в систему (Windows) или при старте машины (Linux с `loginctl enable-linger`):
+
+**1. Установить с поддержкой службы (только для Windows — нужен pywin32):**
+```bash
+uv tool install ".[service]" --force
+```
+
+**2. Зарегистрировать службу (один раз):**
+```bash
+# Без .env (если переменные окружения уже заданы системно):
+rlm-tools-bsl service install
+
+# С явным .env файлом:
+rlm-tools-bsl service install --env /path/to/.env
+
+# Нестандартный порт:
+rlm-tools-bsl service install --host 127.0.0.1 --port 9000 --env /path/to/.env
+```
+
+> **Windows:** команду нужно запускать от имени администратора (cmd / PowerShell → «Запуск от имени администратора»).
+> **Linux:** для автозапуска без входа выполните `loginctl enable-linger $USER`.
+
+**3. Управление службой:**
+```bash
+rlm-tools-bsl service start
+rlm-tools-bsl service stop
+rlm-tools-bsl service status
+rlm-tools-bsl service uninstall
+```
+
+Конфиг службы сохраняется в `~/.config/rlm-tools-bsl/service.json`. Если `.env` не указан — сервис стартует без него (все параметры берутся из переменных окружения, заданных системно).
+
 ## 5. Проверить работоспособность
 
 Откройте проект с исходниками 1С в Claude Code и спросите:

@@ -235,11 +235,66 @@ RLM не конкурирует с RAG. Это разные инструмент
 
 BSL-функционал добавлен поверх, не ломая исходную механику.
 
+## Быстрая установка и старт
+
+**Требования:** Python 3.10+, uv. LLM-ключи — опциональны (без них работает базовый функционал).
+
+### Windows (cmd / PowerShell от имени администратора)
+
+```powershell
+git clone https://github.com/<your-repo>/rlm-tools-bsl.git
+cd rlm-tools-bsl
+
+# Опционально: создайте .env с LLM-ключами (см. INSTALL.md раздел 3)
+
+PowerShell -ExecutionPolicy Bypass -File .\simple-install.ps1
+```
+
+> Если выполнение скриптов уже разрешено (`Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`), можно запускать напрямую: `.\simple-install.ps1`
+
+### Linux
+
+```bash
+git clone https://github.com/<your-repo>/rlm-tools-bsl.git
+cd rlm-tools-bsl
+
+# Опционально: создайте .env с LLM-ключами (см. INSTALL.md раздел 3)
+
+chmod +x simple-install.sh
+./simple-install.sh
+```
+
+Скрипты установят пакет, зарегистрируют службу, запустят сервер и проверят доступность endpoint'а.
+
+### Конфиг для AI-клиента
+
+После установки добавьте в `.claude.json` / `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "rlm-tools-bsl": {
+      "type": "http",
+      "url": "http://127.0.0.1:9000/mcp"
+    }
+  }
+}
+```
+
+> `"type": "http"` обязателен для большинства клиентов (Claude Code, Kilo Code, Roo Code, Cursor).
+
+**Для Claude Code** можно также добавить командой:
+```bash
+claude mcp add --transport http rlm-tools-bsl http://127.0.0.1:9000/mcp
+```
+
+---
+
 ## Установка
 
 Подробная инструкция: **[INSTALL.md](INSTALL.md)** (Python, uv, MCP-конфигурация, разработка).
 
-Быстрый старт:
+Быстрый старт (stdio-транспорт, без службы):
 ```bash
 git clone https://github.com/<your-repo>/rlm-tools-bsl.git
 cd rlm-tools-bsl

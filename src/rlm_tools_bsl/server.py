@@ -370,7 +370,25 @@ def main():
         default=int(os.environ.get("RLM_PORT", "9000")),
         help="Bind port for HTTP transport (env: RLM_PORT, default: 9000)",
     )
+
+    subparsers = parser.add_subparsers(dest="command")
+    service_parser = subparsers.add_parser("service", help="Manage system service (Windows SC / Linux systemd)")
+    service_sub = service_parser.add_subparsers(dest="service_action")
+
+    install_p = service_sub.add_parser("install", help="Install and enable the service")
+    install_p.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    install_p.add_argument("--port", type=int, default=9000, help="Bind port (default: 9000)")
+    install_p.add_argument("--env", default=None, metavar="PATH", help="Path to .env file")
+
+    for _action in ("start", "stop", "status", "uninstall"):
+        service_sub.add_parser(_action)
+
     args = parser.parse_args()
+
+    if args.command == "service":
+        from rlm_tools_bsl.service import handle_service_command
+        handle_service_command(args)
+        return
 
     if args.transport != "stdio":
         mcp.settings.host = args.host
