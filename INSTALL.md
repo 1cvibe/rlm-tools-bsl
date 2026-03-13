@@ -34,7 +34,7 @@ uv --version
 ## 1. Клонировать репозиторий
 
 ```bash
-git clone https://github.com/<your-repo>/rlm-tools-bsl.git
+git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
 cd rlm-tools-bsl
 ```
 
@@ -232,7 +232,7 @@ rlm-tools-bsl service uninstall
 ## Разработка
 
 ```bash
-git clone https://github.com/<your-repo>/rlm-tools-bsl.git
+git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
 cd rlm-tools-bsl
 uv sync --dev
 uv run python -m pytest tests/ -q

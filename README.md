@@ -242,7 +242,7 @@ BSL-функционал добавлен поверх, не ломая исхо
 ### Windows (cmd / PowerShell от имени администратора)
 
 ```powershell
-git clone https://github.com/<your-repo>/rlm-tools-bsl.git
+git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
 cd rlm-tools-bsl
 
 # Опционально: создайте .env с LLM-ключами (см. INSTALL.md раздел 3)
@@ -255,7 +255,7 @@ PowerShell -ExecutionPolicy Bypass -File .\simple-install.ps1
 ### Linux
 
 ```bash
-git clone https://github.com/<your-repo>/rlm-tools-bsl.git
+git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
 cd rlm-tools-bsl
 
 # Опционально: создайте .env с LLM-ключами (см. INSTALL.md раздел 3)
@@ -296,7 +296,7 @@ claude mcp add --transport http rlm-tools-bsl http://127.0.0.1:9000/mcp
 
 Быстрый старт (stdio-транспорт, без службы):
 ```bash
-git clone https://github.com/<your-repo>/rlm-tools-bsl.git
+git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
 cd rlm-tools-bsl
 uv tool install . --force
 claude mcp add rlm-tools-bsl -- rlm-tools-bsl

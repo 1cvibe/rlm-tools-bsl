@@ -1,6 +1,6 @@
 [project]
 name = "rlm-tools-bsl"
-version = "0.1.0"
+version = "1.0.0"
 description = "MCP server for token-efficient 1C BSL codebase analysis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -32,7 +32,6 @@ service = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/stefanoshea/rlm-tools"
-Repository = "https://github.com/stefanoshea/rlm-tools"
-Issues = "https://github.com/stefanoshea/rlm-tools/issues"
-# Fork: rlm-tools-bsl adapted for 1C BSL codebase analysis
+Homepage = "https://github.com/Dach-Coin/rlm-tools-bsl"
+Repository = "https://github.com/Dach-Coin/rlm-tools-bsl"
+Issues = "https://github.com/Dach-Coin/rlm-tools-bsl/issues"
