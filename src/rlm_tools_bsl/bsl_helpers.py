@@ -383,6 +383,395 @@ def parse_metadata_xml(xml_content: str) -> dict:
         return _parse_cf_xml(root)
 
 
+# --- EventSubscription XML parsers ---
+
+def _parse_cf_event_subscription(xml_content: str) -> dict | None:
+    """Parse CF-format EventSubscription XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    ns = _NS_CF
+    sub_el = root.find("md:EventSubscription", ns)
+    if sub_el is None:
+        # Try without namespace
+        for child in root:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "EventSubscription":
+                sub_el = child
+                break
+    if sub_el is None:
+        return None
+
+    props = sub_el.find("md:Properties", ns)
+    if props is None:
+        for ch in sub_el:
+            if ch.tag.endswith("Properties"):
+                props = ch
+                break
+    if props is None:
+        return None
+
+    name = _xml_find_text(props, "md:Name", ns)
+    synonym = _cf_find_synonym(props, ns)
+    event = _xml_find_text(props, "md:Event", ns)
+    handler = _xml_find_text(props, "md:Handler", ns)
+
+    # Source types: <Source><v8:Type>cfg:DocumentObject.Name</v8:Type>...</Source>
+    source_types: list[str] = []
+    source_el = props.find("md:Source", ns)
+    if source_el is not None:
+        for type_el in source_el.findall("v8:Type", ns):
+            if type_el.text:
+                raw = type_el.text.strip()
+                # Strip cfg: prefix
+                if raw.startswith("cfg:"):
+                    raw = raw[4:]
+                source_types.append(raw)
+
+    return {
+        "name": name,
+        "synonym": synonym,
+        "source_types": source_types,
+        "event": event,
+        "handler": handler,
+    }
+
+
+def _parse_mdo_event_subscription(xml_content: str) -> dict | None:
+    """Parse EDT/MDO-format EventSubscription XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+    if root_tag != "EventSubscription":
+        return None
+
+    name = _xml_direct_text(root, "name")
+    synonym = _mdo_find_synonym(root)
+    event = _xml_direct_text(root, "event")
+    handler = _xml_direct_text(root, "handler")
+
+    # Source types: <source><types>DocumentObject.Name</types>...</source>
+    source_types: list[str] = []
+    for ch in root:
+        local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+        if local == "source":
+            for t in ch:
+                t_local = t.tag.split("}")[-1] if "}" in t.tag else t.tag
+                if t_local == "types" and t.text:
+                    source_types.append(t.text.strip())
+            break
+
+    return {
+        "name": name,
+        "synonym": synonym,
+        "source_types": source_types,
+        "event": event,
+        "handler": handler,
+    }
+
+
+def parse_event_subscription_xml(xml_content: str) -> dict | None:
+    """Parse EventSubscription XML, auto-detecting CF or EDT format."""
+    if _MDO_NS_URI in xml_content:
+        return _parse_mdo_event_subscription(xml_content)
+    return _parse_cf_event_subscription(xml_content)
+
+
+# --- ScheduledJob XML parsers ---
+
+def _parse_cf_scheduled_job(xml_content: str) -> dict | None:
+    """Parse CF-format ScheduledJob XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    ns = _NS_CF
+    job_el = root.find("md:ScheduledJob", ns)
+    if job_el is None:
+        for child in root:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "ScheduledJob":
+                job_el = child
+                break
+    if job_el is None:
+        return None
+
+    props = job_el.find("md:Properties", ns)
+    if props is None:
+        for ch in job_el:
+            if ch.tag.endswith("Properties"):
+                props = ch
+                break
+    if props is None:
+        return None
+
+    name = _xml_find_text(props, "md:Name", ns)
+    synonym = _cf_find_synonym(props, ns)
+    method_name = _xml_find_text(props, "md:MethodName", ns)
+    use_text = _xml_find_text(props, "md:Use", ns)
+    predefined_text = _xml_find_text(props, "md:Predefined", ns)
+    restart_count = _xml_find_text(props, "md:RestartCountOnFailure", ns)
+    restart_interval = _xml_find_text(props, "md:RestartIntervalOnFailure", ns)
+
+    return {
+        "name": name,
+        "synonym": synonym,
+        "method_name": method_name,
+        "use": use_text.lower() == "true" if use_text else True,
+        "predefined": predefined_text.lower() == "true" if predefined_text else False,
+        "restart_on_failure": {
+            "count": int(restart_count) if restart_count else 0,
+            "interval": int(restart_interval) if restart_interval else 0,
+        },
+    }
+
+
+def _parse_mdo_scheduled_job(xml_content: str) -> dict | None:
+    """Parse EDT/MDO-format ScheduledJob XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+    if root_tag != "ScheduledJob":
+        return None
+
+    name = _xml_direct_text(root, "name")
+    synonym = _mdo_find_synonym(root)
+    method_name = _xml_direct_text(root, "methodName")
+    predefined_text = _xml_direct_text(root, "predefined")
+    restart_count = _xml_direct_text(root, "restartCountOnFailure")
+    restart_interval = _xml_direct_text(root, "restartIntervalOnFailure")
+
+    return {
+        "name": name,
+        "synonym": synonym,
+        "method_name": method_name,
+        "use": True,  # EDT format doesn't have explicit <use> — defaults to true
+        "predefined": predefined_text.lower() == "true" if predefined_text else False,
+        "restart_on_failure": {
+            "count": int(restart_count) if restart_count else 0,
+            "interval": int(restart_interval) if restart_interval else 0,
+        },
+    }
+
+
+def parse_scheduled_job_xml(xml_content: str) -> dict | None:
+    """Parse ScheduledJob XML, auto-detecting CF or EDT format."""
+    if _MDO_NS_URI in xml_content:
+        return _parse_mdo_scheduled_job(xml_content)
+    return _parse_cf_scheduled_job(xml_content)
+
+
+# --- Enum XML parsers ---
+
+def _parse_cf_enum(xml_content: str) -> dict | None:
+    """Parse CF-format Enum XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    ns = _NS_CF
+    enum_el = root.find("md:Enum", ns)
+    if enum_el is None:
+        for child in root:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "Enum":
+                enum_el = child
+                break
+    if enum_el is None:
+        return None
+
+    props = enum_el.find("md:Properties", ns)
+    if props is None:
+        for ch in enum_el:
+            if ch.tag.endswith("Properties"):
+                props = ch
+                break
+    if props is None:
+        return None
+
+    name = _xml_find_text(props, "md:Name", ns)
+    synonym = _cf_find_synonym(props, ns)
+
+    # Enum values live in ChildObjects
+    child_objects = enum_el.find("md:ChildObjects", ns)
+    search_el = child_objects if child_objects is not None else enum_el
+
+    values: list[dict] = []
+    for ev_el in search_el.findall("md:EnumValue", ns):
+        ev_props = ev_el.find("md:Properties", ns)
+        if ev_props is None:
+            for ch in ev_el:
+                if ch.tag.endswith("Properties"):
+                    ev_props = ch
+                    break
+        if ev_props is None:
+            continue
+        values.append({
+            "name": _xml_find_text(ev_props, "md:Name", ns),
+            "synonym": _cf_find_synonym(ev_props, ns),
+        })
+
+    return {"name": name, "synonym": synonym, "values": values}
+
+
+def _parse_mdo_enum(xml_content: str) -> dict | None:
+    """Parse EDT/MDO-format Enum XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+    if root_tag != "Enum":
+        return None
+
+    name = _xml_direct_text(root, "name")
+    synonym = _mdo_find_synonym(root)
+
+    values: list[dict] = []
+    for ch in root:
+        local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+        if local == "enumValues":
+            val_name = _xml_direct_text(ch, "name")
+            val_synonym = _mdo_find_synonym(ch)
+            values.append({"name": val_name, "synonym": val_synonym})
+
+    return {"name": name, "synonym": synonym, "values": values}
+
+
+def parse_enum_xml(xml_content: str) -> dict | None:
+    """Parse Enum XML, auto-detecting CF or EDT format."""
+    if _MDO_NS_URI in xml_content:
+        return _parse_mdo_enum(xml_content)
+    return _parse_cf_enum(xml_content)
+
+
+# --- FunctionalOption XML parsers ---
+
+def _parse_cf_functional_option(xml_content: str) -> dict | None:
+    """Parse CF-format FunctionalOption XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    ns = _NS_CF
+    fo_el = root.find("md:FunctionalOption", ns)
+    if fo_el is None:
+        for child in root:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "FunctionalOption":
+                fo_el = child
+                break
+    if fo_el is None:
+        return None
+
+    props = fo_el.find("md:Properties", ns)
+    if props is None:
+        for ch in fo_el:
+            if ch.tag.endswith("Properties"):
+                props = ch
+                break
+    if props is None:
+        return None
+
+    name = _xml_find_text(props, "md:Name", ns)
+    synonym = _cf_find_synonym(props, ns)
+    location = _xml_find_text(props, "md:Location", ns)
+
+    # Content: <Content><xr:Object>...</xr:Object>...</Content>
+    content: list[str] = []
+    content_el = props.find("md:Content", ns)
+    if content_el is not None:
+        for obj_el in content_el.findall("xr:Object", ns):
+            if obj_el.text:
+                content.append(obj_el.text.strip())
+
+    return {"name": name, "synonym": synonym, "location": location, "content": content}
+
+
+def _parse_mdo_functional_option(xml_content: str) -> dict | None:
+    """Parse EDT/MDO-format FunctionalOption XML."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+    if root_tag != "FunctionalOption":
+        return None
+
+    name = _xml_direct_text(root, "name")
+    synonym = _mdo_find_synonym(root)
+    location = _xml_direct_text(root, "location")
+
+    content: list[str] = []
+    for ch in root:
+        local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+        if local == "content" and ch.text:
+            content.append(ch.text.strip())
+
+    return {"name": name, "synonym": synonym, "location": location, "content": content}
+
+
+def parse_functional_option_xml(xml_content: str) -> dict | None:
+    """Parse FunctionalOption XML, auto-detecting CF or EDT format."""
+    if _MDO_NS_URI in xml_content:
+        return _parse_mdo_functional_option(xml_content)
+    return _parse_cf_functional_option(xml_content)
+
+
+# --- Rights XML parser ---
+
+_NS_RIGHTS = "http://v8.1c.ru/8.2/roles"
+
+
+def parse_rights_xml(xml_content: str, object_filter: str = "") -> list[dict]:
+    """Parse Rights XML (same format for CF and EDT).
+    Returns only rights with <value>true</value>.
+    Filters by object_filter substring if provided."""
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return []
+
+    ns = {"r": _NS_RIGHTS}
+    results: list[dict] = []
+
+    for obj_el in root.findall("r:object", ns):
+        obj_name_el = obj_el.find("r:name", ns)
+        if obj_name_el is None or not obj_name_el.text:
+            continue
+        obj_name = obj_name_el.text.strip()
+
+        if object_filter and object_filter not in obj_name:
+            continue
+
+        granted: list[str] = []
+        for right_el in obj_el.findall("r:right", ns):
+            right_name_el = right_el.find("r:name", ns)
+            right_value_el = right_el.find("r:value", ns)
+            if right_name_el is None or right_value_el is None:
+                continue
+            if right_value_el.text and right_value_el.text.strip().lower() == "true":
+                granted.append(right_name_el.text.strip())
+
+        if granted:
+            results.append({"object": obj_name, "rights": granted})
+
+    return results
+
+
 def make_bsl_helpers(
     base_path: str,
     resolve_safe,      # callable: str -> pathlib.Path
@@ -415,6 +804,74 @@ def make_bsl_helpers(
 
         _index_built[0] = True
 
+    # --- Auto-detect custom prefixes from object names ---
+    _detected_prefixes: list[str] = []
+    _prefixes_built: list[bool] = [False]
+
+    def _ensure_prefixes() -> list[str]:
+        if _prefixes_built[0]:
+            return _detected_prefixes
+        _ensure_index()
+
+        # Collect unique object names from index
+        object_names: set[str] = set()
+        for _, info in _index_state:
+            if info.object_name:
+                object_names.add(info.object_name)
+
+        # Custom objects start with a lowercase letter in 1C conventions.
+        # Extract prefix: sequence of lowercase letters (+ optional _) before
+        # the first uppercase letter.
+        prefix_re = re.compile(r'^([a-zа-яё]+_?)')
+        prefix_counts: dict[str, int] = {}
+        for name in object_names:
+            if not name or not name[0].islower():
+                continue
+            m = prefix_re.match(name)
+            if m:
+                prefix = m.group(1)
+                # Normalize: strip trailing _ for counting, keep in result
+                key = prefix.rstrip("_").lower()
+                if len(key) >= 2:
+                    prefix_counts[key] = prefix_counts.get(key, 0) + 1
+
+        # Keep prefixes that appear 3+ times (not random one-off names)
+        frequent = sorted(
+            ((k, v) for k, v in prefix_counts.items() if v >= 3),
+            key=lambda x: -x[1],
+        )
+        _detected_prefixes.clear()
+        _detected_prefixes.extend(k for k, _ in frequent)
+
+        _prefixes_built[0] = True
+        return _detected_prefixes
+
+    # --- Strip 1C metadata type prefixes from object names ---
+    # Models often pass "Документ.РеализацияТоваровУслуг" instead of "РеализацияТоваровУслуг"
+    _META_TYPE_PREFIXES = (
+        "Документ.", "Справочник.", "Перечисление.", "РегистрСведений.",
+        "РегистрНакопления.", "РегистрБухгалтерии.", "РегистрРасчета.",
+        "Отчет.", "Обработка.", "ПланОбмена.", "ПланСчетов.",
+        "ПланВидовХарактеристик.", "ПланВидовРасчета.", "БизнесПроцесс.",
+        "Задача.", "Константа.", "ПодпискаНаСобытие.", "РегламентноеЗадание.",
+        "Document.", "Catalog.", "Enum.", "InformationRegister.",
+        "AccumulationRegister.", "AccountingRegister.", "CalculationRegister.",
+        "Report.", "DataProcessor.", "ExchangePlan.", "ChartOfAccounts.",
+        "ChartOfCharacteristicTypes.", "ChartOfCalculationTypes.",
+        "BusinessProcess.", "Task.", "Constant.",
+        "DocumentObject.", "CatalogObject.",
+        "DocumentRef.", "CatalogRef.",
+        "ДокументОбъект.", "СправочникОбъект.",
+        "ДокументСсылка.", "СправочникСсылка.",
+    )
+
+    def _strip_meta_prefix(name: str) -> str:
+        """Strip 1C metadata type prefix if present: 'Документ.X' -> 'X'."""
+        for prefix in _META_TYPE_PREFIXES:
+            if name.startswith(prefix):
+                return name[len(prefix):]
+        return name
+
     def _info_to_dict(relative_path: str, info: BslFileInfo) -> dict:
         return {
             "path": relative_path,
@@ -428,6 +885,7 @@ def make_bsl_helpers(
         """Find BSL modules by name fragment (case-insensitive).
 
         Returns: list of dicts {path, category, object_name, module_type, form_name}."""
+        name = _strip_meta_prefix(name)
         _ensure_index()
         name_lower = name.lower()
         results = []
@@ -453,6 +911,7 @@ def make_bsl_helpers(
         Reports, DataProcessors, Constants.
 
         Returns: list of dicts {path, category, object_name, module_type, form_name}."""
+        name = _strip_meta_prefix(name)
         _ensure_index()
         meta_type_lower = _normalize_category(meta_type)
         name_lower = name.lower()
@@ -779,6 +1238,7 @@ def make_bsl_helpers(
         classify objects as custom (non-standard prefix) or standard.
 
         Returns: dict with subsystems_found, subsystems list."""
+        name = _strip_meta_prefix(name)
         patterns = [
             f"**/Subsystems/**/*{name}*",
             f"**/Subsystems/*{name}*",
@@ -834,17 +1294,19 @@ def make_bsl_helpers(
 
         return {"subsystems_found": len(results), "subsystems": results}
 
-    _CUSTOM_PREFIXES_DEFAULT = ["лтх", "бг", "кэ", "мп"]
-
     def find_custom_modifications(
         object_name: str,
         custom_prefixes: list[str] | None = None,
     ) -> dict:
         """Find all non-standard (custom) modifications in an object's modules:
-        procedures with custom prefix, #Область ИРИС regions, custom XML attributes.
+        procedures with custom prefix, custom #Область regions, custom XML attributes.
+        If custom_prefixes is not provided, uses auto-detected prefixes from the codebase.
 
         Returns: dict with modifications list and custom_attributes."""
-        prefixes = custom_prefixes or _CUSTOM_PREFIXES_DEFAULT
+        object_name = _strip_meta_prefix(object_name)
+        prefixes = custom_prefixes or _ensure_prefixes()
+        if not prefixes:
+            return {"error": "Нетиповые префиксы не обнаружены. Укажите custom_prefixes вручную."}
 
         modules = find_module(object_name)
         exact = [m for m in modules if (m.get("object_name") or "").lower() == object_name.lower()]
@@ -874,7 +1336,7 @@ def make_bsl_helpers(
                     stripped = line.strip()
                     if stripped.startswith("#") and "Область" in stripped:
                         region_name = stripped.split("Область", 1)[1].strip()
-                        if _match_prefix(region_name) or region_name.upper() == "ИРИС":
+                        if _match_prefix(region_name):
                             custom_regions.append({"name": region_name, "line": i})
             except Exception:
                 pass
@@ -921,6 +1383,7 @@ def make_bsl_helpers(
         """Full object profile in one call: XML metadata + all modules + procedures + exports.
 
         Returns: dict with name, category, metadata, modules."""
+        name = _strip_meta_prefix(name)
         modules = find_module(name)
         exact = [m for m in modules if (m.get("object_name") or "").lower() == name.lower()]
         if not exact:
@@ -965,6 +1428,558 @@ def make_bsl_helpers(
             "metadata": metadata,
             "modules": module_details,
         }
+
+    # ── Business-process helpers ─────────────────────────────────
+
+    _event_sub_cache: list[dict] = []
+    _event_sub_built: list[bool] = [False]
+
+    def _ensure_event_subscriptions() -> list[dict]:
+        if _event_sub_built[0]:
+            return _event_sub_cache
+
+        files = glob_files_fn("**/EventSubscriptions/**/*.xml")
+        files.extend(glob_files_fn("**/EventSubscriptions/**/*.mdo"))
+        # Deduplicate
+        files = list(dict.fromkeys(files))
+
+        for f in files:
+            try:
+                content = read_file_fn(f)
+            except Exception:
+                continue
+            parsed = parse_event_subscription_xml(content)
+            if parsed is None:
+                continue
+            # Parse handler into module + procedure
+            handler = parsed["handler"]
+            parts = handler.rsplit(".", 1)
+            handler_procedure = parts[-1] if parts else handler
+            # Module: everything before the last dot, but skip "CommonModule." prefix
+            handler_module = ""
+            if len(parts) > 1:
+                module_part = parts[0]
+                if module_part.startswith("CommonModule."):
+                    module_part = module_part[len("CommonModule."):]
+                handler_module = module_part
+
+            _event_sub_cache.append({
+                "name": parsed["name"],
+                "synonym": parsed["synonym"],
+                "source_types": parsed["source_types"],
+                "source_count": len(parsed["source_types"]),
+                "event": parsed["event"],
+                "handler": handler,
+                "handler_module": handler_module,
+                "handler_procedure": handler_procedure,
+                "file": f,
+            })
+
+        _event_sub_built[0] = True
+        return _event_sub_cache
+
+    def find_event_subscriptions(
+        object_name: str = "",
+        custom_only: bool = False,
+    ) -> list[dict]:
+        """Find event subscriptions, optionally filtered by object name.
+        Shows what fires when an object is written/posted/deleted.
+
+        Args:
+            object_name: Object name to filter by (case-insensitive substring
+                         match against source types). Empty = return all.
+            custom_only: If True, return only subscriptions whose name starts
+                         with a detected custom prefix (auto-detected from codebase).
+
+        Returns: list of dicts with name, synonym, source_count, event,
+                 handler, handler_module, handler_procedure, file."""
+        if object_name:
+            object_name = _strip_meta_prefix(object_name)
+        all_subs = _ensure_event_subscriptions()
+
+        if not object_name:
+            # Return without source_types to keep output compact
+            result = [
+                {k: v for k, v in s.items() if k != "source_types"}
+                for s in all_subs
+            ]
+        else:
+            name_lower = object_name.lower()
+            result = []
+            for s in all_subs:
+                # Include subscriptions that explicitly list this object in source_types,
+                # OR subscriptions with empty source_types (source_count=0) — these apply
+                # to all objects of a given type (catch-all subscriptions).
+                if not s["source_types"]:
+                    matched = True
+                else:
+                    matched = any(name_lower in t.lower() for t in s["source_types"])
+                if matched:
+                    result.append(dict(s))  # include source_types for filtered results
+
+        if custom_only:
+            prefixes = _ensure_prefixes()
+            if prefixes:
+                result = [
+                    s for s in result
+                    if any(s["name"].lower().startswith(p) for p in prefixes)
+                ]
+
+        return result
+
+    _sched_job_cache: list[dict] = []
+    _sched_job_built: list[bool] = [False]
+
+    def _ensure_scheduled_jobs() -> list[dict]:
+        if _sched_job_built[0]:
+            return _sched_job_cache
+
+        files = glob_files_fn("**/ScheduledJobs/**/*.xml")
+        files.extend(glob_files_fn("**/ScheduledJobs/**/*.mdo"))
+        files = list(dict.fromkeys(files))
+
+        for f in files:
+            try:
+                content = read_file_fn(f)
+            except Exception:
+                continue
+            parsed = parse_scheduled_job_xml(content)
+            if parsed is None:
+                continue
+
+            method = parsed["method_name"]
+            parts = method.rsplit(".", 1)
+            handler_procedure = parts[-1] if parts else method
+            handler_module = ""
+            if len(parts) > 1:
+                module_part = parts[0]
+                if module_part.startswith("CommonModule."):
+                    module_part = module_part[len("CommonModule."):]
+                handler_module = module_part
+
+            _sched_job_cache.append({
+                "name": parsed["name"],
+                "synonym": parsed["synonym"],
+                "method_name": method,
+                "handler_module": handler_module,
+                "handler_procedure": handler_procedure,
+                "use": parsed["use"],
+                "predefined": parsed["predefined"],
+                "restart_on_failure": parsed["restart_on_failure"],
+                "file": f,
+            })
+
+        _sched_job_built[0] = True
+        return _sched_job_cache
+
+    def find_scheduled_jobs(name: str = "") -> list[dict]:
+        """Find scheduled (background) jobs, optionally filtered by name.
+
+        Args:
+            name: Name substring to filter by (case-insensitive). Empty = all.
+
+        Returns: list of dicts with name, synonym, method_name,
+                 handler_module, handler_procedure, use, predefined, file."""
+        if name:
+            name = _strip_meta_prefix(name)
+        all_jobs = _ensure_scheduled_jobs()
+        if not name:
+            return all_jobs
+        name_lower = name.lower()
+        return [j for j in all_jobs if name_lower in j["name"].lower()]
+
+    def find_register_movements(document_name: str) -> dict:
+        """Find all registers that a document writes to during posting.
+        Searches ObjectModule code for 'Движения.RegisterName' pattern.
+
+        Args:
+            document_name: Document name (or fragment).
+
+        Returns: dict with document, code_registers, modules_scanned."""
+        document_name = _strip_meta_prefix(document_name)
+        modules = find_by_type("Documents", document_name)
+        obj_modules = [m for m in modules if m.get("module_type") == "ObjectModule"]
+
+        if not obj_modules:
+            return {
+                "document": document_name,
+                "code_registers": [],
+                "modules_scanned": [],
+                "error": f"ObjectModule для документа '{document_name}' не найден",
+            }
+
+        movement_re = re.compile(r"Движения\.(\w+)", re.IGNORECASE)
+        code_registers: dict[str, dict] = {}  # name -> {name, lines, file}
+        modules_scanned: list[str] = []
+
+        for mod in obj_modules:
+            path = mod["path"]
+            modules_scanned.append(path)
+            try:
+                content = read_file_fn(path)
+            except Exception:
+                continue
+            for i, line in enumerate(content.splitlines(), 1):
+                for m in movement_re.finditer(line):
+                    reg_name = m.group(1)
+                    if reg_name not in code_registers:
+                        code_registers[reg_name] = {
+                            "name": reg_name,
+                            "lines": [],
+                            "file": path,
+                        }
+                    if i not in code_registers[reg_name]["lines"]:
+                        code_registers[reg_name]["lines"].append(i)
+
+        result = {
+            "document": document_name,
+            "code_registers": list(code_registers.values()),
+            "modules_scanned": modules_scanned,
+        }
+
+        # ── ERP framework fallback ──────────────────────────────
+        # Look for ManagerModule to find ERP-style movement definitions
+        mgr_modules = [m for m in modules if m.get("module_type") == "ManagerModule"]
+        erp_mechanisms: list[str] = []
+        manager_tables: list[str] = []
+        adapted_registers: list[str] = []
+
+        for mod in mgr_modules:
+            mgr_path = mod["path"]
+            try:
+                mgr_content = read_file_fn(mgr_path)
+            except Exception:
+                continue
+
+            # ЗарегистрироватьУчетныеМеханизмы → МеханизмыДокумента.Добавить("X")
+            mech_body = read_procedure(mgr_path, "ЗарегистрироватьУчетныеМеханизмы")
+            if mech_body:
+                mech_re = re.compile(r'МеханизмыДокумента\.Добавить\("(\w+)"\)', re.IGNORECASE)
+                for m in mech_re.finditer(mech_body):
+                    if m.group(1) not in erp_mechanisms:
+                        erp_mechanisms.append(m.group(1))
+
+            # ТекстЗапросаТаблицаXxx function names
+            table_re = re.compile(r'(?:Функция|Процедура)\s+ТекстЗапросаТаблица(\w+)\s*\(', re.IGNORECASE)
+            for m in table_re.finditer(mgr_content):
+                table_name = m.group(1)
+                if table_name not in manager_tables:
+                    manager_tables.append(table_name)
+
+            # АдаптированныйТекстЗапросаДвиженийПоРегистру → ИмяРегистра = "X"
+            adapted_body = read_procedure(mgr_path, "АдаптированныйТекстЗапросаДвиженийПоРегистру")
+            if adapted_body:
+                reg_re = re.compile(r'ИмяРегистра\s*=\s*"(\w+)"', re.IGNORECASE)
+                for m in reg_re.finditer(adapted_body):
+                    if m.group(1) not in adapted_registers:
+                        adapted_registers.append(m.group(1))
+
+        result["erp_mechanisms"] = erp_mechanisms
+        result["manager_tables"] = manager_tables
+        result["adapted_registers"] = adapted_registers
+
+        return result
+
+    def find_register_writers(register_name: str) -> dict:
+        """Find all documents that write to a specific register.
+        Searches all document ObjectModules for 'Движения.RegisterName'.
+
+        Args:
+            register_name: Register name to search for.
+
+        Returns: dict with register, writers, total_documents_scanned, total_writers."""
+        register_name = _strip_meta_prefix(register_name)
+        _ensure_index()
+        # Collect all document ObjectModule files
+        doc_modules = [
+            (rel, info) for rel, info in _index_state
+            if info.category and info.category.lower() == "documents"
+            and info.module_type == "ObjectModule"
+        ]
+
+        needle = f"движения.{register_name}".lower()
+        matched = _parallel_prefilter(doc_modules, needle, base_path)
+
+        movement_re = re.compile(
+            r"Движения\." + re.escape(register_name), re.IGNORECASE
+        )
+        writers: list[dict] = []
+        for rel, info in matched:
+            try:
+                content = read_file_fn(rel)
+            except Exception:
+                continue
+            lines: list[int] = []
+            for i, line in enumerate(content.splitlines(), 1):
+                if movement_re.search(line):
+                    lines.append(i)
+            if lines:
+                writers.append({
+                    "document": info.object_name or "",
+                    "file": rel,
+                    "lines": lines,
+                })
+
+        return {
+            "register": register_name,
+            "writers": writers,
+            "total_documents_scanned": len(doc_modules),
+            "total_writers": len(writers),
+        }
+
+    def analyze_document_flow(document_name: str) -> dict:
+        """Full document lifecycle analysis: metadata, event subscriptions,
+        register movements, and related scheduled jobs.
+
+        Args:
+            document_name: Document name (or fragment).
+
+        Returns: dict with document, metadata, event_subscriptions,
+                 register_movements, related_scheduled_jobs."""
+        document_name = _strip_meta_prefix(document_name)
+        obj = analyze_object(document_name)
+        subs = find_event_subscriptions(document_name)
+        movements = find_register_movements(document_name)
+
+        # Find scheduled jobs referencing this document
+        all_jobs = find_scheduled_jobs()
+        doc_lower = document_name.lower()
+        related_jobs = [
+            j for j in all_jobs
+            if doc_lower in j.get("method_name", "").lower()
+            or doc_lower in j.get("name", "").lower()
+        ]
+
+        return {
+            "document": obj.get("name", document_name),
+            "metadata": obj.get("metadata", {}),
+            "event_subscriptions": subs,
+            "register_movements": movements,
+            "related_scheduled_jobs": related_jobs,
+        }
+
+    # ── Based-on documents / Print forms helpers ───────────────
+
+    def find_based_on_documents(document_name: str) -> dict:
+        """Find what documents can be created FROM this document and what it can be created FROM.
+
+        Parses ДобавитьКомандыСозданияНаОсновании in ManagerModule and
+        ОбработкаЗаполнения in ObjectModule.
+
+        Returns: dict with document, can_create_from_here, can_be_created_from."""
+        document_name = _strip_meta_prefix(document_name)
+        result: dict = {
+            "document": document_name,
+            "can_create_from_here": [],
+            "can_be_created_from": [],
+        }
+
+        modules = find_by_type("Documents", document_name)
+
+        # --- ManagerModule: ДобавитьКомандыСозданияНаОсновании ---
+        mgr_modules = [m for m in modules if m.get("module_type") == "ManagerModule"]
+        for mod in mgr_modules:
+            path = mod["path"]
+            body = read_procedure(path, "ДобавитьКомандыСозданияНаОсновании")
+            if body:
+                create_re = re.compile(r"Документы\.(\w+)\.ДобавитьКоманду\w*НаОснован", re.IGNORECASE)
+                for m in create_re.finditer(body):
+                    result["can_create_from_here"].append({
+                        "document": m.group(1),
+                        "file": path,
+                    })
+
+        # --- ObjectModule: ОбработкаЗаполнения ---
+        obj_modules = [m for m in modules if m.get("module_type") == "ObjectModule"]
+        for mod in obj_modules:
+            path = mod["path"]
+            body = read_procedure(path, "ОбработкаЗаполнения")
+            if body:
+                type_re = re.compile(r'Тип\("(\w+Ссылка\.\w+)"\)', re.IGNORECASE)
+                for m in type_re.finditer(body):
+                    result["can_be_created_from"].append({
+                        "type": m.group(1),
+                        "file": path,
+                    })
+
+        return result
+
+    def find_print_forms(object_name: str) -> dict:
+        """Find print forms registered for an object by parsing ДобавитьКомандыПечати in ManagerModule.
+
+        Returns: dict with object, print_forms list."""
+        object_name = _strip_meta_prefix(object_name)
+        result: dict = {
+            "object": object_name,
+            "print_forms": [],
+        }
+
+        modules = find_by_type("Documents", object_name)
+        mgr_modules = [m for m in modules if m.get("module_type") == "ManagerModule"]
+        if not mgr_modules:
+            # Try broader search (Catalogs, DataProcessors, etc.)
+            modules = find_module(object_name)
+            mgr_modules = [m for m in modules if m.get("module_type") == "ManagerModule"]
+
+        for mod in mgr_modules:
+            path = mod["path"]
+            body = read_procedure(path, "ДобавитьКомандыПечати")
+            if body:
+                print_re = re.compile(
+                    r'ДобавитьКомандуПечати\([^,]+,\s*"(\w+)"(?:,\s*НСтр\("ru\s*=\s*\'([^\']+)\')?',
+                    re.IGNORECASE,
+                )
+                for m in print_re.finditer(body):
+                    result["print_forms"].append({
+                        "name": m.group(1),
+                        "presentation": m.group(2) or "",
+                        "file": path,
+                    })
+
+        return result
+
+    # ── Enum / FunctionalOption / Roles helpers ──────────────────
+
+    def find_enum_values(enum_name: str) -> dict:
+        """Find an enumeration by name and return its values.
+
+        Args:
+            enum_name: Enum name (or fragment).
+
+        Returns: dict with name, synonym, values, file — or error."""
+        enum_name = _strip_meta_prefix(enum_name)
+        patterns = [
+            f"**/Enums/**/*{enum_name}*.xml",
+            f"**/Enums/**/*{enum_name}*.mdo",
+        ]
+        found_files: list[str] = []
+        for p in patterns:
+            found_files.extend(glob_files_fn(p))
+        found_files = list(dict.fromkeys(found_files))
+
+        for f in found_files:
+            try:
+                content = read_file_fn(f)
+            except Exception:
+                continue
+            parsed = parse_enum_xml(content)
+            if parsed is None:
+                continue
+            if enum_name.lower() in parsed["name"].lower():
+                parsed["file"] = f
+                return parsed
+
+        return {"error": f"Перечисление '{enum_name}' не найдено"}
+
+    _fo_cache: list[dict] = []
+    _fo_built: list[bool] = [False]
+
+    def _ensure_functional_options() -> list[dict]:
+        if _fo_built[0]:
+            return _fo_cache
+
+        files = glob_files_fn("**/FunctionalOptions/**/*.xml")
+        files.extend(glob_files_fn("**/FunctionalOptions/**/*.mdo"))
+        files.extend(glob_files_fn("**/FunctionalOptions/*.xml"))
+        files.extend(glob_files_fn("**/FunctionalOptions/*.mdo"))
+        files = list(dict.fromkeys(files))
+
+        for f in files:
+            try:
+                content = read_file_fn(f)
+            except Exception:
+                continue
+            parsed = parse_functional_option_xml(content)
+            if parsed is None:
+                continue
+            parsed["file"] = f
+            _fo_cache.append(parsed)
+
+        _fo_built[0] = True
+        return _fo_cache
+
+    def find_functional_options(object_name: str) -> dict:
+        """Find functional options that affect a given object.
+        Also greps BSL modules for ПолучитьФункциональнуюОпцию("X") pattern.
+
+        Args:
+            object_name: Object name to search for in FO content lists.
+
+        Returns: dict with object, xml_options, code_options."""
+        object_name = _strip_meta_prefix(object_name)
+        all_fo = _ensure_functional_options()
+
+        name_lower = object_name.lower()
+        xml_options: list[dict] = []
+        for fo in all_fo:
+            matched = any(name_lower in c.lower() for c in fo.get("content", []))
+            if matched:
+                xml_options.append(dict(fo))
+
+        # Grep for ПолучитьФункциональнуюОпцию in BSL code
+        code_options: list[dict] = []
+        try:
+            grep_results = safe_grep("ПолучитьФункциональнуюОпцию", name_hint=object_name)
+            for r in grep_results:
+                text = r.get("text", "") or r.get("content", "")
+                # Extract option name from ПолучитьФункциональнуюОпцию("OptionName")
+                m = re.search(r'ПолучитьФункциональнуюОпцию\(\s*"([^"]+)"', text)
+                if m:
+                    code_options.append({
+                        "option_name": m.group(1),
+                        "file": r.get("file", ""),
+                        "line": r.get("line", 0),
+                    })
+        except Exception:
+            pass
+
+        return {
+            "object": object_name,
+            "xml_options": xml_options,
+            "code_options": code_options,
+        }
+
+    def find_roles(object_name: str) -> dict:
+        """Find roles that grant rights to a given object.
+
+        Args:
+            object_name: Object name substring to filter rights by.
+
+        Returns: dict with object, roles list."""
+        object_name = _strip_meta_prefix(object_name)
+        patterns = [
+            "**/Roles/*/Ext/Rights.xml",
+            "**/Roles/*/*.rights",
+        ]
+        found_files: list[str] = []
+        for p in patterns:
+            found_files.extend(glob_files_fn(p))
+        found_files = list(dict.fromkeys(found_files))
+
+        roles: list[dict] = []
+        for f in found_files:
+            # Extract role name from path: Roles/RoleName/Ext/Rights.xml
+            parts = f.replace("\\", "/").split("/")
+            role_name = ""
+            for i, part in enumerate(parts):
+                if part == "Roles" and i + 1 < len(parts):
+                    role_name = parts[i + 1]
+                    break
+
+            try:
+                content = read_file_fn(f)
+            except Exception:
+                continue
+            rights = parse_rights_xml(content, object_name)
+            for r in rights:
+                roles.append({
+                    "role_name": role_name,
+                    "object": r["object"],
+                    "rights": r["rights"],
+                    "file": f,
+                })
+
+        return {"object": object_name, "roles": roles}
 
     # ── Help recipes ─────────────────────────────────────────────
 
@@ -1050,7 +2065,7 @@ def make_bsl_helpers(
         },
         "custom": {
             "keywords": ["custom", "нетипов", "доработк", "модификац",
-                         "modification", "ИРИС", "ирис"],
+                         "modification"],
             "text": (
                 "FIND CUSTOM MODIFICATIONS:\n"
                 "  result = find_custom_modifications('ВнутреннееПотребление')\n"
@@ -1075,6 +2090,111 @@ def make_bsl_helpers(
                 "  print(f\"Реквизитов: {len(meta.get('attributes', []))}\")\n"
                 "  for m in result.get('modules', []):\n"
                 "      print(f\"  {m['module_type']}: {m['procedures_count']} проц, {m['exports_count']} эксп\")"
+            ),
+        },
+        "subscriptions": {
+            "keywords": ["подписк", "subscription", "событи", "event",
+                         "BeforeWrite", "OnWrite", "ПриЗаписи", "ПередЗаписью"],
+            "text": (
+                "FIND EVENT SUBSCRIPTIONS (what fires on document write/post):\n"
+                "  subs = find_event_subscriptions('АвансовыйОтчет')\n"
+                "  for s in subs:\n"
+                "      print(f\"{s['event']}: {s['handler']} ({s['name']})\")"
+            ),
+        },
+        "jobs": {
+            "keywords": ["регламент", "schedule", "job", "задани", "фонов",
+                         "background"],
+            "text": (
+                "FIND SCHEDULED JOBS:\n"
+                "  jobs = find_scheduled_jobs('Курс')\n"
+                "  for j in jobs:\n"
+                "      print(f\"{j['name']}: {j['method_name']} (active={j['use']})\")"
+            ),
+        },
+        "movements": {
+            "keywords": ["движени", "movement", "регистр", "register",
+                         "проведен", "posting"],
+            "text": (
+                "TRACE DOCUMENT REGISTER MOVEMENTS:\n"
+                "  result = find_register_movements('ПриобретениеТоваровУслуг')\n"
+                "  for r in result['code_registers']:\n"
+                "      print(f\"  Движения.{r['name']} (строки: {r['lines']})\")\n"
+                "\n"
+                "FIND WHO WRITES TO REGISTER:\n"
+                "  result = find_register_writers('ТоварыНаСкладах')\n"
+                "  for w in result['writers']:\n"
+                "      print(f\"  {w['document']} (строки: {w['lines']})\")"
+            ),
+        },
+        "flow": {
+            "keywords": ["lifecycle", "жизненн", "flow", "end-to-end",
+                         "полный анализ", "как работает"],
+            "text": (
+                "FULL DOCUMENT LIFECYCLE:\n"
+                "  flow = analyze_document_flow('АвансовыйОтчет')\n"
+                "  print('Подписки:', len(flow['event_subscriptions']))\n"
+                "  for s in flow['event_subscriptions']:\n"
+                "      print(f\"  {s['event']}: {s['handler']}\")\n"
+                "  regs = flow['register_movements'].get('code_registers', [])\n"
+                "  print('Регистры:', len(regs))\n"
+                "  for r in regs:\n"
+                "      print(f\"  Движения.{r['name']}\")"
+            ),
+        },
+        "based_on": {
+            "keywords": ["основани", "ввод на основании", "создать на основании",
+                         "based on", "filling", "заполнени"],
+            "text": (
+                "FIND BASED-ON DOCUMENTS (ввод на основании):\n"
+                "  result = find_based_on_documents('ПриобретениеТоваровУслуг')\n"
+                "  print('Можно создать из этого документа:')\n"
+                "  for d in result['can_create_from_here']:\n"
+                "      print(f\"  -> {d['document']}\")\n"
+                "  print('Этот документ создается на основании:')\n"
+                "  for d in result['can_be_created_from']:\n"
+                "      print(f\"  <- {d['type']}\")"
+            ),
+        },
+        "print": {
+            "keywords": ["печат", "print", "макет", "template", "накладн"],
+            "text": (
+                "FIND PRINT FORMS:\n"
+                "  result = find_print_forms('РеализацияТоваровУслуг')\n"
+                "  for p in result['print_forms']:\n"
+                "      print(f\"  {p['name']}: {p['presentation']}\")"
+            ),
+        },
+        "options": {
+            "keywords": ["функциональн", "опци", "functional", "option",
+                         "включен", "выключен"],
+            "text": (
+                "FIND FUNCTIONAL OPTIONS:\n"
+                "  result = find_functional_options('РеализацияТоваровУслуг')\n"
+                "  for fo in result['xml_options']:\n"
+                "      print(f\"  {fo['name']}: {fo['synonym']}\")\n"
+                "  for co in result['code_options']:\n"
+                "      print(f\"  В коде: {co['option_name']} (стр.{co['line']})\")"
+            ),
+        },
+        "roles": {
+            "keywords": ["роль", "role", "прав", "right", "доступ", "access",
+                         "разрешен"],
+            "text": (
+                "FIND ROLES AND RIGHTS:\n"
+                "  result = find_roles('ПриобретениеТоваровУслуг')\n"
+                "  for r in result['roles']:\n"
+                "      print(f\"  {r['role_name']}: {', '.join(r['rights'])}\")"
+            ),
+        },
+        "enum": {
+            "keywords": ["перечислен", "enum", "значени перечислени"],
+            "text": (
+                "FIND ENUM VALUES:\n"
+                "  result = find_enum_values('СтатусыЗаказовКлиентов')\n"
+                "  print(f\"{result['name']} ({result['synonym']})\")\n"
+                "  for v in result['values']:\n"
+                "      print(f\"  {v['name']}: {v['synonym']}\")"
             ),
         },
     }
@@ -1104,6 +2224,7 @@ def make_bsl_helpers(
         return bsl_help("")
 
     return {
+        "_detected_prefixes": _ensure_prefixes,
         "help": bsl_help,
         "find_module": find_module,
         "find_by_type": find_by_type,
@@ -1117,4 +2238,14 @@ def make_bsl_helpers(
         "analyze_subsystem": analyze_subsystem,
         "find_custom_modifications": find_custom_modifications,
         "analyze_object": analyze_object,
+        "find_event_subscriptions": find_event_subscriptions,
+        "find_scheduled_jobs": find_scheduled_jobs,
+        "find_register_movements": find_register_movements,
+        "find_register_writers": find_register_writers,
+        "analyze_document_flow": analyze_document_flow,
+        "find_based_on_documents": find_based_on_documents,
+        "find_print_forms": find_print_forms,
+        "find_enum_values": find_enum_values,
+        "find_functional_options": find_functional_options,
+        "find_roles": find_roles,
     }

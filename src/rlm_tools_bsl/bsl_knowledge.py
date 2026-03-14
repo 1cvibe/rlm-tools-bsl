@@ -42,6 +42,12 @@ CRITICAL: Large configs have 23,000+ files. grep/grep_read on broad paths
   1. find_module('name_fragment') -> get file paths
   2. read_file(path) or grep(pattern, path=exact_file)
 
+CUSTOM PREFIXES: rlm_start returns "detected_custom_prefixes" — a list of non-standard
+name prefixes auto-detected from the codebase (e.g. ["abc", "xyz"]). Use these prefixes
+when filtering for custom/non-standard objects, subscriptions, roles, procedures, etc.
+Do NOT hardcode prefixes — always use the detected ones from the session response.
+find_custom_modifications() uses them automatically when custom_prefixes=None.
+
 RECIPES (pick the one matching your task and paste into rlm_execute code):
 
   FIND EXPORTS of a module:
@@ -79,6 +85,16 @@ RETURN FORMATS:
   find_by_type(category, name) -> same as find_module. Categories: CommonModules, Documents, Catalogs, InformationRegisters, AccumulationRegisters, Reports, DataProcessors
   safe_grep(pattern, hint, max_files) -> [{"file", "line", "text"}]
   parse_object_xml(path) -> {"name", "synonym", "attributes", "tabular_sections", "dimensions", "resources", ...}
+  find_event_subscriptions(object_name) -> [{"name", "synonym", "source_count", "event", "handler", "handler_module", "handler_procedure", "file"}]
+  find_scheduled_jobs(name) -> [{"name", "synonym", "method_name", "handler_module", "handler_procedure", "use", "file"}]
+  find_register_movements(doc_name) -> {"document", "code_registers": [{"name", "lines", "file"}], "modules_scanned", "erp_mechanisms", "manager_tables", "adapted_registers"}
+  find_register_writers(reg_name) -> {"register", "writers": [{"document", "file", "lines"}], "total_writers"}
+  analyze_document_flow(doc_name) -> {"document", "metadata", "event_subscriptions", "register_movements", "related_scheduled_jobs"}
+  find_based_on_documents(doc_name) -> {"document", "can_create_from_here": [{"document", "file"}], "can_be_created_from": [{"type", "file"}]}
+  find_print_forms(object_name) -> {"object", "print_forms": [{"name", "presentation", "file"}]}
+  find_functional_options(object_name) -> {"object", "xml_options": [{"name", "synonym", "location", "content", "file"}], "code_options": [{"option_name", "file", "line"}]}
+  find_roles(object_name) -> {"object", "roles": [{"role_name", "object", "rights", "file"}]}
+  find_enum_values(enum_name) -> {"name", "synonym", "values": [{"name", "synonym"}], "file"}
 
 BSL HELPERS available in sandbox:
   help(task)                  -- get recipe for your task, e.g. help('find exports')
@@ -93,9 +109,19 @@ BSL HELPERS available in sandbox:
                               -- find callers with context and pagination
   parse_object_xml(path)      -- parse 1C metadata XML
   analyze_subsystem(name)     -- find subsystem, parse composition, classify custom/standard objects
-  find_custom_modifications(object_name, custom_prefixes=['лтх',...])
+  find_custom_modifications(object_name, custom_prefixes=None)
                               -- find custom code in object modules (procedures, regions, XML attributes)
   analyze_object(name)        -- full object profile (XML metadata + all modules + procedures + exports)
+  find_event_subscriptions(object_name) -- event subscriptions for object (what fires on write/post)
+  find_scheduled_jobs(name)   -- scheduled (background) jobs
+  find_register_movements(doc_name) -- which registers a document writes to (Движения.X + ERP framework)
+  find_register_writers(reg_name)   -- which documents write to a register
+  analyze_document_flow(doc_name)   -- full document lifecycle (metadata + subscriptions + movements)
+  find_based_on_documents(doc_name) -- what documents can be created from/to this one
+  find_print_forms(object_name)     -- print forms registered for object
+  find_functional_options(object_name) -- functional options referencing object + code usage
+  find_roles(object_name)           -- roles with granted rights to object
+  find_enum_values(enum_name)       -- enum values with synonyms
 
 FILE PATHS depend on format:
   CF:  CommonModules/Name/Ext/Module.bsl
@@ -110,10 +136,18 @@ LLM_QUERY TIPS (when llm_query is available):
 """
 
 
-def get_strategy(effort: str, format_info) -> str:
+def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None) -> str:
     config = EFFORT_LEVELS.get(effort, EFFORT_LEVELS["medium"])
 
     parts = [_BASE_STRATEGY]
+
+    if detected_prefixes:
+        parts.append(
+            f"\nDETECTED CUSTOM PREFIXES: {detected_prefixes}\n"
+            "These are non-standard name prefixes found in this codebase.\n"
+            "Use them to identify custom objects, procedures, subscriptions, roles, etc.\n"
+            "find_custom_modifications() uses them automatically."
+        )
 
     parts.append(f"\nEFFORT LEVEL: {effort}")
     parts.append(config.guidance)
@@ -155,6 +189,10 @@ RLM_EXECUTE_DESCRIPTION = (
     "Example: code=\"modules = find_module('MyModule')\\nfor m in modules:\\n    print(m['path'])\"\n"
     "BSL helpers: help, find_module, find_by_type, extract_procedures, find_exports,\n"
     "safe_grep, read_procedure, find_callers, find_callers_context, parse_object_xml.\n"
+    "Composite: analyze_object, analyze_subsystem, find_custom_modifications,\n"
+    "find_event_subscriptions, find_scheduled_jobs, find_register_movements,\n"
+    "find_register_writers, analyze_document_flow, find_based_on_documents,\n"
+    "find_print_forms, find_functional_options, find_roles, find_enum_values.\n"
     "Standard: read_file, read_files, grep, grep_summary, grep_read, glob_files, tree.\n"
     "CRITICAL: grep on path='.' ALWAYS times out on large 1C configs. Use find_module() first."
 )

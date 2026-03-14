@@ -3,7 +3,15 @@ import tempfile
 
 from rlm_tools_bsl.helpers import make_helpers
 from rlm_tools_bsl.format_detector import FormatInfo, SourceFormat, detect_format
-from rlm_tools_bsl.bsl_helpers import make_bsl_helpers, parse_metadata_xml
+from rlm_tools_bsl.bsl_helpers import (
+    make_bsl_helpers,
+    parse_metadata_xml,
+    parse_event_subscription_xml,
+    parse_scheduled_job_xml,
+    parse_enum_xml,
+    parse_functional_option_xml,
+    parse_rights_xml,
+)
 
 
 BSL_CODE = """\
@@ -315,12 +323,12 @@ SUBSYSTEM_XML = """\
     <Synonym>
       <v8:item>
         <v8:lang>ru</v8:lang>
-        <v8:content>Спецодежда (лтх)</v8:content>
+        <v8:content>Спецодежда (ктн)</v8:content>
       </v8:item>
     </Synonym>
     <Content>
-      <xr:Item>Catalog.лтхВидыСпецодежды</xr:Item>
-      <xr:Item>Document.лтхЗаявкаНаВыдачуСпецодежды</xr:Item>
+      <xr:Item>Catalog.ктнВидыСпецодежды</xr:Item>
+      <xr:Item>Document.ктнЗаявкаНаВыдачуСпецодежды</xr:Item>
     </Content>
   </Properties>
 </Subsystem>
@@ -351,7 +359,7 @@ REGISTER_XML = """\
         </v8:item>
       </Synonym>
       <Type>
-        <v8:Type>CatalogRef.лтхВидыСпецодежды</v8:Type>
+        <v8:Type>CatalogRef.ктнВидыСпецодежды</v8:Type>
       </Type>
     </Properties>
   </Dimension>
@@ -506,8 +514,8 @@ def test_parse_subsystem_xml():
     assert result["object_type"] == "Subsystem"
     assert result["name"] == "Спецодежда"
     assert "content" in result
-    assert "Catalog.лтхВидыСпецодежды" in result["content"]
-    assert "Document.лтхЗаявкаНаВыдачуСпецодежды" in result["content"]
+    assert "Catalog.ктнВидыСпецодежды" in result["content"]
+    assert "Document.ктнЗаявкаНаВыдачуСпецодежды" in result["content"]
 
 
 def test_parse_register_xml():
@@ -721,12 +729,12 @@ SUBSYSTEM_CF_XML = """\
                 xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">
 <Subsystem>
 <Properties>
-<Name>лтхСпецодежда</Name>
+<Name>ктнСпецодежда</Name>
 <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Спецодежда</v8:content></v8:item></Synonym>
 <Content>
-<xr:Item>Catalog.лтхВидыСпецодежды</xr:Item>
+<xr:Item>Catalog.ктнВидыСпецодежды</xr:Item>
 <xr:Item>Document.ВнутреннееПотребление</xr:Item>
-<xr:Item>Document.лтхЗаявкаНаВыдачуСпецодежды</xr:Item>
+<xr:Item>Document.ктнЗаявкаНаВыдачуСпецодежды</xr:Item>
 </Content>
 </Properties>
 </Subsystem>
@@ -738,10 +746,10 @@ def _make_subsystem_fixture(tmpdir):
     """Create fixture with a subsystem XML."""
     # Add subsystem XML to existing fixture
     sub_dir = os.path.join(
-        tmpdir, "Subsystems", "Администрирование", "Subsystems", "лтхСпецодежда",
+        tmpdir, "Subsystems", "Администрирование", "Subsystems", "ктнСпецодежда",
     )
     os.makedirs(sub_dir, exist_ok=True)
-    with open(os.path.join(sub_dir, "лтхСпецодежда.xml"), "w", encoding="utf-8") as f:
+    with open(os.path.join(sub_dir, "ктнСпецодежда.xml"), "w", encoding="utf-8") as f:
         f.write(SUBSYSTEM_CF_XML)
     # Now create the rest of the fixture (BSL files, Configuration.xml)
     helpers, resolve_safe = make_helpers(tmpdir)
@@ -777,7 +785,7 @@ def test_analyze_subsystem_found():
         assert sub["synonym"] == "Спецодежда"
         assert len(sub["custom_objects"]) >= 1
         custom_names = [o["name"] for o in sub["custom_objects"]]
-        assert "лтхВидыСпецодежды" in custom_names
+        assert "ктнВидыСпецодежды" in custom_names
         standard_names = [o["name"] for o in sub["standard_objects"]]
         assert "ВнутреннееПотребление" in standard_names
 
@@ -790,9 +798,9 @@ def test_analyze_subsystem_not_found():
 
 
 BSL_CUSTOM_CODE = """\
-#Область ИРИС
+#Область ктнДоработки
 
-Процедура лтхОбработкаСпецодежды() Экспорт
+Процедура ктнОбработкаСпецодежды() Экспорт
     // нетиповая процедура
 КонецПроцедуры
 
@@ -825,15 +833,15 @@ def test_find_custom_modifications():
             format_info=format_info,
         )
 
-        result = bsl["find_custom_modifications"]("ТестДок")
+        result = bsl["find_custom_modifications"]("ТестДок", custom_prefixes=["ктн"])
         assert result["modules_analyzed"] >= 1
         assert len(result["modifications"]) >= 1
         mod = result["modifications"][0]
         custom_proc_names = [p["name"] for p in mod["custom_procedures"]]
-        assert "лтхОбработкаСпецодежды" in custom_proc_names
+        assert "ктнОбработкаСпецодежды" in custom_proc_names
         assert "ТиповаяПроцедура" not in custom_proc_names
         region_names = [r["name"] for r in mod["custom_regions"]]
-        assert "ИРИС" in region_names
+        assert "ктнДоработки" in region_names
 
 
 def test_analyze_object():
@@ -846,3 +854,832 @@ def test_analyze_object():
         mod = result["modules"][0]
         assert mod["procedures_count"] == 3
         assert mod["exports_count"] == 2
+
+
+# === EventSubscription / ScheduledJob XML parsers ===
+
+EVENT_SUB_CF_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core"
+    xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">
+<EventSubscription uuid="ba1f402d-0000-0000-0000-000000000001">
+  <Properties>
+    <Name>ЗаписатьВерсиюДокумента</Name>
+    <Synonym>
+      <v8:item><v8:lang>ru</v8:lang><v8:content>Записать версию документа</v8:content></v8:item>
+    </Synonym>
+    <Source>
+      <v8:Type>cfg:DocumentObject.АвансовыйОтчет</v8:Type>
+      <v8:Type>cfg:DocumentObject.ЗаказКлиента</v8:Type>
+    </Source>
+    <Event>BeforeWrite</Event>
+    <Handler>CommonModule.ВерсионированиеОбъектовСобытия.ЗаписатьВерсиюДокумента</Handler>
+  </Properties>
+</EventSubscription>
+</MetaDataObject>
+"""
+
+EVENT_SUB_MDO_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<mdclass:EventSubscription xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"
+    uuid="7ce50cee-0000-0000-0000-000000000001">
+  <name>бг_ЗаписатьВерсиюДокумента</name>
+  <synonym>
+    <key>ru</key>
+    <value>Записать версию документа</value>
+  </synonym>
+  <source>
+    <types>DocumentObject.АвансовыйОтчет</types>
+    <types>DocumentObject.СчетФактураВыданный</types>
+  </source>
+  <event>BeforeWrite</event>
+  <handler>CommonModule.ВерсионированиеОбъектовСобытия.ЗаписатьВерсиюДокумента</handler>
+</mdclass:EventSubscription>
+"""
+
+SCHEDULED_JOB_CF_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<ScheduledJob uuid="c7ffd8ab-0000-0000-0000-000000000001">
+  <Properties>
+    <Name>ЗагрузкаКурсовВалют</Name>
+    <Synonym>
+      <v8:item><v8:lang>ru</v8:lang><v8:content>Загрузка курсов валют</v8:content></v8:item>
+    </Synonym>
+    <MethodName>CommonModule.РаботаСКурсамиВалют.ЗагрузитьАктуальныйКурс</MethodName>
+    <Use>false</Use>
+    <Predefined>true</Predefined>
+    <RestartCountOnFailure>10</RestartCountOnFailure>
+    <RestartIntervalOnFailure>600</RestartIntervalOnFailure>
+  </Properties>
+</ScheduledJob>
+</MetaDataObject>
+"""
+
+SCHEDULED_JOB_MDO_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<mdclass:ScheduledJob xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"
+    uuid="f3be2107-0000-0000-0000-000000000001">
+  <name>бг_ОтправкаПодтверждения</name>
+  <synonym>
+    <key>ru</key>
+    <value>Отправка подтверждения поставки</value>
+  </synonym>
+  <methodName>CommonModule.битРегламентныеЗадания.ОтправкаПодтверждения</methodName>
+  <predefined>true</predefined>
+  <restartCountOnFailure>3</restartCountOnFailure>
+  <restartIntervalOnFailure>10</restartIntervalOnFailure>
+</mdclass:ScheduledJob>
+"""
+
+
+ENUM_CF_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">
+  <Enum><Properties><Name>СтатусыЗаказов</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Статусы заказов</v8:content></v8:item></Synonym></Properties>
+  <ChildObjects>
+    <EnumValue><Properties><Name>Новый</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Новый</v8:content></v8:item></Synonym></Properties></EnumValue>
+    <EnumValue><Properties><Name>ВРаботе</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>В работе</v8:content></v8:item></Synonym></Properties></EnumValue>
+    <EnumValue><Properties><Name>Закрыт</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Закрыт</v8:content></v8:item></Synonym></Properties></EnumValue>
+  </ChildObjects></Enum>
+</MetaDataObject>
+"""
+
+ENUM_MDO_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<mdclass:Enum xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass">
+  <name>ВажностьПроблемы</name>
+  <enumValues><name>Предупреждение</name></enumValues>
+  <enumValues><name>Ошибка</name></enumValues>
+</mdclass:Enum>
+"""
+
+FUNCTIONAL_OPTION_CF_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">
+  <FunctionalOption><Properties><Name>ИспользоватьСерии</Name>
+    <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Использовать серии</v8:content></v8:item></Synonym>
+    <Location>Constant.ИспользоватьСерии</Location>
+    <Content><xr:Object>Document.ПриобретениеТоваров</xr:Object><xr:Object>Catalog.СерииНоменклатуры</xr:Object></Content>
+  </Properties></FunctionalOption>
+</MetaDataObject>
+"""
+
+FUNCTIONAL_OPTION_MDO_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<mdclass:FunctionalOption xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass">
+  <name>ВестиСведенияДляДекларацийПоАлкогольнойПродукции</name>
+  <location>Constant.ВестиСведенияДляДекларацийПоАлкогольнойПродукции</location>
+  <content>Document.битЗаявлениеОВыдачеФСМ</content>
+  <content>Document.битНакладнаяНаВыдачуФСМ</content>
+</mdclass:FunctionalOption>
+"""
+
+RIGHTS_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights">
+  <setForNewObjects>false</setForNewObjects>
+  <setForAttributesByDefault>true</setForAttributesByDefault>
+  <independentRightsOfChildObjects>false</independentRightsOfChildObjects>
+  <object><name>Document.ПриобретениеТоваров</name>
+    <right><name>Read</name><value>true</value></right>
+    <right><name>Update</name><value>true</value></right>
+    <right><name>View</name><value>false</value></right>
+  </object>
+  <object><name>Catalog.Номенклатура</name>
+    <right><name>Read</name><value>true</value></right>
+  </object>
+</Rights>
+"""
+
+
+# === Enum / FunctionalOption / Rights XML parser tests ===
+
+def test_parse_enum_xml_cf():
+    result = parse_enum_xml(ENUM_CF_XML)
+    assert result is not None
+    assert result["name"] == "СтатусыЗаказов"
+    assert result["synonym"] == "Статусы заказов"
+    assert len(result["values"]) == 3
+    assert result["values"][0]["name"] == "Новый"
+    assert result["values"][0]["synonym"] == "Новый"
+    assert result["values"][1]["name"] == "ВРаботе"
+    assert result["values"][1]["synonym"] == "В работе"
+    assert result["values"][2]["name"] == "Закрыт"
+    assert result["values"][2]["synonym"] == "Закрыт"
+
+
+def test_parse_enum_xml_edt():
+    result = parse_enum_xml(ENUM_MDO_XML)
+    assert result is not None
+    assert result["name"] == "ВажностьПроблемы"
+    assert len(result["values"]) == 2
+    assert result["values"][0]["name"] == "Предупреждение"
+    assert result["values"][1]["name"] == "Ошибка"
+
+
+def test_parse_functional_option_xml_cf():
+    result = parse_functional_option_xml(FUNCTIONAL_OPTION_CF_XML)
+    assert result is not None
+    assert result["name"] == "ИспользоватьСерии"
+    assert result["synonym"] == "Использовать серии"
+    assert result["location"] == "Constant.ИспользоватьСерии"
+    assert len(result["content"]) == 2
+    assert "Document.ПриобретениеТоваров" in result["content"]
+    assert "Catalog.СерииНоменклатуры" in result["content"]
+
+
+def test_parse_functional_option_xml_edt():
+    result = parse_functional_option_xml(FUNCTIONAL_OPTION_MDO_XML)
+    assert result is not None
+    assert result["name"] == "ВестиСведенияДляДекларацийПоАлкогольнойПродукции"
+    assert result["location"] == "Constant.ВестиСведенияДляДекларацийПоАлкогольнойПродукции"
+    assert len(result["content"]) == 2
+    assert "Document.битЗаявлениеОВыдачеФСМ" in result["content"]
+    assert "Document.битНакладнаяНаВыдачуФСМ" in result["content"]
+
+
+def test_parse_rights_xml():
+    result = parse_rights_xml(RIGHTS_XML)
+    assert len(result) == 2
+    doc = next(r for r in result if r["object"] == "Document.ПриобретениеТоваров")
+    assert "Read" in doc["rights"]
+    assert "Update" in doc["rights"]
+    assert "View" not in doc["rights"]  # value=false excluded
+    cat = next(r for r in result if r["object"] == "Catalog.Номенклатура")
+    assert cat["rights"] == ["Read"]
+
+
+def test_parse_rights_xml_filter():
+    result = parse_rights_xml(RIGHTS_XML, "ПриобретениеТоваров")
+    assert len(result) == 1
+    assert result[0]["object"] == "Document.ПриобретениеТоваров"
+    assert "Read" in result[0]["rights"]
+
+
+# === Integration tests for find_enum_values, find_functional_options, find_roles ===
+
+def test_find_enum_values():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        # Add Enum fixture file
+        enum_dir = os.path.join(tmpdir, "Enums", "СтатусыЗаказов")
+        os.makedirs(enum_dir)
+        with open(os.path.join(enum_dir, "СтатусыЗаказов.xml"), "w", encoding="utf-8") as f:
+            f.write(ENUM_CF_XML)
+        result = bsl["find_enum_values"]("СтатусыЗаказов")
+        assert "error" not in result
+        assert result["name"] == "СтатусыЗаказов"
+        assert len(result["values"]) == 3
+        assert "file" in result
+
+
+def test_find_enum_values_not_found():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_enum_values"]("НесуществующееПеречисление")
+        assert "error" in result
+
+
+def test_find_functional_options():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        # Add FunctionalOption fixture file
+        fo_dir = os.path.join(tmpdir, "FunctionalOptions")
+        os.makedirs(fo_dir)
+        with open(os.path.join(fo_dir, "ИспользоватьСерии.xml"), "w", encoding="utf-8") as f:
+            f.write(FUNCTIONAL_OPTION_CF_XML)
+        result = bsl["find_functional_options"]("ПриобретениеТоваров")
+        assert result["object"] == "ПриобретениеТоваров"
+        assert len(result["xml_options"]) >= 1
+        assert result["xml_options"][0]["name"] == "ИспользоватьСерии"
+
+
+def test_find_roles():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        # Add Role/Rights fixture file
+        role_dir = os.path.join(tmpdir, "Roles", "Менеджер", "Ext")
+        os.makedirs(role_dir)
+        with open(os.path.join(role_dir, "Rights.xml"), "w", encoding="utf-8") as f:
+            f.write(RIGHTS_XML)
+        result = bsl["find_roles"]("ПриобретениеТоваров")
+        assert result["object"] == "ПриобретениеТоваров"
+        assert len(result["roles"]) >= 1
+        role = result["roles"][0]
+        assert role["role_name"] == "Менеджер"
+        assert "Read" in role["rights"]
+        assert "file" in role
+
+
+def test_find_roles_not_found():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_roles"]("НесуществующийОбъект")
+        assert len(result["roles"]) == 0
+
+
+def test_parse_cf_event_subscription():
+    result = parse_event_subscription_xml(EVENT_SUB_CF_XML)
+    assert result is not None
+    assert result["name"] == "ЗаписатьВерсиюДокумента"
+    assert result["synonym"] == "Записать версию документа"
+    assert result["event"] == "BeforeWrite"
+    assert result["handler"] == "CommonModule.ВерсионированиеОбъектовСобытия.ЗаписатьВерсиюДокумента"
+    assert len(result["source_types"]) == 2
+    assert "DocumentObject.АвансовыйОтчет" in result["source_types"]
+    assert "DocumentObject.ЗаказКлиента" in result["source_types"]
+
+
+def test_parse_mdo_event_subscription():
+    result = parse_event_subscription_xml(EVENT_SUB_MDO_XML)
+    assert result is not None
+    assert result["name"] == "бг_ЗаписатьВерсиюДокумента"
+    assert result["synonym"] == "Записать версию документа"
+    assert result["event"] == "BeforeWrite"
+    assert len(result["source_types"]) == 2
+    assert "DocumentObject.АвансовыйОтчет" in result["source_types"]
+
+
+def test_parse_cf_scheduled_job():
+    result = parse_scheduled_job_xml(SCHEDULED_JOB_CF_XML)
+    assert result is not None
+    assert result["name"] == "ЗагрузкаКурсовВалют"
+    assert result["synonym"] == "Загрузка курсов валют"
+    assert result["method_name"] == "CommonModule.РаботаСКурсамиВалют.ЗагрузитьАктуальныйКурс"
+    assert result["use"] is False
+    assert result["predefined"] is True
+    assert result["restart_on_failure"]["count"] == 10
+    assert result["restart_on_failure"]["interval"] == 600
+
+
+def test_parse_mdo_scheduled_job():
+    result = parse_scheduled_job_xml(SCHEDULED_JOB_MDO_XML)
+    assert result is not None
+    assert result["name"] == "бг_ОтправкаПодтверждения"
+    assert result["synonym"] == "Отправка подтверждения поставки"
+    assert result["method_name"] == "CommonModule.битРегламентныеЗадания.ОтправкаПодтверждения"
+    assert result["use"] is True  # EDT default
+    assert result["predefined"] is True
+    assert result["restart_on_failure"]["count"] == 3
+
+
+# === Integration tests for new helpers ===
+
+BSL_DOC_WITH_MOVEMENTS = """\
+Процедура ОбработкаПроведения(Отказ) Экспорт
+    Движения.ТоварыНаСкладах.Записать = Истина;
+    Движения.ТоварыНаСкладах.Очистить();
+    Движения.РасчетыСПоставщиками.Записать = Истина;
+КонецПроцедуры
+"""
+
+BSL_DOC_OBJECT_FULL = """\
+Процедура ОбработкаЗаполнения(ДанныеЗаполнения) Экспорт
+    Если ТипЗнч(ДанныеЗаполнения) = Тип("ДокументСсылка.ЗаказПоставщику") Тогда
+        ЗаполнитьНаОсновании(ДанныеЗаполнения);
+    ИначеЕсли ТипЗнч(ДанныеЗаполнения) = Тип("СправочникСсылка.ДоговорыКонтрагентов") Тогда
+        ЗаполнитьПоДоговору(ДанныеЗаполнения);
+    КонецЕсли;
+КонецПроцедуры
+
+Процедура ОбработкаПроведения(Отказ) Экспорт
+    Движения.ТоварыНаСкладах.Записать = Истина;
+    Движения.ТоварыНаСкладах.Очистить();
+    Движения.РасчетыСПоставщиками.Записать = Истина;
+КонецПроцедуры
+"""
+
+BSL_DOC_MANAGER = """\
+Процедура ДобавитьКомандыСозданияНаОсновании(КомандыСозданияНаОсновании, Параметры) Экспорт
+    Документы.ВозвратТоваров.ДобавитьКомандуСоздатьНаОсновании(КомандыСозданияНаОсновании);
+    Документы.СписаниеТоваров.ДобавитьКомандуСоздатьНаОсновании(КомандыСозданияНаОсновании);
+КонецПроцедуры
+
+Процедура ДобавитьКомандыПечати(КомандыПечати) Экспорт
+    УправлениеПечатью.ДобавитьКомандуПечати(КомандыПечати, "Накладная", НСтр("ru = 'Товарная накладная'"));
+    УправлениеПечатью.ДобавитьКомандуПечати(КомандыПечати, "СчетНаОплату", НСтр("ru = 'Счет на оплату'"));
+КонецПроцедуры
+"""
+
+BSL_DOC_ERP_MANAGER = """\
+Процедура ЗарегистрироватьУчетныеМеханизмы(МеханизмыДокумента) Экспорт
+    МеханизмыДокумента.Добавить("Взаиморасчеты");
+    МеханизмыДокумента.Добавить("Продажи");
+    МеханизмыДокумента.Добавить("СебестоимостьИПартионныйУчет");
+КонецПроцедуры
+
+Функция АдаптированныйТекстЗапросаДвиженийПоРегистру(ИмяРегистра) Экспорт
+    Если ИмяРегистра = "ЗаказыКлиентов" Тогда
+        Возврат "";
+    ИначеЕсли ИмяРегистра = "РеестрДокументов" Тогда
+        Возврат "";
+    КонецЕсли;
+КонецФункции
+
+Функция ТекстЗапросаТаблицаТовары() Экспорт
+    Возврат "";
+КонецФункции
+
+Функция ТекстЗапросаТаблицаВидыЗапасов() Экспорт
+    Возврат "";
+КонецФункции
+"""
+
+BSL_DOC_ERP_OBJECT = """\
+Процедура ОбработкаПроведения(Отказ, РежимПроведения)
+    ПроведениеДокументов.ОбработкаПроведенияДокумента(ЭтотОбъект, Отказ);
+КонецПроцедуры
+"""
+
+
+def _make_full_fixture(tmpdir):
+    """Create fixture with event subscriptions, scheduled jobs, and document with movements."""
+    # BSL modules
+    mod_dir = os.path.join(tmpdir, "CommonModules", "МойМодуль", "Ext")
+    os.makedirs(mod_dir)
+    with open(os.path.join(mod_dir, "Module.bsl"), "w", encoding="utf-8") as f:
+        f.write(BSL_CODE)
+
+    # Document with register movements + ОбработкаЗаполнения
+    doc_dir = os.path.join(tmpdir, "Documents", "ПриобретениеТоваров", "Ext")
+    os.makedirs(doc_dir)
+    with open(os.path.join(doc_dir, "ObjectModule.bsl"), "w", encoding="utf-8") as f:
+        f.write(BSL_DOC_OBJECT_FULL)
+
+    # Add ManagerModule
+    with open(os.path.join(doc_dir, "ManagerModule.bsl"), "w", encoding="utf-8") as f:
+        f.write(BSL_DOC_MANAGER)
+
+    # EventSubscription
+    sub_dir = os.path.join(tmpdir, "EventSubscriptions")
+    os.makedirs(sub_dir)
+    with open(os.path.join(sub_dir, "ЗаписатьВерсию.xml"), "w", encoding="utf-8") as f:
+        f.write(EVENT_SUB_CF_XML)
+
+    # ScheduledJob
+    job_dir = os.path.join(tmpdir, "ScheduledJobs")
+    os.makedirs(job_dir)
+    with open(os.path.join(job_dir, "ЗагрузкаКурсов.xml"), "w", encoding="utf-8") as f:
+        f.write(SCHEDULED_JOB_CF_XML)
+
+    # Configuration.xml
+    with open(os.path.join(tmpdir, "Configuration.xml"), "w") as f:
+        f.write("<Configuration/>")
+
+    helpers, resolve_safe = make_helpers(tmpdir)
+    format_info = detect_format(tmpdir)
+    bsl = make_bsl_helpers(
+        base_path=tmpdir,
+        resolve_safe=resolve_safe,
+        read_file_fn=helpers["read_file"],
+        grep_fn=helpers["grep"],
+        glob_files_fn=helpers["glob_files"],
+        format_info=format_info,
+    )
+    return bsl, helpers
+
+
+def test_find_event_subscriptions_all():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_event_subscriptions"]()
+        assert len(result) >= 1
+        sub = result[0]
+        assert sub["name"] == "ЗаписатьВерсиюДокумента"
+        assert sub["event"] == "BeforeWrite"
+        assert sub["handler_module"] == "ВерсионированиеОбъектовСобытия"
+        assert sub["handler_procedure"] == "ЗаписатьВерсиюДокумента"
+        # Without filter, source_types should be excluded
+        assert "source_types" not in sub
+
+
+def test_find_event_subscriptions_filtered():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_event_subscriptions"]("АвансовыйОтчет")
+        assert len(result) >= 1
+        # With filter, source_types should be included
+        assert "source_types" in result[0]
+
+
+def test_find_event_subscriptions_no_match():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_event_subscriptions"]("НесуществующийДокумент")
+        assert len(result) == 0
+
+
+def test_find_scheduled_jobs_all():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_scheduled_jobs"]()
+        assert len(result) >= 1
+        job = result[0]
+        assert job["name"] == "ЗагрузкаКурсовВалют"
+        assert job["handler_module"] == "РаботаСКурсамиВалют"
+        assert job["handler_procedure"] == "ЗагрузитьАктуальныйКурс"
+        assert job["use"] is False
+
+
+def test_find_scheduled_jobs_filtered():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_scheduled_jobs"]("Курс")
+        assert len(result) >= 1
+        assert result[0]["name"] == "ЗагрузкаКурсовВалют"
+
+
+def test_find_scheduled_jobs_no_match():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_scheduled_jobs"]("НесуществующееЗадание")
+        assert len(result) == 0
+
+
+def test_find_register_movements():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_register_movements"]("ПриобретениеТоваров")
+        assert result["document"] == "ПриобретениеТоваров"
+        assert len(result["code_registers"]) == 2
+        reg_names = [r["name"] for r in result["code_registers"]]
+        assert "ТоварыНаСкладах" in reg_names
+        assert "РасчетыСПоставщиками" in reg_names
+        # ТоварыНаСкладах appears on 2 lines
+        товары = next(r for r in result["code_registers"] if r["name"] == "ТоварыНаСкладах")
+        assert len(товары["lines"]) == 2
+
+
+def test_find_register_movements_not_found():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_register_movements"]("НесуществующийДок")
+        assert "error" in result
+
+
+def test_find_register_writers():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_register_writers"]("ТоварыНаСкладах")
+        assert result["register"] == "ТоварыНаСкладах"
+        assert result["total_writers"] >= 1
+        writers = result["writers"]
+        assert any(w["document"] == "ПриобретениеТоваров" for w in writers)
+
+
+def test_find_register_writers_no_match():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_register_writers"]("НесуществующийРегистр")
+        assert result["total_writers"] == 0
+
+
+def test_analyze_document_flow():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["analyze_document_flow"]("ПриобретениеТоваров")
+        assert "metadata" in result
+        assert "event_subscriptions" in result
+        assert "register_movements" in result
+        assert "related_scheduled_jobs" in result
+        # Should find register movements
+        regs = result["register_movements"].get("code_registers", [])
+        assert len(regs) >= 1
+
+
+def test_help_subscriptions():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("подписки")
+        assert "find_event_subscriptions" in text
+
+
+def test_help_movements():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("движения")
+        assert "find_register_movements" in text
+
+
+def test_help_jobs():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("регламентные задания")
+        assert "find_scheduled_jobs" in text
+
+
+def test_help_flow():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("как работает документ")
+        assert "analyze_document_flow" in text
+
+
+# === Task 5: find_based_on_documents ===
+
+def test_find_based_on_documents():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_based_on_documents"]("ПриобретениеТоваров")
+        assert len(result["can_create_from_here"]) >= 2
+        names = [d["document"] for d in result["can_create_from_here"]]
+        assert "ВозвратТоваров" in names
+        assert "СписаниеТоваров" in names
+        assert len(result["can_be_created_from"]) >= 1
+        types = [d["type"] for d in result["can_be_created_from"]]
+        assert "ДокументСсылка.ЗаказПоставщику" in types
+
+
+def test_find_based_on_documents_no_manager():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_based_on_documents"]("НесуществующийДок")
+        assert len(result["can_create_from_here"]) == 0
+        assert len(result["can_be_created_from"]) == 0
+
+
+# === Task 6: find_print_forms ===
+
+def test_find_print_forms():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_print_forms"]("ПриобретениеТоваров")
+        assert len(result["print_forms"]) >= 2
+        names = [p["name"] for p in result["print_forms"]]
+        assert "Накладная" in names
+        assert "СчетНаОплату" in names
+        # Check presentation
+        nakl = next(p for p in result["print_forms"] if p["name"] == "Накладная")
+        assert nakl["presentation"] == "Товарная накладная"
+
+
+def test_find_print_forms_not_found():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        result = bsl["find_print_forms"]("НесуществующийДок")
+        assert len(result["print_forms"]) == 0
+
+
+# === Task 7: find_register_movements ERP framework fallback ===
+
+def test_find_register_movements_erp_framework():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        doc_dir = os.path.join(tmpdir, "Documents", "РеализацияТоваров", "Ext")
+        os.makedirs(doc_dir)
+        with open(os.path.join(doc_dir, "ObjectModule.bsl"), "w", encoding="utf-8") as f:
+            f.write(BSL_DOC_ERP_OBJECT)
+        with open(os.path.join(doc_dir, "ManagerModule.bsl"), "w", encoding="utf-8") as f:
+            f.write(BSL_DOC_ERP_MANAGER)
+        with open(os.path.join(tmpdir, "Configuration.xml"), "w") as f:
+            f.write("<Configuration/>")
+
+        from rlm_tools_bsl.helpers import make_helpers
+        from rlm_tools_bsl.format_detector import detect_format
+        helpers, resolve_safe = make_helpers(tmpdir)
+        format_info = detect_format(tmpdir)
+        bsl = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=resolve_safe,
+            read_file_fn=helpers["read_file"],
+            grep_fn=helpers["grep"],
+            glob_files_fn=helpers["glob_files"],
+            format_info=format_info,
+        )
+
+        result = bsl["find_register_movements"]("РеализацияТоваров")
+        assert len(result["code_registers"]) == 0  # No direct Движения.X
+        assert len(result["erp_mechanisms"]) == 3
+        assert "Взаиморасчеты" in result["erp_mechanisms"]
+        assert "Продажи" in result["erp_mechanisms"]
+        assert len(result["manager_tables"]) >= 2
+        assert "Товары" in result["manager_tables"]
+        assert "ВидыЗапасов" in result["manager_tables"]
+        assert "ЗаказыКлиентов" in result["adapted_registers"]
+        assert "РеестрДокументов" in result["adapted_registers"]
+
+
+# === Task 8: help recipes for new helpers ===
+
+def test_help_based_on():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("ввод на основании")
+        assert "find_based_on_documents" in text
+
+
+def test_help_print_forms():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("печатные формы")
+        assert "find_print_forms" in text
+
+
+def test_help_enum():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("значения перечисления")
+        assert "find_enum_values" in text
+
+
+def test_help_roles():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("права доступа")
+        assert "find_roles" in text
+
+
+def test_help_functional_options():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        text = bsl["help"]("functional options")
+        assert "find_functional_options" in text
+
+
+# === Auto-strip metadata type prefix ===
+
+def test_strip_meta_prefix_find_module():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        # With prefix
+        r1 = bsl["find_module"]("Документ.МойМодуль")
+        # Without prefix
+        r2 = bsl["find_module"]("МойМодуль")
+        assert len(r1) == len(r2)
+        assert r1[0]["object_name"] == r2[0]["object_name"]
+
+
+def test_strip_meta_prefix_find_register_movements():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        r1 = bsl["find_register_movements"]("Документ.ПриобретениеТоваров")
+        r2 = bsl["find_register_movements"]("ПриобретениеТоваров")
+        assert r1["document"] == r2["document"]
+        assert len(r1["code_registers"]) == len(r2["code_registers"])
+
+
+def test_strip_meta_prefix_find_enum_values():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        # Create enum fixture
+        enum_dir = os.path.join(tmpdir, "Enums", "СтатусыЗаказов")
+        os.makedirs(enum_dir)
+        with open(os.path.join(enum_dir, "СтатусыЗаказов.xml"), "w", encoding="utf-8") as f:
+            f.write(ENUM_CF_XML)
+        r1 = bsl["find_enum_values"]("Перечисление.СтатусыЗаказов")
+        r2 = bsl["find_enum_values"]("СтатусыЗаказов")
+        assert r1["name"] == r2["name"]
+
+
+# === source_count=0 subscriptions (catch-all) ===
+
+EVENT_SUB_CATCHALL_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core"
+    xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">
+<EventSubscription uuid="ca1f402d-0000-0000-0000-000000000002">
+  <Properties>
+    <Name>ктнПередЗаписьюДокумента</Name>
+    <Synonym>
+      <v8:item><v8:lang>ru</v8:lang><v8:content>Перед записью документа</v8:content></v8:item>
+    </Synonym>
+    <Source/>
+    <Event>BeforeWrite</Event>
+    <Handler>CommonModule.ктнПроведение.ПередЗаписьюДокумента</Handler>
+  </Properties>
+</EventSubscription>
+</MetaDataObject>
+"""
+
+
+def test_find_event_subscriptions_catchall():
+    """Subscriptions with source_count=0 should match any object name filter."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create base fixture
+        mod_dir = os.path.join(tmpdir, "CommonModules", "МойМодуль", "Ext")
+        os.makedirs(mod_dir)
+        with open(os.path.join(mod_dir, "Module.bsl"), "w", encoding="utf-8") as f:
+            f.write(BSL_CODE)
+        sub_dir = os.path.join(tmpdir, "EventSubscriptions")
+        os.makedirs(sub_dir)
+        # Normal subscription with specific sources
+        with open(os.path.join(sub_dir, "ЗаписатьВерсию.xml"), "w", encoding="utf-8") as f:
+            f.write(EVENT_SUB_CF_XML)
+        # Catch-all subscription (empty Source)
+        with open(os.path.join(sub_dir, "ктнПередЗаписью.xml"), "w", encoding="utf-8") as f:
+            f.write(EVENT_SUB_CATCHALL_XML)
+        with open(os.path.join(tmpdir, "Configuration.xml"), "w") as f:
+            f.write("<Configuration/>")
+
+        helpers, resolve_safe = make_helpers(tmpdir)
+        format_info = detect_format(tmpdir)
+        bsl = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=resolve_safe,
+            read_file_fn=helpers["read_file"],
+            grep_fn=helpers["grep"],
+            glob_files_fn=helpers["glob_files"],
+            format_info=format_info,
+        )
+
+        # Filter by a specific object — should return BOTH the matching sub AND the catch-all
+        result = bsl["find_event_subscriptions"]("АвансовыйОтчет")
+        names = [s["name"] for s in result]
+        assert "ЗаписатьВерсиюДокумента" in names  # has АвансовыйОтчет in sources
+        assert "ктнПередЗаписьюДокумента" in names  # catch-all, source_count=0
+
+        # Filter by non-existing object — should still return catch-all
+        result2 = bsl["find_event_subscriptions"]("НесуществующийОбъект")
+        names2 = [s["name"] for s in result2]
+        assert "ктнПередЗаписьюДокумента" in names2
+        assert "ЗаписатьВерсиюДокумента" not in names2
+
+
+# === custom_only parameter ===
+
+def test_find_event_subscriptions_custom_only():
+    """custom_only=True should filter by auto-detected prefixes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create fixture with both standard and custom subscriptions
+        mod_dir = os.path.join(tmpdir, "CommonModules", "ктнМодуль", "Ext")
+        os.makedirs(mod_dir)
+        with open(os.path.join(mod_dir, "Module.bsl"), "w", encoding="utf-8") as f:
+            f.write(BSL_CODE)
+        # Need 3+ objects with "ктн" prefix for auto-detect threshold
+        for name in ["ктнМодуль2", "ктнМодуль3"]:
+            d = os.path.join(tmpdir, "CommonModules", name, "Ext")
+            os.makedirs(d)
+            with open(os.path.join(d, "Module.bsl"), "w", encoding="utf-8") as f:
+                f.write("// stub\n")
+
+        sub_dir = os.path.join(tmpdir, "EventSubscriptions")
+        os.makedirs(sub_dir)
+        with open(os.path.join(sub_dir, "ЗаписатьВерсию.xml"), "w", encoding="utf-8") as f:
+            f.write(EVENT_SUB_CF_XML)
+        with open(os.path.join(sub_dir, "ктнПередЗаписью.xml"), "w", encoding="utf-8") as f:
+            f.write(EVENT_SUB_CATCHALL_XML)
+        with open(os.path.join(tmpdir, "Configuration.xml"), "w") as f:
+            f.write("<Configuration/>")
+
+        helpers, resolve_safe = make_helpers(tmpdir)
+        format_info = detect_format(tmpdir)
+        bsl = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=resolve_safe,
+            read_file_fn=helpers["read_file"],
+            grep_fn=helpers["grep"],
+            glob_files_fn=helpers["glob_files"],
+            format_info=format_info,
+        )
+
+        # Without custom_only — should return both
+        all_subs = bsl["find_event_subscriptions"]()
+        assert len(all_subs) == 2
+
+        # With custom_only — should return only "ктн" prefixed
+        custom_subs = bsl["find_event_subscriptions"]("", custom_only=True)
+        assert len(custom_subs) == 1
+        assert custom_subs[0]["name"] == "ктнПередЗаписьюДокумента"

@@ -112,24 +112,32 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "=== Step 4: Verify ===" -ForegroundColor Cyan
-Start-Sleep -Seconds 3
+Write-Host "Waiting for server to start (watchdog may need up to 10s)..."
 
 $url = "http://${BindHost}:${Port}/mcp"
 $ok = $false
-try {
-    $response = Invoke-WebRequest -Uri $url -Method GET -TimeoutSec 5 -ErrorAction Stop
-    Write-Host "Server responding (HTTP $($response.StatusCode)). OK." -ForegroundColor Green
-    $ok = $true
-} catch {
-    if ($null -ne $_.Exception.Response) {
-        $code = [int]$_.Exception.Response.StatusCode
-        Write-Host "Server responding (HTTP $code). OK." -ForegroundColor Green
+for ($attempt = 1; $attempt -le 4; $attempt++) {
+    Start-Sleep -Seconds 3
+    try {
+        $response = Invoke-WebRequest -Uri $url -Method GET -TimeoutSec 5 -ErrorAction Stop
+        Write-Host "Server responding (HTTP $($response.StatusCode)). OK." -ForegroundColor Green
         $ok = $true
+        break
+    } catch {
+        if ($null -ne $_.Exception.Response) {
+            $code = [int]$_.Exception.Response.StatusCode
+            Write-Host "Server responding (HTTP $code). OK." -ForegroundColor Green
+            $ok = $true
+            break
+        }
+        if ($attempt -lt 4) {
+            Write-Host "  Attempt $attempt/4: not ready yet, retrying..." -ForegroundColor Yellow
+        }
     }
 }
 
 if (-not $ok) {
-    Write-Warning "Server not responding at $url"
+    Write-Warning "Server not responding at $url after 4 attempts"
     Write-Warning "Check: rlm-tools-bsl service status"
     Write-Warning "Logs:  ~/.config/rlm-tools-bsl/logs/server.log"
     exit 1
