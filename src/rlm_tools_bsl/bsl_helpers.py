@@ -2223,8 +2223,45 @@ def make_bsl_helpers(
         # Fallback: show all recipes
         return bsl_help("")
 
+    def detect_extensions() -> dict:
+        """Обнаружить расширения рядом и текущую роль конфигурации."""
+        from rlm_tools_bsl.extension_detector import detect_extension_context as _det
+        ctx = _det(base_path)
+        result = {
+            "config_role": ctx.current.role.value,
+            "config_name": ctx.current.name,
+            "config_prefix": ctx.current.name_prefix,
+            "warnings": ctx.warnings,
+            "nearby_extensions": [
+                {"name": e.name, "purpose": e.purpose,
+                 "prefix": e.name_prefix, "path": e.path}
+                for e in ctx.nearby_extensions
+            ],
+            "nearby_main": None,
+        }
+        if ctx.nearby_main:
+            result["nearby_main"] = {
+                "name": ctx.nearby_main.name, "path": ctx.nearby_main.path,
+            }
+        return result
+
+    def find_ext_overrides(extension_path: str, object_name: str = "") -> dict:
+        """Найти перехваченные методы в расширении.
+        extension_path — путь к расширению (из detect_extensions).
+        object_name — имя объекта для прицельного поиска ('' = все)."""
+        from rlm_tools_bsl.extension_detector import find_extension_overrides as _feo
+        overrides = _feo(extension_path, object_name or None)
+        return {
+            "extension_path": extension_path,
+            "object_filter": object_name or "(all)",
+            "overrides": overrides[:200],
+            "total": len(overrides),
+        }
+
     return {
         "_detected_prefixes": _ensure_prefixes,
+        "detect_extensions": detect_extensions,
+        "find_ext_overrides": find_ext_overrides,
         "help": bsl_help,
         "find_module": find_module,
         "find_by_type": find_by_type,

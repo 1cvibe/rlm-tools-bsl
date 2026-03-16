@@ -17,6 +17,7 @@ from rlm_tools_bsl.session import SessionManager
 from rlm_tools_bsl.sandbox import Sandbox
 from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched
 from rlm_tools_bsl.format_detector import detect_format
+from rlm_tools_bsl.extension_detector import detect_extension_context
 from rlm_tools_bsl.bsl_knowledge import (
     EFFORT_LEVELS,
     RLM_EXECUTE_DESCRIPTION,
@@ -223,9 +224,11 @@ def _rlm_start(
         metadata = _scan_metadata(resolved) if include_metadata else {}
 
         format_info = detect_format(resolved)
+        ext_context = detect_extension_context(resolved)
         logger.info(
-            "rlm_start: session=%s format=%s bsl_files=%d",
+            "rlm_start: session=%s format=%s bsl_files=%d config_role=%s",
             session_id, format_info.format_label, format_info.bsl_file_count,
+            ext_context.current.role.value,
         )
         sandbox = Sandbox(
             base_path=resolved,
@@ -245,7 +248,7 @@ def _rlm_start(
             except Exception:
                 pass
 
-        strategy = get_strategy(effort, format_info, detected_prefixes)
+        strategy = get_strategy(effort, format_info, detected_prefixes, ext_context)
 
         with _sandboxes_lock:
             _sandboxes[session_id] = sandbox
@@ -258,6 +261,8 @@ def _rlm_start(
         )
 
     available_functions = [
+        "detect_extensions() -> dict  # обнаружить расширения рядом, их имена/пути/префиксы",
+        "find_ext_overrides(extension_path, object_name='') -> dict  # перехваты в расширении (&Перед/&После/&Вместо/&ИзменениеИКонтроль); object_name для прицельного поиска",
         "help(task='') -> str  # get recipe for your task, e.g. help('find exports') or help('движения')",
         "find_module(name) -> list[dict] keys: path, category, object_name, module_type",
         "find_by_type(category, name='') -> list[dict]. Categories: CommonModules, Documents, Catalogs, InformationRegisters, AccumulationRegisters, Reports, DataProcessors",
@@ -298,7 +303,25 @@ def _rlm_start(
 
     response: dict = {
         "session_id": session_id,
+        "warnings": ext_context.warnings,
         "config_format": format_info.format_label,
+        "extension_context": {
+            "is_extension": ext_context.current.role.value == "extension",
+            "config_role": ext_context.current.role.value,
+            "current_name": ext_context.current.name,
+            "current_purpose": ext_context.current.purpose or None,
+            "current_prefix": ext_context.current.name_prefix or None,
+            "nearby_extensions": [
+                {"name": e.name, "purpose": e.purpose,
+                 "prefix": e.name_prefix, "path": e.path}
+                for e in ext_context.nearby_extensions
+            ],
+            "nearby_main": (
+                {"name": ext_context.nearby_main.name,
+                 "path": ext_context.nearby_main.path}
+                if ext_context.nearby_main else None
+            ),
+        },
         "detected_custom_prefixes": detected_prefixes,
         "metadata": metadata,
         "limits": {
@@ -378,6 +401,7 @@ def _rlm_execute(
             "find_based_on_documents", "find_print_forms",
             "find_functional_options", "find_roles", "find_enum_values",
             "_detected_prefixes",
+            "detect_extensions", "find_ext_overrides",
             "llm_query", "llm_query_batched",
         }
         new_vars = sorted(

@@ -263,6 +263,96 @@ def test_full_detail_excludes_helper_functions_from_variables():
         _rlm_end(session_id)
 
 
+def test_extension_context_main_with_nearby_extension():
+    """rlm_start returns extension_context with nearby extensions for main config."""
+    import textwrap
+    with tempfile.TemporaryDirectory() as parent:
+        main_dir = os.path.join(parent, "main")
+        ext_dir = os.path.join(parent, "ext")
+        os.makedirs(main_dir)
+        os.makedirs(ext_dir)
+
+        # Main config
+        with open(os.path.join(main_dir, "Configuration.xml"), "w", encoding="utf-8") as f:
+            f.write(textwrap.dedent("""\
+                <?xml version="1.0" encoding="UTF-8"?>
+                <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+                    <Configuration uuid="00000000-0000-0000-0000-000000000001">
+                        <Properties>
+                            <Name>Основная</Name>
+                            <NamePrefix/>
+                        </Properties>
+                    </Configuration>
+                </MetaDataObject>
+            """))
+
+        # Extension
+        with open(os.path.join(ext_dir, "Configuration.xml"), "w", encoding="utf-8") as f:
+            f.write(textwrap.dedent("""\
+                <?xml version="1.0" encoding="UTF-8"?>
+                <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+                    <Configuration uuid="00000000-0000-0000-0000-000000000002">
+                        <Properties>
+                            <ObjectBelonging>Adopted</ObjectBelonging>
+                            <Name>МоёРасш</Name>
+                            <ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose>
+                            <NamePrefix>мр_</NamePrefix>
+                        </Properties>
+                    </Configuration>
+                </MetaDataObject>
+            """))
+
+        result = _rlm_start(path=main_dir, query="test ext context")
+        data = json.loads(result)
+
+        assert "extension_context" in data
+        ec = data["extension_context"]
+        assert ec["is_extension"] is False
+        assert ec["config_role"] == "main"
+        assert len(ec["nearby_extensions"]) == 1
+        assert ec["nearby_extensions"][0]["name"] == "МоёРасш"
+        assert ec["nearby_extensions"][0]["purpose"] == "AddOn"
+        # warnings are at top level, not inside extension_context
+        assert len(data["warnings"]) > 0
+
+        _rlm_end(data["session_id"])
+
+
+def test_extension_context_for_extension():
+    """rlm_start for extension shows is_extension=True."""
+    import textwrap
+    with tempfile.TemporaryDirectory() as parent:
+        ext_dir = os.path.join(parent, "myext")
+        os.makedirs(ext_dir)
+
+        with open(os.path.join(ext_dir, "Configuration.xml"), "w", encoding="utf-8") as f:
+            f.write(textwrap.dedent("""\
+                <?xml version="1.0" encoding="UTF-8"?>
+                <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+                    <Configuration uuid="00000000-0000-0000-0000-000000000003">
+                        <Properties>
+                            <ObjectBelonging>Adopted</ObjectBelonging>
+                            <Name>Расширение1</Name>
+                            <ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>
+                            <NamePrefix>р1_</NamePrefix>
+                        </Properties>
+                    </Configuration>
+                </MetaDataObject>
+            """))
+
+        result = _rlm_start(path=ext_dir, query="test ext")
+        data = json.loads(result)
+
+        ec = data["extension_context"]
+        assert ec["is_extension"] is True
+        assert ec["config_role"] == "extension"
+        assert ec["current_name"] == "Расширение1"
+        assert ec["current_purpose"] == "Customization"
+        assert ec["current_prefix"] == "р1_"
+
+        _rlm_end(data["session_id"])
+
+
 def test_config_format_returned():
     with tempfile.TemporaryDirectory() as tmpdir:
         open(os.path.join(tmpdir, "script.bsl"), "w").close()

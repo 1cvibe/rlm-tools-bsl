@@ -136,11 +136,34 @@ LLM_QUERY TIPS (when llm_query is available):
 """
 
 
-def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None) -> str:
+def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None, extension_context=None) -> str:
     config = EFFORT_LEVELS.get(effort, EFFORT_LEVELS["medium"])
 
-    parts = [_BASE_STRATEGY]
+    # --- Table of contents (always first) ---
+    toc_items = ["CRITICAL WARNINGS", "EFFORT & LIMITS"]
+    has_extensions = (
+        extension_context is not None
+        and extension_context.current.role.value != "unknown"
+        and (extension_context.current.role.value == "extension"
+             or extension_context.nearby_extensions)
+    )
+    if has_extensions:
+        toc_items.insert(0, "EXTENSION ALERT")
+    if detected_prefixes:
+        toc_items.append("CUSTOM PREFIXES")
+    toc_items.extend(["FORMAT & PATHS", "RECIPES", "RETURN FORMATS", "HELPERS LIST"])
 
+    toc = "STRATEGY SECTIONS: " + " > ".join(toc_items)
+    parts = [toc]
+
+    # --- Extension alert (BEFORE everything else if present) ---
+    if has_extensions:
+        parts.append(_extension_strategy(extension_context))
+
+    # --- Base strategy (critical warnings, recipes, helpers) ---
+    parts.append(_BASE_STRATEGY)
+
+    # --- Custom prefixes ---
     if detected_prefixes:
         parts.append(
             f"\nDETECTED CUSTOM PREFIXES: {detected_prefixes}\n"
@@ -149,6 +172,7 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
             "find_custom_modifications() uses them automatically."
         )
 
+    # --- Effort & limits ---
     parts.append(f"\nEFFORT LEVEL: {effort}")
     parts.append(config.guidance)
     parts.append(
@@ -157,6 +181,7 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
         f"safe_grep_max_files={config.safe_grep_max_files}"
     )
 
+    # --- Format & paths ---
     if format_info is not None:
         fmt = getattr(format_info, "format_label", None)
         if fmt == "cf":
@@ -175,6 +200,60 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
             )
 
     return "\n".join(parts)
+
+
+def _extension_strategy(ext_context) -> str:
+    """Build strategy text for extension context."""
+    from rlm_tools_bsl.extension_detector import ConfigRole
+
+    current = ext_context.current
+    lines: list[str] = []
+
+    if current.role == ConfigRole.MAIN and ext_context.nearby_extensions:
+        ext_names = ", ".join(
+            f"{e.name or '?'} (prefix: {e.name_prefix or '—'})"
+            for e in ext_context.nearby_extensions
+        )
+        lines.append(
+            f"\nCRITICAL — EXTENSIONS DETECTED: {ext_names}\n"
+            "Extensions can OVERRIDE methods in this config via annotations:\n"
+            "  &Перед (Before), &После (After), &Вместо (Instead), &ИзменениеИКонтроль (ChangeAndValidate)\n"
+            "YOUR ANALYSIS MAY BE INCOMPLETE without checking extensions.\n"
+            "YOU MUST:\n"
+            "  1. When analyzing any object/module, call find_ext_overrides(ext_path, 'ObjectName')\n"
+            "     to check if extensions override its methods.\n"
+            "  2. In your final response, ALWAYS mention which methods are overridden by extensions.\n"
+            "  3. If the user did not ask about extensions, still note: 'Extensions exist that may\n"
+            "     modify this behavior' with the list of overridden methods.\n"
+            "Extension paths (use with find_ext_overrides):"
+        )
+        for e in ext_context.nearby_extensions:
+            lines.append(
+                f"  - '{e.path}' ({e.name}, {e.purpose or '?'})"
+            )
+
+    elif current.role == ConfigRole.EXTENSION:
+        name_label = current.name or "?"
+        purpose_label = current.purpose or "unknown"
+        prefix_label = current.name_prefix or "—"
+        lines.append(
+            f"\nCRITICAL — THIS IS AN EXTENSION, NOT A MAIN CONFIG.\n"
+            f"Extension: '{name_label}' (purpose: {purpose_label}, prefix: {prefix_label})\n"
+            "Objects with ObjectBelonging=Adopted are borrowed from the main config.\n"
+            "Annotations &Перед/&После/&Вместо/&ИзменениеИКонтроль intercept main config methods.\n"
+            "YOUR ANALYSIS IS INCOMPLETE without the main configuration.\n"
+            "YOU MUST:\n"
+            "  1. In your final response, clearly state that this is an EXTENSION, not the main config.\n"
+            "  2. Warn the user that analysis of extension code alone may be misleading.\n"
+            "  3. Call find_ext_overrides('', '') to list all intercepted methods in this extension."
+        )
+        if ext_context.nearby_main:
+            lines.append(
+                f"  Main config found nearby: {ext_context.nearby_main.name or '?'} "
+                f"at {ext_context.nearby_main.path}"
+            )
+
+    return "\n".join(lines)
 
 
 RLM_START_DESCRIPTION = (
