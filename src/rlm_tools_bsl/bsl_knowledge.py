@@ -111,7 +111,7 @@ LLM (if available):
 """
 
 
-def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None, extension_context=None) -> str:
+def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None, extension_context=None, ext_overrides: dict | None = None) -> str:
     config = EFFORT_LEVELS.get(effort, EFFORT_LEVELS["medium"])
 
     has_extensions = (
@@ -125,7 +125,7 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
 
     # --- Extension alert (BEFORE everything else if present) ---
     if has_extensions:
-        parts.append(_extension_strategy(extension_context))
+        parts.append(_extension_strategy(extension_context, ext_overrides or {}))
 
     # --- Base strategy (critical, workflow, helpers table) ---
     parts.append(_BASE_STRATEGY)
@@ -164,7 +164,7 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
     return "\n".join(parts)
 
 
-def _extension_strategy(ext_context) -> str:
+def _extension_strategy(ext_context, ext_overrides: dict) -> str:
     """Build strategy text for extension context."""
     from rlm_tools_bsl.extension_detector import ConfigRole
 
@@ -178,21 +178,16 @@ def _extension_strategy(ext_context) -> str:
         )
         lines.append(
             f"\nCRITICAL — EXTENSIONS DETECTED: {ext_names}\n"
-            "Extensions can OVERRIDE methods in this config via annotations:\n"
+            "Extensions OVERRIDE methods in this config via annotations:\n"
             "  &Перед (Before), &После (After), &Вместо (Instead), &ИзменениеИКонтроль (ChangeAndValidate)\n"
-            "YOUR ANALYSIS MAY BE INCOMPLETE without checking extensions.\n"
-            "YOU MUST:\n"
-            "  1. When analyzing any object/module, call find_ext_overrides(ext_path, 'ObjectName')\n"
-            "     to check if extensions override its methods.\n"
-            "  2. In your final response, ALWAYS mention which methods are overridden by extensions.\n"
-            "  3. If the user did not ask about extensions, still note: 'Extensions exist that may\n"
-            "     modify this behavior' with the list of overridden methods.\n"
-            "Extension paths (use with find_ext_overrides):"
+            "YOU MUST mention overridden methods in your response."
         )
+        # Include auto-scanned overrides per extension
         for e in ext_context.nearby_extensions:
-            lines.append(
-                f"  - '{e.path}' ({e.name}, {e.purpose or '?'})"
-            )
+            overrides = ext_overrides.get(e.path, [])
+            if overrides:
+                lines.append(f"\nOverrides by {e.name or '?'} ({len(overrides)} total):")
+                lines.extend(_format_overrides_summary(overrides))
 
     elif current.role == ConfigRole.EXTENSION:
         name_label = current.name or "?"
@@ -202,20 +197,42 @@ def _extension_strategy(ext_context) -> str:
             f"\nCRITICAL — THIS IS AN EXTENSION, NOT A MAIN CONFIG.\n"
             f"Extension: '{name_label}' (purpose: {purpose_label}, prefix: {prefix_label})\n"
             "Objects with ObjectBelonging=Adopted are borrowed from the main config.\n"
-            "Annotations &Перед/&После/&Вместо/&ИзменениеИКонтроль intercept main config methods.\n"
             "YOUR ANALYSIS IS INCOMPLETE without the main configuration.\n"
             "YOU MUST:\n"
-            "  1. In your final response, clearly state that this is an EXTENSION, not the main config.\n"
-            "  2. Warn the user that analysis of extension code alone may be misleading.\n"
-            "  3. Call find_ext_overrides('', '') to list all intercepted methods in this extension."
+            "  1. In your response, clearly state that this is an EXTENSION.\n"
+            "  2. Warn the user that analysis without the main config may be misleading."
         )
         if ext_context.nearby_main:
             lines.append(
                 f"  Main config found nearby: {ext_context.nearby_main.name or '?'} "
                 f"at {ext_context.nearby_main.path}"
             )
+        # Include auto-scanned own overrides
+        overrides = ext_overrides.get("self", [])
+        if overrides:
+            lines.append(f"\nThis extension intercepts {len(overrides)} methods:")
+            lines.extend(_format_overrides_summary(overrides))
 
     return "\n".join(lines)
+
+
+def _format_overrides_summary(overrides: list[dict], max_lines: int = 30) -> list[str]:
+    """Format overrides as compact grouped-by-object lines."""
+    from collections import defaultdict
+    by_object: dict[str, list[str]] = defaultdict(list)
+    for o in overrides:
+        obj = o.get("object_name") or "?"
+        ann = o.get("annotation", "?")
+        target = o.get("target_method", "?")
+        by_object[obj].append(f"&{ann}(\"{target}\")")
+
+    lines: list[str] = []
+    for obj, annotations in sorted(by_object.items()):
+        lines.append(f"  {obj}: {', '.join(annotations)}")
+        if len(lines) >= max_lines:
+            lines.append(f"  ... and more (see extension_context.own_overrides or nearby_extensions[].overrides)")
+            break
+    return lines
 
 
 RLM_START_DESCRIPTION = (

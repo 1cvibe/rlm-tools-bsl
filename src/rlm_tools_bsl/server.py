@@ -17,7 +17,7 @@ from rlm_tools_bsl.session import SessionManager
 from rlm_tools_bsl.sandbox import Sandbox
 from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched
 from rlm_tools_bsl.format_detector import detect_format
-from rlm_tools_bsl.extension_detector import detect_extension_context
+from rlm_tools_bsl.extension_detector import detect_extension_context, find_extension_overrides
 from rlm_tools_bsl.bsl_knowledge import (
     EFFORT_LEVELS,
     RLM_EXECUTE_DESCRIPTION,
@@ -40,6 +40,35 @@ _sandboxes_lock = threading.Lock()
 
 
 from rlm_tools_bsl.helpers import _SKIP_DIRS, _BINARY_EXTENSIONS
+
+_MAX_OVERRIDES_IN_RESPONSE = 100
+
+
+def _auto_scan_overrides(ext_context) -> dict[str, list[dict]]:
+    """Auto-scan extension overrides during rlm_start.
+
+    Returns dict mapping extension path -> list of override dicts.
+    If current path is an extension, scans itself under key "self".
+    If main config with nearby extensions, scans each extension.
+    """
+    from rlm_tools_bsl.extension_detector import ConfigRole
+
+    result: dict[str, list[dict]] = {}
+    current = ext_context.current
+
+    try:
+        if current.role == ConfigRole.EXTENSION:
+            overrides = find_extension_overrides(current.path)
+            result["self"] = overrides[:_MAX_OVERRIDES_IN_RESPONSE]
+
+        elif current.role == ConfigRole.MAIN and ext_context.nearby_extensions:
+            for ext in ext_context.nearby_extensions:
+                overrides = find_extension_overrides(ext.path)
+                result[ext.path] = overrides[:_MAX_OVERRIDES_IN_RESPONSE]
+    except Exception:
+        pass  # non-critical, don't fail rlm_start
+
+    return result
 
 
 def _scan_metadata(path: str) -> dict:
@@ -225,10 +254,13 @@ def _rlm_start(
 
         format_info = detect_format(resolved)
         ext_context = detect_extension_context(resolved)
+        # Auto-scan extension overrides (extensions are small, <1s)
+        ext_overrides = _auto_scan_overrides(ext_context)
         logger.info(
-            "rlm_start: session=%s format=%s bsl_files=%d config_role=%s",
+            "rlm_start: session=%s format=%s bsl_files=%d config_role=%s overrides=%d",
             session_id, format_info.format_label, format_info.bsl_file_count,
             ext_context.current.role.value,
+            sum(len(v) for v in ext_overrides.values()),
         )
         sandbox = Sandbox(
             base_path=resolved,
@@ -248,7 +280,7 @@ def _rlm_start(
             except Exception:
                 pass
 
-        strategy = get_strategy(effort, format_info, detected_prefixes, ext_context)
+        strategy = get_strategy(effort, format_info, detected_prefixes, ext_context, ext_overrides)
 
         with _sandboxes_lock:
             _sandboxes[session_id] = sandbox
@@ -313,7 +345,8 @@ def _rlm_start(
             "current_prefix": ext_context.current.name_prefix or None,
             "nearby_extensions": [
                 {"name": e.name, "purpose": e.purpose,
-                 "prefix": e.name_prefix, "path": e.path}
+                 "prefix": e.name_prefix, "path": e.path,
+                 "overrides": ext_overrides.get(e.path, [])}
                 for e in ext_context.nearby_extensions
             ],
             "nearby_main": (
@@ -321,6 +354,7 @@ def _rlm_start(
                  "path": ext_context.nearby_main.path}
                 if ext_context.nearby_main else None
             ),
+            "own_overrides": ext_overrides.get("self", []) if ext_context.current.role.value == "extension" else None,
         },
         "detected_custom_prefixes": detected_prefixes,
         "metadata": metadata,
