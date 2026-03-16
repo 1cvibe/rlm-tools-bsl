@@ -4,12 +4,14 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+import threading
 import time
 
 from rlm_tools_bsl.format_detector import BslFileInfo
 
 CACHE_VERSION = 1
 _CACHE_BASE = pathlib.Path.home() / ".cache" / "rlm-tools-bsl"
+_disk_lock = threading.Lock()
 
 
 def _cache_dir(base_path: str) -> pathlib.Path:
@@ -87,7 +89,8 @@ def save_index(
             "saved_at": time.time(),
             "entries": [_entry_to_dict(p, i) for p, i in entries],
         }
-        with open(cache_dir / "file_index.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+        with _disk_lock:
+            with open(cache_dir / "file_index.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
     except OSError:
         pass

@@ -2,6 +2,7 @@ import collections
 import os
 import pathlib
 import re
+import threading
 
 _FILE_CACHE_MAX_SIZE = 500
 _GREP_CACHE_MAX_SIZE = 100
@@ -35,6 +36,7 @@ def _walk_files(root: pathlib.Path):
 def make_helpers(base_path: str) -> tuple[dict, callable]:
     base = pathlib.Path(base_path).resolve()
     _file_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
+    _file_cache_lock = threading.Lock()
 
     def _resolve_safe(path: str) -> pathlib.Path:
         resolved = (base / path).resolve()
@@ -48,13 +50,15 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         """Read file content as string. Returns str."""
         target = _resolve_safe(path)
         cache_key = str(target)
-        if cache_key in _file_cache:
-            _file_cache.move_to_end(cache_key)
-            return _file_cache[cache_key]
+        with _file_cache_lock:
+            if cache_key in _file_cache:
+                _file_cache.move_to_end(cache_key)
+                return _file_cache[cache_key]
         content = target.read_text(encoding="utf-8-sig", errors="replace")
-        _file_cache[cache_key] = content
-        if len(_file_cache) > _FILE_CACHE_MAX_SIZE:
-            _file_cache.popitem(last=False)
+        with _file_cache_lock:
+            _file_cache[cache_key] = content
+            if len(_file_cache) > _FILE_CACHE_MAX_SIZE:
+                _file_cache.popitem(last=False)
         return content
 
     def read_files(paths: list[str]) -> dict[str, str]:
@@ -68,6 +72,7 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         return result
 
     _grep_cache: collections.OrderedDict[tuple[str, str], list[dict]] = collections.OrderedDict()
+    _grep_cache_lock = threading.Lock()
 
     _BROAD_DIR_THRESHOLD = 5000
 
@@ -98,9 +103,10 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
     def grep(pattern: str, path: str = ".") -> list[dict]:
         """Search for regex pattern in files. Returns list of dicts {file, line, text}."""
         cache_key = (pattern, path)
-        if cache_key in _grep_cache:
-            _grep_cache.move_to_end(cache_key)
-            return _grep_cache[cache_key]
+        with _grep_cache_lock:
+            if cache_key in _grep_cache:
+                _grep_cache.move_to_end(cache_key)
+                return _grep_cache[cache_key]
 
         target = _resolve_safe(path)
         compiled = re.compile(pattern)
@@ -135,9 +141,10 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
             except (OSError, UnicodeDecodeError):
                 continue
 
-        _grep_cache[cache_key] = results
-        if len(_grep_cache) > _GREP_CACHE_MAX_SIZE:
-            _grep_cache.popitem(last=False)
+        with _grep_cache_lock:
+            _grep_cache[cache_key] = results
+            if len(_grep_cache) > _GREP_CACHE_MAX_SIZE:
+                _grep_cache.popitem(last=False)
         return results
 
     def grep_summary(pattern: str, path: str = ".") -> str:
@@ -269,16 +276,20 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
 
     _file_index: list[str] = []
     _file_index_built = [False]
+    _file_index_lock = threading.Lock()
 
     def _build_file_index():
         if _file_index_built[0]:
             return
-        for fpath in _walk_files(base):
-            try:
-                _file_index.append(str(fpath.relative_to(base)))
-            except ValueError:
-                continue
-        _file_index_built[0] = True
+        with _file_index_lock:
+            if _file_index_built[0]:
+                return
+            for fpath in _walk_files(base):
+                try:
+                    _file_index.append(str(fpath.relative_to(base)))
+                except ValueError:
+                    continue
+            _file_index_built[0] = True
 
     def find_files(name: str) -> list[str]:
         """Find files by substring match in relative path (case-insensitive)."""

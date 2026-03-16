@@ -2,6 +2,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import re
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from rlm_tools_bsl.format_detector import parse_bsl_path, BslFileInfo, FormatInfo, METADATA_CATEGORIES
@@ -786,65 +787,73 @@ def make_bsl_helpers(
     # Mutable closure state for lazy index
     _index_state: list = []          # list of tuples (relative_path, BslFileInfo)
     _index_built: list[bool] = [False]
+    _index_lock = threading.Lock()
 
     def _ensure_index() -> None:
         if _index_built[0]:
             return
-        all_bsl = glob_files_fn("**/*.bsl")
-        bsl_count = len(all_bsl)
+        with _index_lock:
+            if _index_built[0]:
+                return
+            all_bsl = glob_files_fn("**/*.bsl")
+            bsl_count = len(all_bsl)
 
-        cached = load_index(base_path, bsl_count, bsl_paths=all_bsl)
-        if cached is not None:
-            _index_state.extend(cached)
-        else:
-            for file_path in all_bsl:
-                info = parse_bsl_path(file_path, base_path)
-                _index_state.append((info.relative_path, info))
-            save_index(base_path, bsl_count, _index_state)
+            cached = load_index(base_path, bsl_count, bsl_paths=all_bsl)
+            if cached is not None:
+                _index_state.extend(cached)
+            else:
+                for file_path in all_bsl:
+                    info = parse_bsl_path(file_path, base_path)
+                    _index_state.append((info.relative_path, info))
+                save_index(base_path, bsl_count, _index_state)
 
-        _index_built[0] = True
+            _index_built[0] = True
 
     # --- Auto-detect custom prefixes from object names ---
     _detected_prefixes: list[str] = []
     _prefixes_built: list[bool] = [False]
+    _prefixes_lock = threading.Lock()
 
     def _ensure_prefixes() -> list[str]:
         if _prefixes_built[0]:
             return _detected_prefixes
-        _ensure_index()
+        with _prefixes_lock:
+            if _prefixes_built[0]:
+                return _detected_prefixes
+            _ensure_index()
 
-        # Collect unique object names from index
-        object_names: set[str] = set()
-        for _, info in _index_state:
-            if info.object_name:
-                object_names.add(info.object_name)
+            # Collect unique object names from index
+            object_names: set[str] = set()
+            for _, info in _index_state:
+                if info.object_name:
+                    object_names.add(info.object_name)
 
-        # Custom objects start with a lowercase letter in 1C conventions.
-        # Extract prefix: sequence of lowercase letters (+ optional _) before
-        # the first uppercase letter.
-        prefix_re = re.compile(r'^([a-zа-яё]+_?)')
-        prefix_counts: dict[str, int] = {}
-        for name in object_names:
-            if not name or not name[0].islower():
-                continue
-            m = prefix_re.match(name)
-            if m:
-                prefix = m.group(1)
-                # Normalize: strip trailing _ for counting, keep in result
-                key = prefix.rstrip("_").lower()
-                if len(key) >= 2:
-                    prefix_counts[key] = prefix_counts.get(key, 0) + 1
+            # Custom objects start with a lowercase letter in 1C conventions.
+            # Extract prefix: sequence of lowercase letters (+ optional _) before
+            # the first uppercase letter.
+            prefix_re = re.compile(r'^([a-zа-яё]+_?)')
+            prefix_counts: dict[str, int] = {}
+            for name in object_names:
+                if not name or not name[0].islower():
+                    continue
+                m = prefix_re.match(name)
+                if m:
+                    prefix = m.group(1)
+                    # Normalize: strip trailing _ for counting, keep in result
+                    key = prefix.rstrip("_").lower()
+                    if len(key) >= 2:
+                        prefix_counts[key] = prefix_counts.get(key, 0) + 1
 
-        # Keep prefixes that appear 3+ times (not random one-off names)
-        frequent = sorted(
-            ((k, v) for k, v in prefix_counts.items() if v >= 3),
-            key=lambda x: -x[1],
-        )
-        _detected_prefixes.clear()
-        _detected_prefixes.extend(k for k, _ in frequent)
+            # Keep prefixes that appear 3+ times (not random one-off names)
+            frequent = sorted(
+                ((k, v) for k, v in prefix_counts.items() if v >= 3),
+                key=lambda x: -x[1],
+            )
+            _detected_prefixes.clear()
+            _detected_prefixes.extend(k for k, _ in frequent)
 
-        _prefixes_built[0] = True
-        return _detected_prefixes
+            _prefixes_built[0] = True
+            return _detected_prefixes
 
     # --- Strip 1C metadata type prefixes from object names ---
     # Models often pass "Документ.РеализацияТоваровУслуг" instead of "РеализацияТоваровУслуг"
@@ -928,14 +937,16 @@ def make_bsl_helpers(
 
     _proc_cache: dict[str, list[dict]] = {}
     _prefilter_cache: dict[str, list[tuple[str, BslFileInfo]]] = {}
+    _cache_lock = threading.Lock()
 
     def extract_procedures(path: str) -> list[dict]:
         """Parse BSL file and return list of procedures/functions with metadata.
         Results are memoized per file path within the session.
 
         Returns: list of dicts {name, type, line, end_line, is_export, params}."""
-        if path in _proc_cache:
-            return _proc_cache[path]
+        with _cache_lock:
+            if path in _proc_cache:
+                return _proc_cache[path]
 
         content = read_file_fn(path)
         lines = content.splitlines()
@@ -976,7 +987,8 @@ def make_bsl_helpers(
             current["end_line"] = len(lines)
             procedures.append(current)
 
-        _proc_cache[path] = procedures
+        with _cache_lock:
+            _proc_cache[path] = procedures
         return procedures
 
     def find_exports(path: str) -> list[dict]:
@@ -1159,13 +1171,18 @@ def make_bsl_helpers(
                         filtered_files.append((rel, info))
                 except Exception:
                     pass
-        elif proc_lower in _prefilter_cache:
-            filtered_files = _prefilter_cache[proc_lower]
         else:
-            filtered_files = _parallel_prefilter(
-                candidate_files, proc_lower, base_path,
-            )
-            _prefilter_cache[proc_lower] = filtered_files
+            with _cache_lock:
+                if proc_lower in _prefilter_cache:
+                    filtered_files = _prefilter_cache[proc_lower]
+                else:
+                    filtered_files = None
+            if filtered_files is None:
+                filtered_files = _parallel_prefilter(
+                    candidate_files, proc_lower, base_path,
+                )
+                with _cache_lock:
+                    _prefilter_cache[proc_lower] = filtered_files
 
         total_files = len(filtered_files)
 
