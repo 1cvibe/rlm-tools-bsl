@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 rlm-tools-bsl = "rlm_tools_bsl.server:main"
+rlm-bsl-index = "rlm_tools_bsl.cli:main"
 
 [build-system]
 requires = ["hatchling"]

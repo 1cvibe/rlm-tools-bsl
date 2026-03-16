@@ -868,12 +868,12 @@ SCHEDULED_JOB_MDO_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <mdclass:ScheduledJob xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"
     uuid="f3be2107-0000-0000-0000-000000000001">
-  <name>бг_ОтправкаПодтверждения</name>
+  <name>ext_ОтправкаПодтверждения</name>
   <synonym>
     <key>ru</key>
     <value>Отправка подтверждения поставки</value>
   </synonym>
-  <methodName>CommonModule.битРегламентныеЗадания.ОтправкаПодтверждения</methodName>
+  <methodName>CommonModule.ext_РегламентныеЗадания.ОтправкаПодтверждения</methodName>
   <predefined>true</predefined>
   <restartCountOnFailure>3</restartCountOnFailure>
   <restartIntervalOnFailure>10</restartIntervalOnFailure>
@@ -918,8 +918,8 @@ FUNCTIONAL_OPTION_MDO_XML = """\
 <mdclass:FunctionalOption xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass">
   <name>ВестиСведенияДляДекларацийПоАлкогольнойПродукции</name>
   <location>Constant.ВестиСведенияДляДекларацийПоАлкогольнойПродукции</location>
-  <content>Document.битЗаявлениеОВыдачеФСМ</content>
-  <content>Document.битНакладнаяНаВыдачуФСМ</content>
+  <content>Document.ext_ЗаявлениеОВыдачеФСМ</content>
+  <content>Document.ext_НакладнаяНаВыдачуФСМ</content>
 </mdclass:FunctionalOption>
 """
 
@@ -983,8 +983,8 @@ def test_parse_functional_option_xml_edt():
     assert result["name"] == "ВестиСведенияДляДекларацийПоАлкогольнойПродукции"
     assert result["location"] == "Constant.ВестиСведенияДляДекларацийПоАлкогольнойПродукции"
     assert len(result["content"]) == 2
-    assert "Document.битЗаявлениеОВыдачеФСМ" in result["content"]
-    assert "Document.битНакладнаяНаВыдачуФСМ" in result["content"]
+    assert "Document.ext_ЗаявлениеОВыдачеФСМ" in result["content"]
+    assert "Document.ext_НакладнаяНаВыдачуФСМ" in result["content"]
 
 
 def test_parse_rights_xml():
@@ -1104,9 +1104,9 @@ def test_parse_cf_scheduled_job():
 def test_parse_mdo_scheduled_job():
     result = parse_scheduled_job_xml(SCHEDULED_JOB_MDO_XML)
     assert result is not None
-    assert result["name"] == "бг_ОтправкаПодтверждения"
+    assert result["name"] == "ext_ОтправкаПодтверждения"
     assert result["synonym"] == "Отправка подтверждения поставки"
-    assert result["method_name"] == "CommonModule.битРегламентныеЗадания.ОтправкаПодтверждения"
+    assert result["method_name"] == "CommonModule.ext_РегламентныеЗадания.ОтправкаПодтверждения"
     assert result["use"] is True  # EDT default
     assert result["predefined"] is True
     assert result["restart_on_failure"]["count"] == 3
