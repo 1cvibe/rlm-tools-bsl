@@ -280,7 +280,8 @@ def _rlm_start(
             except Exception:
                 pass
 
-        strategy = get_strategy(effort, format_info, detected_prefixes, ext_context, ext_overrides)
+        bsl_registry = sandbox._namespace.get("_registry") or {}
+        strategy = get_strategy(effort, format_info, detected_prefixes, ext_context, ext_overrides, registry=bsl_registry)
 
         with _sandboxes_lock:
             _sandboxes[session_id] = sandbox
@@ -292,32 +293,9 @@ def _rlm_start(
             ensure_ascii=False,
         )
 
-    available_functions = [
-        "detect_extensions() -> dict  # обнаружить расширения рядом, их имена/пути/префиксы",
-        "find_ext_overrides(extension_path, object_name='') -> dict  # перехваты в расширении (&Перед/&После/&Вместо/&ИзменениеИКонтроль); object_name для прицельного поиска",
-        "help(task='') -> str  # get recipe for your task, e.g. help('find exports') or help('движения')",
-        "find_module(name) -> list[dict] keys: path, category, object_name, module_type",
-        "find_by_type(category, name='') -> list[dict]. Categories: CommonModules, Documents, Catalogs, InformationRegisters, AccumulationRegisters, Reports, DataProcessors",
-        "find_exports(path) -> list[dict] keys: name, line, is_export, type, params",
-        "extract_procedures(path) -> list[dict] keys: name, type, line, end_line, is_export, params",
-        "find_callers_context(proc_name, module_hint='', offset=0, limit=50) -> {callers: [...], _meta: {total_files, has_more}}",
-        "find_callers(proc_name, module_hint='', max_files=20) -> list[dict] keys: file, line, text",
-        "safe_grep(pattern, name_hint='', max_files=20) -> list[dict] keys: file, line, text",
-        "read_procedure(path, proc_name) -> str|None",
-        "parse_object_xml(path) -> dict  # parse 1C metadata XML: attributes, tabular sections, dimensions, resources",
-        "analyze_subsystem(name) -> dict  # find subsystem, parse composition, classify custom/standard objects",
-        "find_custom_modifications(object_name, custom_prefixes=None) -> dict  # find custom code (uses auto-detected prefixes by default)",
-        "analyze_object(name) -> dict  # full object profile: XML metadata + all modules + procedures + exports",
-        "find_event_subscriptions(object_name='', custom_only=False) -> list[dict]  # event subscriptions; custom_only=True filters by detected prefixes",
-        "find_scheduled_jobs(name='') -> list[dict]  # scheduled (background) jobs",
-        "find_register_movements(document_name) -> dict  # which registers a document writes to",
-        "find_register_writers(register_name) -> dict  # which documents write to a register",
-        "analyze_document_flow(document_name) -> dict  # full document lifecycle analysis",
-        "find_based_on_documents(document_name) -> dict  # what docs can be created from/to this one",
-        "find_print_forms(object_name) -> dict  # print forms registered for object",
-        "find_functional_options(object_name) -> dict  # functional options referencing object",
-        "find_roles(object_name) -> dict  # roles with rights to object",
-        "find_enum_values(enum_name) -> dict  # enum values with synonyms",
+    # Build available_functions from registry (BSL helpers) + static IO helpers
+    available_functions = [entry["sig"] for entry in bsl_registry.values()]
+    available_functions.extend([
         "read_file(path) -> str",
         "read_files(paths) -> dict[path, content]",
         "grep(pattern, path='.') -> list[dict] keys: file, line, text",
@@ -326,7 +304,7 @@ def _rlm_start(
         "glob_files(pattern) -> list[str]",
         "tree(path='.', max_depth=3) -> str",
         "find_files(name) -> list[str]",
-    ]
+    ])
     if has_llm_tools:
         available_functions.extend([
             "llm_query(prompt, context='')",
@@ -420,22 +398,13 @@ def _rlm_execute(
     if detail_level == "full":
         current_vars = set(result.variables)
         previous_vars = getattr(session, "_last_reported_vars", set())
-        excluded_vars = {
+        # Build excluded_vars from registry + static helpers
+        bsl_reg = sandbox._namespace.get("_registry") or {}
+        excluded_vars = set(bsl_reg.keys()) | {
+            "_detected_prefixes", "_registry",
             "read_file", "read_files",
             "grep", "grep_summary", "grep_read",
             "glob_files", "tree", "find_files",
-            "find_module", "find_by_type",
-            "extract_procedures", "find_exports",
-            "safe_grep", "read_procedure", "find_callers", "parse_object_xml",
-            "help", "find_callers_context",
-            "analyze_subsystem", "find_custom_modifications", "analyze_object",
-            "find_event_subscriptions", "find_scheduled_jobs",
-            "find_register_movements", "find_register_writers",
-            "analyze_document_flow",
-            "find_based_on_documents", "find_print_forms",
-            "find_functional_options", "find_roles", "find_enum_values",
-            "_detected_prefixes",
-            "detect_extensions", "find_ext_overrides",
             "llm_query", "llm_query_batched",
         }
         new_vars = sorted(
@@ -465,7 +434,7 @@ def _rlm_end(session_id: str) -> str:
 async def rlm_start(
     path: Annotated[str, Field(description="Absolute path to the 1C BSL codebase directory")],
     query: Annotated[str, Field(description="What you want to find or analyze in the BSL codebase")],
-    effort: Annotated[str, Field(description="Analysis depth: low (quick lookup), medium (standard), high (deep trace), max (exhaustive)")] = "medium",
+    effort: Annotated[str, Field(description="Analysis depth: low (single quick lookup), medium (standard), high (deep trace, RECOMMENDED for multi-aspect analysis), max (exhaustive)")] = "high",
     max_output_chars: Annotated[int, Field(description="Max characters per execute output", ge=100, le=100_000)] = 15_000,
     max_llm_calls: Annotated[int | None, Field(description="Override max llm_query calls (default from effort level)")] = None,
     max_execute_calls: Annotated[int | None, Field(description="Override max rlm_execute calls (default from effort level)")] = None,

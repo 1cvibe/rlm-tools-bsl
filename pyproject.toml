@@ -1,10 +1,22 @@
 [project]
 name = "rlm-tools-bsl"
-version = "1.0.0"
+version = "1.1.0"
 description = "MCP server for token-efficient 1C BSL codebase analysis"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
+authors = [
+    { name = "Dach-Coin" },
+]
+keywords = ["1c", "bsl", "mcp", "code-analysis", "ai-tools"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "mcp[cli]>=1.2.0",
     "anthropic>=0.40.0",

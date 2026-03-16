@@ -103,13 +103,13 @@ def test_detect_main_cf():
 def test_detect_extension_cf():
     with tempfile.TemporaryDirectory() as d:
         _write(os.path.join(d, "Configuration.xml"),
-               _cf_extension_xml("БИТMDT", "AddOn", "битмдт_"))
+               _cf_extension_xml("МоёРасширение", "AddOn", "мр_"))
         info = _detect_single(d)
         assert info is not None
         assert info.role == ConfigRole.EXTENSION
-        assert info.name == "БИТMDT"
+        assert info.name == "МоёРасширение"
         assert info.purpose == "AddOn"
-        assert info.name_prefix == "битмдт_"
+        assert info.name_prefix == "мр_"
         assert info.source_format == "cf"
 
 

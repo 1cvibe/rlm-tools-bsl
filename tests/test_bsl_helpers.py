@@ -89,167 +89,135 @@ def _make_bsl_fixture(tmpdir):
 
 # --- find_module ---
 
-def test_find_module_by_name():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_module"]("МойМодуль")
-        assert len(results) >= 1
-        assert any(r["object_name"] == "МойМодуль" for r in results)
+def test_find_module_by_name(bsl_env):
+    results = bsl_env.bsl["find_module"]("МойМодуль")
+    assert len(results) >= 1
+    assert any(r["object_name"] == "МойМодуль" for r in results)
 
 
-def test_find_module_by_path_fragment():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_module"]("АвансовыйОтчет")
-        assert len(results) >= 1
+def test_find_module_by_path_fragment(bsl_env):
+    results = bsl_env.bsl["find_module"]("АвансовыйОтчет")
+    assert len(results) >= 1
 
 
-def test_find_module_case_insensitive():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_module"]("моймодуль")
-        assert len(results) >= 1
+def test_find_module_case_insensitive(bsl_env):
+    results = bsl_env.bsl["find_module"]("моймодуль")
+    assert len(results) >= 1
 
 
-def test_find_module_no_results():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_module"]("НесуществующийМодуль")
-        assert len(results) == 0
+def test_find_module_no_results(bsl_env):
+    results = bsl_env.bsl["find_module"]("НесуществующийМодуль")
+    assert len(results) == 0
 
 
 # --- find_by_type ---
 
-def test_find_by_type():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_by_type"]("Documents")
-        assert len(results) >= 1
-        assert all(r["category"] == "Documents" for r in results)
+def test_find_by_type(bsl_env):
+    results = bsl_env.bsl["find_by_type"]("Documents")
+    assert len(results) >= 1
+    assert all(r["category"] == "Documents" for r in results)
 
 
-def test_find_by_type_with_name():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_by_type"]("CommonModules", "МойМодуль")
-        assert len(results) >= 1
+def test_find_by_type_with_name(bsl_env):
+    results = bsl_env.bsl["find_by_type"]("CommonModules", "МойМодуль")
+    assert len(results) >= 1
 
 
 # --- extract_procedures ---
 
-def test_extract_procedures():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        # Find the module path first
-        modules = bsl["find_module"]("МойМодуль")
-        assert len(modules) >= 1
-        path = modules[0]["path"]
+def test_extract_procedures(bsl_env):
+    # Find the module path first
+    modules = bsl_env.bsl["find_module"]("МойМодуль")
+    assert len(modules) >= 1
+    path = modules[0]["path"]
 
-        procs = bsl["extract_procedures"](path)
-        assert len(procs) == 3
-        names = [p["name"] for p in procs]
-        assert "ЗаполнитьДанные" in names
-        assert "ПолучитьСумму" in names
-        assert "ВнутренняяПроцедура" in names
+    procs = bsl_env.bsl["extract_procedures"](path)
+    assert len(procs) == 3
+    names = [p["name"] for p in procs]
+    assert "ЗаполнитьДанные" in names
+    assert "ПолучитьСумму" in names
+    assert "ВнутренняяПроцедура" in names
 
 
-def test_extract_procedures_export_flag():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        modules = bsl["find_module"]("МойМодуль")
-        path = modules[0]["path"]
+def test_extract_procedures_export_flag(bsl_env):
+    modules = bsl_env.bsl["find_module"]("МойМодуль")
+    path = modules[0]["path"]
 
-        procs = bsl["extract_procedures"](path)
-        by_name = {p["name"]: p for p in procs}
-        assert by_name["ЗаполнитьДанные"]["is_export"] is True
-        assert by_name["ПолучитьСумму"]["is_export"] is True
-        assert by_name["ВнутренняяПроцедура"]["is_export"] is False
+    procs = bsl_env.bsl["extract_procedures"](path)
+    by_name = {p["name"]: p for p in procs}
+    assert by_name["ЗаполнитьДанные"]["is_export"] is True
+    assert by_name["ПолучитьСумму"]["is_export"] is True
+    assert by_name["ВнутренняяПроцедура"]["is_export"] is False
 
 
-def test_extract_procedures_has_end_line():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        modules = bsl["find_module"]("МойМодуль")
-        path = modules[0]["path"]
+def test_extract_procedures_has_end_line(bsl_env):
+    modules = bsl_env.bsl["find_module"]("МойМодуль")
+    path = modules[0]["path"]
 
-        procs = bsl["extract_procedures"](path)
-        for p in procs:
-            assert p["end_line"] is not None
-            assert p["end_line"] > p["line"]
+    procs = bsl_env.bsl["extract_procedures"](path)
+    for p in procs:
+        assert p["end_line"] is not None
+        assert p["end_line"] > p["line"]
 
 
 # --- find_exports ---
 
-def test_find_exports():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        modules = bsl["find_module"]("МойМодуль")
-        path = modules[0]["path"]
+def test_find_exports(bsl_env):
+    modules = bsl_env.bsl["find_module"]("МойМодуль")
+    path = modules[0]["path"]
 
-        exports = bsl["find_exports"](path)
-        assert len(exports) == 2
-        names = [e["name"] for e in exports]
-        assert "ЗаполнитьДанные" in names
-        assert "ПолучитьСумму" in names
-        assert "ВнутренняяПроцедура" not in names
+    exports = bsl_env.bsl["find_exports"](path)
+    assert len(exports) == 2
+    names = [e["name"] for e in exports]
+    assert "ЗаполнитьДанные" in names
+    assert "ПолучитьСумму" in names
+    assert "ВнутренняяПроцедура" not in names
 
 
 # --- safe_grep ---
 
-def test_safe_grep_with_hint():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["safe_grep"]("ЗаполнитьДанные", name_hint="АвансовыйОтчет")
-        assert len(results) >= 1
+def test_safe_grep_with_hint(bsl_env):
+    results = bsl_env.bsl["safe_grep"]("ЗаполнитьДанные", name_hint="АвансовыйОтчет")
+    assert len(results) >= 1
 
 
-def test_safe_grep_without_hint():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["safe_grep"]("Процедура")
-        assert len(results) >= 1
+def test_safe_grep_without_hint(bsl_env):
+    results = bsl_env.bsl["safe_grep"]("Процедура")
+    assert len(results) >= 1
 
 
 # --- read_procedure ---
 
-def test_read_procedure():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        modules = bsl["find_module"]("МойМодуль")
-        path = modules[0]["path"]
+def test_read_procedure(bsl_env):
+    modules = bsl_env.bsl["find_module"]("МойМодуль")
+    path = modules[0]["path"]
 
-        body = bsl["read_procedure"](path, "ЗаполнитьДанные")
-        assert body is not None
-        assert "ЗаполнитьДанные" in body
-        assert "КонецПроцедуры" in body
+    body = bsl_env.bsl["read_procedure"](path, "ЗаполнитьДанные")
+    assert body is not None
+    assert "ЗаполнитьДанные" in body
+    assert "КонецПроцедуры" in body
 
 
-def test_read_procedure_not_found():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        modules = bsl["find_module"]("МойМодуль")
-        path = modules[0]["path"]
+def test_read_procedure_not_found(bsl_env):
+    modules = bsl_env.bsl["find_module"]("МойМодуль")
+    path = modules[0]["path"]
 
-        body = bsl["read_procedure"](path, "НесуществующаяПроцедура")
-        assert body is None
+    body = bsl_env.bsl["read_procedure"](path, "НесуществующаяПроцедура")
+    assert body is None
 
 
 # --- find_callers ---
 
-def test_find_callers():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_callers"]("ЗаполнитьДанные")
-        assert len(results) >= 1
-        # Should find the call in АвансовыйОтчет
-        assert any("АвансовыйОтчет" in r.get("file", "") for r in results)
+def test_find_callers(bsl_env):
+    results = bsl_env.bsl["find_callers"]("ЗаполнитьДанные")
+    assert len(results) >= 1
+    # Should find the call in АвансовыйОтчет
+    assert any("АвансовыйОтчет" in r.get("file", "") for r in results)
 
 
-def test_find_callers_with_hint():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        results = bsl["find_callers"]("ЗаполнитьДанные", module_hint="АвансовыйОтчет")
-        assert len(results) >= 1
+def test_find_callers_with_hint(bsl_env):
+    results = bsl_env.bsl["find_callers"]("ЗаполнитьДанные", module_hint="АвансовыйОтчет")
+    assert len(results) >= 1
 
 
 # --- parse_metadata_xml / parse_object_xml ---
@@ -607,116 +575,98 @@ def test_parse_mdo_subsystem():
 
 # --- find_callers_context ---
 
-def test_find_callers_context_basic():
+def test_find_callers_context_basic(bsl_env):
     """Basic: finds caller with all required fields."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ЗаполнитьДанные")
-        callers = result["callers"]
-        assert len(callers) >= 1
-        c = callers[0]
-        # All required fields present
-        assert "file" in c
-        assert "caller_name" in c
-        assert "caller_is_export" in c
-        assert "line" in c
-        assert "context" in c
-        assert "object_name" in c
-        assert "category" in c
-        assert "module_type" in c
-        # Caller is ОбработкаЗаполнения
-        assert c["caller_name"] == "ОбработкаЗаполнения"
+    result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные")
+    callers = result["callers"]
+    assert len(callers) >= 1
+    c = callers[0]
+    # All required fields present
+    assert "file" in c
+    assert "caller_name" in c
+    assert "caller_is_export" in c
+    assert "line" in c
+    assert "context" in c
+    assert "object_name" in c
+    assert "category" in c
+    assert "module_type" in c
+    # Caller is ОбработкаЗаполнения
+    assert c["caller_name"] == "ОбработкаЗаполнения"
 
 
-def test_find_callers_context_with_hint():
+def test_find_callers_context_with_hint(bsl_env):
     """With module_hint: determines export scope, finds caller across files."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ЗаполнитьДанные", module_hint="МойМодуль")
-        callers = result["callers"]
-        assert len(callers) >= 1
-        assert any(c["caller_name"] == "ОбработкаЗаполнения" for c in callers)
+    result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные", module_hint="МойМодуль")
+    callers = result["callers"]
+    assert len(callers) >= 1
+    assert any(c["caller_name"] == "ОбработкаЗаполнения" for c in callers)
 
 
-def test_find_callers_context_no_callers():
+def test_find_callers_context_no_callers(bsl_env):
     """Internal procedure with no callers returns empty list."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ВнутренняяПроцедура")
-        assert result["callers"] == []
+    result = bsl_env.bsl["find_callers_context"]("ВнутренняяПроцедура")
+    assert result["callers"] == []
 
 
-def test_find_callers_context_ignores_comments():
+def test_find_callers_context_ignores_comments(bsl_env):
     """Calls in comments (// with and without space) should be ignored."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ЗаполнитьДанные")
-        caller_names = [c["caller_name"] for c in result["callers"]]
-        assert "НеВызывает" not in caller_names
+    result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные")
+    caller_names = [c["caller_name"] for c in result["callers"]]
+    assert "НеВызывает" not in caller_names
 
 
-def test_find_callers_context_ignores_strings():
+def test_find_callers_context_ignores_strings(bsl_env):
     """Calls inside string literals should be ignored."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ЗаполнитьДанные")
-        caller_names = [c["caller_name"] for c in result["callers"]]
-        # НеВызывает has the name only in a string literal (after comment lines are stripped)
-        assert "НеВызывает" not in caller_names
+    result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные")
+    caller_names = [c["caller_name"] for c in result["callers"]]
+    # НеВызывает has the name only in a string literal (after comment lines are stripped)
+    assert "НеВызывает" not in caller_names
 
 
-def test_find_callers_context_caller_metadata():
+def test_find_callers_context_caller_metadata(bsl_env):
     """Verify caller metadata: category, object_name, module_type."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ЗаполнитьДанные")
-        callers = result["callers"]
-        c = next(c for c in callers if c["caller_name"] == "ОбработкаЗаполнения")
-        assert c["category"] == "Documents"
-        assert c["object_name"] == "АвансовыйОтчет"
-        assert c["module_type"] == "ObjectModule"
+    result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные")
+    callers = result["callers"]
+    c = next(c for c in callers if c["caller_name"] == "ОбработкаЗаполнения")
+    assert c["category"] == "Documents"
+    assert c["object_name"] == "АвансовыйОтчет"
+    assert c["module_type"] == "ObjectModule"
 
 
-def test_find_callers_context_qualified_call():
+def test_find_callers_context_qualified_call(bsl_env):
     """Qualified call МойМодуль.ЗаполнитьДанные() is found by proc name alone."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ЗаполнитьДанные")
-        callers = result["callers"]
-        # The call is МойМодуль.ЗаполнитьДанные(1, 2) — should be found
-        assert any(
-            "МойМодуль.ЗаполнитьДанные" in c["context"]
-            for c in callers
-        )
+    result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные")
+    callers = result["callers"]
+    # The call is МойМодуль.ЗаполнитьДанные(1, 2) — should be found
+    assert any(
+        "МойМодуль.ЗаполнитьДанные" in c["context"]
+        for c in callers
+    )
 
 
-def test_find_callers_context_meta():
+def test_find_callers_context_meta(bsl_env):
     """Result contains _meta with total_files, scanned_files, has_more."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["find_callers_context"]("ЗаполнитьДанные")
-        meta = result["_meta"]
-        assert "total_files" in meta
-        assert "scanned_files" in meta
-        assert "has_more" in meta
-        assert meta["has_more"] is False  # small fixture, all scanned
+    result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные")
+    meta = result["_meta"]
+    assert "total_files" in meta
+    assert "scanned_files" in meta
+    assert "has_more" in meta
+    assert meta["has_more"] is False  # small fixture, all scanned
 
 
-def test_find_callers_context_pagination():
+def test_find_callers_context_pagination(bsl_env):
     """Pagination: limit=1 → has_more=True, offset=1 → next batch."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        # First page: limit=1
-        result1 = bsl["find_callers_context"]("ЗаполнитьДанные", limit=1)
-        meta1 = result1["_meta"]
-        if meta1["total_files"] > 1:
-            assert meta1["has_more"] is True
-            # Second page
-            result2 = bsl["find_callers_context"]("ЗаполнитьДанные", offset=1, limit=1)
-            assert result2["_meta"]["scanned_files"] >= 1
-        else:
-            # Only 1 file contains it — pagination not applicable, still valid
-            assert meta1["has_more"] is False
+    # First page: limit=1
+    result1 = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные", limit=1)
+    meta1 = result1["_meta"]
+    if meta1["total_files"] > 1:
+        assert meta1["has_more"] is True
+        # Second page
+        result2 = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные", offset=1, limit=1)
+        assert result2["_meta"]["scanned_files"] >= 1
+    else:
+        # Only 1 file contains it — pagination not applicable, still valid
+        assert meta1["has_more"] is False
 
 
 # --- Composite helpers ---
@@ -790,11 +740,9 @@ def test_analyze_subsystem_found():
         assert "ВнутреннееПотребление" in standard_names
 
 
-def test_analyze_subsystem_not_found():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["analyze_subsystem"]("НесуществующаяПодсистема")
-        assert "error" in result
+def test_analyze_subsystem_not_found(bsl_env):
+    result = bsl_env.bsl["analyze_subsystem"]("НесуществующаяПодсистема")
+    assert "error" in result
 
 
 BSL_CUSTOM_CODE = """\
@@ -844,16 +792,14 @@ def test_find_custom_modifications():
         assert "ктнДоработки" in region_names
 
 
-def test_analyze_object():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        result = bsl["analyze_object"]("МойМодуль")
-        assert result["name"] == "МойМодуль"
-        assert result["category"] == "CommonModules"
-        assert len(result["modules"]) >= 1
-        mod = result["modules"][0]
-        assert mod["procedures_count"] == 3
-        assert mod["exports_count"] == 2
+def test_analyze_object(bsl_env):
+    result = bsl_env.bsl["analyze_object"]("МойМодуль")
+    assert result["name"] == "МойМодуль"
+    assert result["category"] == "CommonModules"
+    assert len(result["modules"]) >= 1
+    mod = result["modules"][0]
+    assert mod["procedures_count"] == 3
+    assert mod["exports_count"] == 2
 
 
 # === EventSubscription / ScheduledJob XML parsers ===
@@ -1540,15 +1486,13 @@ def test_help_functional_options():
 
 # === Auto-strip metadata type prefix ===
 
-def test_strip_meta_prefix_find_module():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bsl, _ = _make_bsl_fixture(tmpdir)
-        # With prefix
-        r1 = bsl["find_module"]("Документ.МойМодуль")
-        # Without prefix
-        r2 = bsl["find_module"]("МойМодуль")
-        assert len(r1) == len(r2)
-        assert r1[0]["object_name"] == r2[0]["object_name"]
+def test_strip_meta_prefix_find_module(bsl_env):
+    # With prefix
+    r1 = bsl_env.bsl["find_module"]("Документ.МойМодуль")
+    # Without prefix
+    r2 = bsl_env.bsl["find_module"]("МойМодуль")
+    assert len(r1) == len(r2)
+    assert r1[0]["object_name"] == r2[0]["object_name"]
 
 
 def test_strip_meta_prefix_find_register_movements():
@@ -1683,3 +1627,78 @@ def test_find_event_subscriptions_custom_only():
         custom_subs = bsl["find_event_subscriptions"]("", custom_only=True)
         assert len(custom_subs) == 1
         assert custom_subs[0]["name"] == "ктнПередЗаписьюДокумента"
+
+
+# ── extract_queries tests ─────────────────────────────────────
+
+def test_extract_queries_basic():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        mod_dir = os.path.join(tmpdir, "Documents", "ТестовыйДокумент", "Ext")
+        os.makedirs(mod_dir, exist_ok=True)
+        bsl_path = os.path.join(mod_dir, "ObjectModule.bsl")
+        with open(bsl_path, "w", encoding="utf-8-sig") as f:
+            f.write(
+                'Процедура ОбработкаПроведения(Отказ)\n'
+                '    Запрос = Новый Запрос;\n'
+                '    Запрос.Текст = "ВЫБРАТЬ\n'
+                '    |    Т.Ссылка\n'
+                '    |ИЗ\n'
+                '    |    РегистрНакопления.ТоварыНаСкладах КАК Т\n'
+                '    |    СОЕДИНЕНИЕ Справочник.Номенклатура КАК Н\n'
+                '    |    ПО Т.Номенклатура = Н.Ссылка";\n'
+                'КонецПроцедуры\n'
+            )
+        rel_path = os.path.relpath(bsl_path, tmpdir).replace("\\", "/")
+        queries = bsl["extract_queries"](rel_path)
+        assert len(queries) >= 1
+        q = queries[0]
+        assert q["procedure"] == "ОбработкаПроведения"
+        assert "РегистрНакопления.ТоварыНаСкладах" in q["tables"]
+        assert "Справочник.Номенклатура" in q["tables"]
+        assert "text_preview" in q
+
+
+def test_extract_queries_no_queries():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        modules = bsl["find_module"]("МойМодуль")
+        assert modules
+        queries = bsl["extract_queries"](modules[0]["path"])
+        assert queries == []
+
+
+# ── code_metrics tests ────────────────────────────────────────
+
+def test_code_metrics_basic():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture(tmpdir)
+        mod_dir = os.path.join(tmpdir, "CommonModules", "МетрикиТест", "Ext")
+        os.makedirs(mod_dir, exist_ok=True)
+        bsl_path = os.path.join(mod_dir, "Module.bsl")
+        with open(bsl_path, "w", encoding="utf-8-sig") as f:
+            f.write(
+                '// Комментарий\n'
+                '\n'
+                'Процедура Тест1() Экспорт\n'
+                '    Если Истина Тогда\n'
+                '        Для Каждого Элемент Из Список Цикл\n'
+                '            Сообщить(Элемент);\n'
+                '        КонецЦикла;\n'
+                '    КонецЕсли;\n'
+                'КонецПроцедуры\n'
+                '\n'
+                'Функция Тест2()\n'
+                '    Возврат 1;\n'
+                'КонецФункции\n'
+            )
+        rel_path = os.path.relpath(bsl_path, tmpdir).replace("\\", "/")
+        m = bsl["code_metrics"](rel_path)
+        assert m["total_lines"] == 13
+        assert m["comment_lines"] == 1
+        assert m["empty_lines"] == 2
+        assert m["code_lines"] == 10
+        assert m["procedures_count"] == 2
+        assert m["exports_count"] == 1
+        assert m["max_nesting"] == 2  # Если + Для
+        assert m["avg_proc_size"] > 0

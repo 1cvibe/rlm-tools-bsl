@@ -28,11 +28,11 @@ class EffortConfig:
 EFFORT_LEVELS = {
     "low":    EffortConfig(10,  5,   5,  "Quick lookup. Find target module, extract what's needed, stop. Target: 3-5 rlm_execute calls."),
     "medium": EffortConfig(25,  15,  10, "Standard analysis. Find modules, trace 1-2 levels of calls, summarize. Target: 10-15 calls."),
-    "high":   EffortConfig(50,  30,  20, "Deep analysis. Multi-module trace (3-4 levels), data flow, complete picture. Target: 20-30 calls. Build mermaid diagram."),
+    "high":   EffortConfig(50,  30,  20, "Deep analysis (RECOMMENDED for multi-aspect tasks). Multi-module trace (3-4 levels), data flow, complete picture. Target: 20-30 calls. Build mermaid diagram."),
     "max":    EffortConfig(100, 50,  50, "Exhaustive mapping. All modules, all call chains, all data flows. Use llm_query() for semantic analysis. Target: 40-50+ calls."),
 }
 
-_BASE_STRATEGY = """\
+_STRATEGY_HEADER = """\
 You are exploring a 1C BSL codebase via Python sandbox.
 Write Python code in rlm_execute. Use print() to output results.
 
@@ -68,50 +68,56 @@ Step 5 — EXTENSIONS: check if behavior is modified
   If extensions detected (see warnings): find_ext_overrides(ext_path, 'ObjectName')
   In your response: ALWAYS mention overridden methods if any were found
 
-Call help('keyword') for code recipes — e.g. help('exports'), help('movements'), help('flow')
+== BATCHING & OUTPUT ==
+Batch 3-5 related helpers per rlm_execute call — this is more efficient than one-at-a-time.
+If output is truncated (ends with '... [truncated]'), split into smaller calls.
+Print only summaries (counts, first N items) — never dump raw data.
 
-== HELPERS (call help('keyword') for usage examples and return formats) ==
-Module discovery:
-  find_module(name)                        → [{path, category, object_name, module_type}]
-  find_by_type(category, name='')          → same. Categories: Documents, Catalogs, CommonModules, InformationRegisters, AccumulationRegisters, Reports, DataProcessors
-Code analysis:
-  extract_procedures(path)                 → [{name, type, line, end_line, is_export, params}]
-  find_exports(path)                       → [{name, line, is_export, type, params}]
-  read_procedure(path, proc_name)          → str | None
-  find_callers_context(proc, hint, 0, 50)  → {callers: [{file, caller_name, line, ...}], _meta: {total_files, has_more}}
-  find_callers(proc, hint, max_files=20)   → [{file, line, text}]
-  safe_grep(pattern, hint, max_files=20)   → [{file, line, text}]
-Metadata & XML:
-  parse_object_xml(path)                   → {name, synonym, attributes, tabular_sections, dimensions, resources, ...}
-  find_enum_values(enum_name)              → {name, synonym, values: [{name, synonym}]}
-Composite analysis:
-  analyze_object(name)                     → full profile: metadata + modules + procedures + exports
-  analyze_document_flow(doc_name)          → metadata + subscriptions + register movements + jobs
-  analyze_subsystem(name)                  → composition, custom vs standard objects
-  find_custom_modifications(obj, pfx=None) → custom procedures, regions, attributes
-Business logic:
-  find_event_subscriptions(obj, custom_only=False) → [{event, handler, handler_module, handler_procedure, ...}]
-  find_scheduled_jobs(name='')             → [{name, method_name, use, ...}]
-  find_register_movements(doc_name)        → {code_registers, erp_mechanisms, manager_tables, adapted_registers}
-  find_register_writers(reg_name)          → {writers: [{document, file, lines}]}
-  find_based_on_documents(doc_name)        → {can_create_from_here, can_be_created_from}
-  find_print_forms(obj_name)              → {print_forms: [{name, presentation}]}
-  find_functional_options(obj_name)       → {xml_options, code_options}
-  find_roles(obj_name)                    → {roles: [{role_name, rights}]}
-Extensions:
-  detect_extensions()                      → {config_role, nearby_extensions, nearby_main, warnings}
-  find_ext_overrides(ext_path, obj='')     → {overrides: [{annotation, target_method, extension_method, ...}]}
+Call help('keyword') for code recipes — e.g. help('exports'), help('movements'), help('flow')
+"""
+
+# Category display order and labels for strategy table
+_CATEGORY_ORDER = [
+    ("discovery", "Module discovery"),
+    ("code", "Code analysis"),
+    ("xml", "Metadata & XML"),
+    ("composite", "Composite analysis"),
+    ("business", "Business logic"),
+    ("extension", "Extensions"),
+    ("navigation", "Navigation"),
+]
+
+_STRATEGY_IO_SECTION = """\
 File I/O:
   read_file(path), read_files(paths)       → str / dict
   grep(pattern, path), grep_summary(pattern), grep_read(pattern, path)
   glob_files(pattern), tree(path, max_depth=3), find_files(name)
 LLM (if available):
   llm_query(prompt, context='')            → str (keep context <3000 chars, split if empty response)
-  llm_query_batched(prompts, context)      → [str]\
-"""
+  llm_query_batched(prompts, context)      → [str]"""
 
 
-def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None, extension_context=None, ext_overrides: dict | None = None) -> str:
+def build_helpers_table(registry: dict) -> str:
+    """Build the HELPERS section of strategy text from registry."""
+    lines = ["== HELPERS (call help('keyword') for usage examples and return formats) =="]
+    for cat_key, cat_label in _CATEGORY_ORDER:
+        entries = [
+            (name, entry["sig"])
+            for name, entry in registry.items()
+            if entry["cat"] == cat_key
+        ]
+        if not entries:
+            continue
+        lines.append(f"{cat_label}:")
+        for _, sig in entries:
+            lines.append(f"  {sig}")
+    lines.append(_STRATEGY_IO_SECTION)
+    return "\n".join(lines)
+
+
+def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None,
+                 extension_context=None, ext_overrides: dict | None = None,
+                 registry: dict | None = None) -> str:
     config = EFFORT_LEVELS.get(effort, EFFORT_LEVELS["medium"])
 
     has_extensions = (
@@ -127,8 +133,14 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
     if has_extensions:
         parts.append(_extension_strategy(extension_context, ext_overrides or {}))
 
-    # --- Base strategy (critical, workflow, helpers table) ---
-    parts.append(_BASE_STRATEGY)
+    # --- Base strategy (critical, workflow) ---
+    parts.append(_STRATEGY_HEADER)
+
+    # --- Helpers table (dynamic from registry, or static fallback for IO/LLM) ---
+    if registry:
+        parts.append(build_helpers_table(registry))
+    else:
+        parts.append(_STRATEGY_IO_SECTION)
 
     # --- Effort & limits ---
     parts.append(f"\n== EFFORT: {effort} ==")
@@ -238,7 +250,9 @@ def _format_overrides_summary(overrides: list[dict], max_lines: int = 30) -> lis
 RLM_START_DESCRIPTION = (
     "Start a BSL code exploration session on a 1C codebase.\n"
     "Returns session_id, detected config format, BSL helper functions, and exploration strategy.\n"
-    "IMPORTANT: For large 1C configs (23K+ files), NEVER grep on broad paths -- use find_module() first."
+    "IMPORTANT: Use effort='high' for any multi-aspect analysis (recommended default).\n"
+    "Use effort='low' ONLY for single quick lookups (find one module, read one procedure).\n"
+    "For large 1C configs (23K+ files), NEVER grep on broad paths -- use find_module() first."
 )
 
 RLM_EXECUTE_DESCRIPTION = (

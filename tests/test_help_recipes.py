@@ -20,11 +20,11 @@ def test_help_no_args_returns_all_recipes():
         bsl_help = _get_help(td)
         result = bsl_help()
         assert "Available recipes" in result
-        assert "help('exports')" in result
-        assert "help('callers')" in result
-        assert "help('metadata')" in result
-        assert "help('search')" in result
-        assert "help('read')" in result
+        assert "help('find_exports')" in result
+        assert "help('find_callers_context')" in result
+        assert "help('parse_object_xml')" in result
+        assert "help('safe_grep')" in result
+        assert "help('read_procedure')" in result
 
 
 def test_help_exports():
