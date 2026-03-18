@@ -55,14 +55,19 @@ def _cmd_build(args: argparse.Namespace) -> None:
     base_path = _resolve_path(args.path)
     build_calls = not args.no_calls
     build_metadata = not args.no_metadata
+    build_fts = not args.no_fts
 
     print(f"Building index for: {base_path}")
-    print(f"Call graph: {'yes' if build_calls else 'no'}")
-    print(f"Metadata:   {'yes' if build_metadata else 'no'}")
+    print(f"Call graph:  {'yes' if build_calls else 'no'}")
+    print(f"Metadata:    {'yes' if build_metadata else 'no'}")
+    print(f"FTS search:  {'yes' if build_fts else 'no'}")
 
     t0 = time.time()
     builder = IndexBuilder()
-    db_path = builder.build(base_path, build_calls=build_calls, build_metadata=build_metadata)
+    db_path = builder.build(
+        base_path, build_calls=build_calls,
+        build_metadata=build_metadata, build_fts=build_fts,
+    )
     elapsed = time.time() - t0
 
     # Read back stats
@@ -176,6 +181,7 @@ def _cmd_info(args: argparse.Namespace) -> None:
         print(f"  FuncOpts:   {stats.get('functional_options', 0)}")
     elif stats.get("has_metadata") is not None:
         print("  Metadata: not indexed")
+    print(f"  FTS:      {'yes' if stats.get('has_fts') == '1' else 'no'}")
     print(f"  DB size:  {_fmt_size(db_size)}")
 
     if stats["built_at"]:
@@ -229,6 +235,7 @@ def main() -> None:
     build_p.add_argument("path", help="Root directory of 1C configuration")
     build_p.add_argument("--no-calls", action="store_true", help="Skip call graph")
     build_p.add_argument("--no-metadata", action="store_true", help="Skip metadata tables (ES/SJ/FO)")
+    build_p.add_argument("--no-fts", action="store_true", help="Skip FTS5 full-text search index")
 
     # update
     update_p = idx_sub.add_parser("update", help="Incremental update by mtime+size")

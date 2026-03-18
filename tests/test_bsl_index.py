@@ -447,6 +447,159 @@ class TestIndexReader:
 
 
 # =====================================================================
+# FTS5 full-text search tests
+# =====================================================================
+
+class TestFTS:
+    """Tests for FTS5 trigram-based full-text search of methods."""
+
+    @pytest.fixture
+    def built_index_fts(self, tmp_bsl_project, monkeypatch):
+        """Build an index with FTS enabled."""
+        monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_bsl_project / ".index_fts"))
+        builder = IndexBuilder()
+        db_path = builder.build(str(tmp_bsl_project), build_calls=True, build_fts=True)
+        return db_path, str(tmp_bsl_project)
+
+    @pytest.fixture
+    def built_index_no_fts(self, tmp_bsl_project, monkeypatch):
+        """Build an index WITHOUT FTS."""
+        monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_bsl_project / ".index_nofts"))
+        builder = IndexBuilder()
+        db_path = builder.build(str(tmp_bsl_project), build_calls=True, build_fts=False)
+        return db_path, str(tmp_bsl_project)
+
+    def test_fts_table_created(self, built_index_fts):
+        """FTS virtual table exists after build with build_fts=True."""
+        db_path, _ = built_index_fts
+        conn = sqlite3.connect(str(db_path))
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        conn.close()
+        assert "methods_fts" in tables
+
+    def test_fts_search_substring(self, built_index_fts):
+        """Search by substring finds matching methods."""
+        db_path, _ = built_index_fts
+        reader = IndexReader(db_path)
+        try:
+            results = reader.search_methods("Заполнить")
+            names = [r["name"] for r in results]
+            assert "ЗаполнитьТабличнуюЧасть" in names
+        finally:
+            reader.close()
+
+    def test_fts_search_case_insensitive(self, built_index_fts):
+        """Trigram search is case-insensitive."""
+        db_path, _ = built_index_fts
+        reader = IndexReader(db_path)
+        try:
+            results = reader.search_methods("заполнить")
+            names = [r["name"] for r in results]
+            assert "ЗаполнитьТабличнуюЧасть" in names
+        finally:
+            reader.close()
+
+    def test_fts_search_by_object_name(self, built_index_fts):
+        """Search matches object_name field too."""
+        db_path, _ = built_index_fts
+        reader = IndexReader(db_path)
+        try:
+            results = reader.search_methods("МойМодуль")
+            assert len(results) > 0
+            assert all(r["object_name"] == "МойМодуль" for r in results)
+        finally:
+            reader.close()
+
+    def test_fts_search_no_results(self, built_index_fts):
+        """Non-existent query returns empty list."""
+        db_path, _ = built_index_fts
+        reader = IndexReader(db_path)
+        try:
+            results = reader.search_methods("НесуществующийМетод12345")
+            assert results == []
+        finally:
+            reader.close()
+
+    def test_fts_search_limit(self, built_index_fts):
+        """Limit parameter restricts result count."""
+        db_path, _ = built_index_fts
+        reader = IndexReader(db_path)
+        try:
+            results = reader.search_methods("Процедур", limit=1)
+            assert len(results) <= 1
+        finally:
+            reader.close()
+
+    def test_fts_search_returns_fields(self, built_index_fts):
+        """Each result has all expected fields including rank."""
+        db_path, _ = built_index_fts
+        reader = IndexReader(db_path)
+        try:
+            results = reader.search_methods("Заполнить")
+            assert len(results) > 0
+            r = results[0]
+            expected_keys = {"name", "type", "is_export", "line", "end_line",
+                             "params", "module_path", "object_name", "rank"}
+            assert set(r.keys()) == expected_keys
+        finally:
+            reader.close()
+
+    def test_build_no_fts(self, built_index_no_fts):
+        """--no-fts flag skips FTS table creation."""
+        db_path, _ = built_index_no_fts
+        conn = sqlite3.connect(str(db_path))
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        conn.close()
+        assert "methods_fts" not in tables
+
+    def test_search_without_fts_table(self, built_index_no_fts):
+        """search_methods returns [] when FTS not built."""
+        db_path, _ = built_index_no_fts
+        reader = IndexReader(db_path)
+        try:
+            results = reader.search_methods("Заполнить")
+            assert results == []
+        finally:
+            reader.close()
+
+    def test_has_fts_property(self, built_index_fts, built_index_no_fts):
+        """has_fts property reflects FTS presence."""
+        db_path_fts, _ = built_index_fts
+        reader_fts = IndexReader(db_path_fts)
+        try:
+            assert reader_fts.has_fts is True
+        finally:
+            reader_fts.close()
+
+        db_path_no, _ = built_index_no_fts
+        reader_no = IndexReader(db_path_no)
+        try:
+            assert reader_no.has_fts is False
+        finally:
+            reader_no.close()
+
+    def test_fts_search_empty_query(self, built_index_fts):
+        """Empty query returns empty list."""
+        db_path, _ = built_index_fts
+        reader = IndexReader(db_path)
+        try:
+            assert reader.search_methods("") == []
+            assert reader.search_methods("  ") == []
+        finally:
+            reader.close()
+
+
+# =====================================================================
 # Incremental update tests
 # =====================================================================
 

@@ -21,7 +21,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 2
+BUILDER_VERSION = 3
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -699,7 +699,13 @@ def _process_single_file(
 class IndexBuilder:
     """Builds and incrementally updates the SQLite method index."""
 
-    def build(self, base_path: str, build_calls: bool = True, build_metadata: bool = True) -> Path:
+    def build(
+        self,
+        base_path: str,
+        build_calls: bool = True,
+        build_metadata: bool = True,
+        build_fts: bool = True,
+    ) -> Path:
         """Full build of the method index.
 
         Scans all .bsl files under base_path, extracts methods and optionally
@@ -709,6 +715,7 @@ class IndexBuilder:
             base_path: Root directory of the 1C configuration.
             build_calls: Whether to build the call graph.
             build_metadata: Whether to parse Level-2 metadata (ES/SJ/FO).
+            build_fts: Whether to build FTS5 full-text search index.
 
         Returns:
             Path to the created database file.
@@ -733,7 +740,8 @@ class IndexBuilder:
             # Create empty DB with schema
             conn = sqlite3.connect(str(db_path))
             conn.executescript(_SCHEMA_SQL)
-            self._write_meta(conn, base_path, 0, "", build_calls, build_metadata)
+            self._write_meta(conn, base_path, 0, "", build_calls, build_metadata,
+                             build_fts=build_fts)
             conn.close()
             return db_path
 
@@ -782,9 +790,21 @@ class IndexBuilder:
             md_tables = _collect_metadata_tables(base_path)
             _insert_metadata_tables(conn, md_tables)
 
+        # FTS5 full-text search index for methods
+        if build_fts:
+            conn.execute(
+                "CREATE VIRTUAL TABLE methods_fts USING fts5("
+                "name, object_name, tokenize='trigram')"
+            )
+            conn.execute(
+                "INSERT INTO methods_fts(rowid, name, object_name) "
+                "SELECT m.id, m.name, mod.object_name "
+                "FROM methods m JOIN modules mod ON mod.id = m.module_id"
+            )
+
         self._write_meta(
             conn, base_path, total_files, paths_hash,
-            build_calls, build_metadata, config_meta,
+            build_calls, build_metadata, config_meta, build_fts,
         )
 
         conn.execute("ANALYZE")
@@ -837,6 +857,11 @@ class IndexBuilder:
             "SELECT value FROM index_meta WHERE key = 'has_metadata'"
         ).fetchone()
         has_metadata = meta_row is not None and meta_row["value"] == "1"
+
+        meta_row = conn.execute(
+            "SELECT value FROM index_meta WHERE key = 'has_fts'"
+        ).fetchone()
+        has_fts = meta_row is not None and meta_row["value"] == "1"
 
         # Existing modules in DB
         db_modules: dict[str, dict] = {}
@@ -917,11 +942,28 @@ class IndexBuilder:
                             f"DELETE FROM calls WHERE caller_id IN ({placeholders})",
                             method_ids,
                         )
+                        if has_fts:
+                            conn.execute(
+                                f"DELETE FROM methods_fts WHERE rowid IN ({placeholders})",
+                                method_ids,
+                            )
                     conn.execute("DELETE FROM methods WHERE module_id = ?", (mod_id,))
                     conn.execute("DELETE FROM modules WHERE id = ?", (mod_id,))
 
             # Insert new data
             self._bulk_insert(conn, results, build_calls)
+
+            # Update FTS for newly inserted methods
+            if has_fts and results:
+                new_rel_paths = [r[0].relative_path for r in results]
+                placeholders = ",".join("?" * len(new_rel_paths))
+                conn.execute(
+                    f"INSERT INTO methods_fts(rowid, name, object_name) "
+                    f"SELECT m.id, m.name, mod.object_name "
+                    f"FROM methods m JOIN modules mod ON mod.id = m.module_id "
+                    f"WHERE mod.rel_path IN ({placeholders})",
+                    new_rel_paths,
+                )
 
             # Update meta
             new_paths_hash = _paths_hash(sorted(disk_files.keys()))
@@ -1092,6 +1134,7 @@ class IndexBuilder:
         build_calls: bool,
         build_metadata: bool = False,
         config_meta: dict[str, str] | None = None,
+        build_fts: bool = False,
     ) -> None:
         """Write index metadata."""
         meta_entries = [
@@ -1103,6 +1146,7 @@ class IndexBuilder:
             ("base_path", base_path),
             ("has_calls", "1" if build_calls else "0"),
             ("has_metadata", "1" if build_metadata else "0"),
+            ("has_fts", "1" if build_fts else "0"),
         ]
         # Level-1: Configuration metadata
         if config_meta:
@@ -1352,7 +1396,8 @@ class IndexReader:
 
             # Configuration metadata from index_meta
             for key in ("config_name", "config_version", "config_synonym",
-                        "config_vendor", "source_format", "config_role", "has_metadata"):
+                        "config_vendor", "source_format", "config_role",
+                        "has_metadata", "has_fts"):
                 meta_row = self._conn.execute(
                     "SELECT value FROM index_meta WHERE key = ?", (key,)
                 ).fetchone()
@@ -1367,6 +1412,67 @@ class IndexReader:
                     stats[table] = 0
 
             return stats
+
+    @property
+    def has_fts(self) -> bool:
+        """Check if the FTS5 full-text search index exists."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM methods_fts"
+                ).fetchone()
+                return row is not None and row["cnt"] > 0
+            except sqlite3.OperationalError:
+                return False
+
+    def search_methods(self, query: str, limit: int = 30) -> list[dict]:
+        """FTS5 full-text search for methods by substring.
+
+        Uses trigram tokenizer for substring matching with BM25 ranking.
+
+        Args:
+            query: Search query (substring match).
+            limit: Max results (default 30).
+
+        Returns:
+            List of dicts ordered by relevance. Empty list if FTS not built.
+        """
+        if not query or not query.strip():
+            return []
+        with self._lock:
+            try:
+                # Wrap query in quotes for trigram substring matching
+                fts_query = '"' + query.replace('"', '""') + '"'
+                rows = self._conn.execute(
+                    "SELECT "
+                    "  m.name, m.type, m.is_export, m.line, m.end_line, m.params, "
+                    "  mod.rel_path AS module_path, mod.object_name, "
+                    "  methods_fts.rank "
+                    "FROM methods_fts "
+                    "JOIN methods m ON m.id = methods_fts.rowid "
+                    "JOIN modules mod ON mod.id = m.module_id "
+                    "WHERE methods_fts MATCH ? "
+                    "ORDER BY methods_fts.rank "
+                    "LIMIT ?",
+                    (fts_query, limit),
+                ).fetchall()
+
+                return [
+                    {
+                        "name": r["name"],
+                        "type": r["type"],
+                        "is_export": bool(r["is_export"]),
+                        "line": r["line"],
+                        "end_line": r["end_line"],
+                        "params": r["params"],
+                        "module_path": r["module_path"],
+                        "object_name": r["object_name"],
+                        "rank": r["rank"],
+                    }
+                    for r in rows
+                ]
+            except sqlite3.OperationalError:
+                return []
 
     def close(self) -> None:
         """Close the database connection."""
