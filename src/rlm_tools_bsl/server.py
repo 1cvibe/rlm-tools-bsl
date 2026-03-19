@@ -455,10 +455,23 @@ def _rlm_execute(
     session.execute_calls += 1
     result = sandbox.execute(code)
 
+    elapsed = time.monotonic() - t0
+    # Log helper calls with timing
+    helpers_summary = ""
+    if result.helper_calls:
+        total = len(result.helper_calls)
+        log_all = os.environ.get("RLM_LOG_HELPERS", "").lower() == "all"
+        threshold = 0.0 if log_all else 0.1
+        notable = [(h.name, h.elapsed) for h in result.helper_calls if h.elapsed >= threshold]
+        parts = ", ".join(f"{n}({e:.1f}s)" for n, e in notable)
+        if notable:
+            helpers_summary = f" [{total} helpers: {parts}]"
+        else:
+            helpers_summary = f" [{total} helpers]"
     logger.info(
-        "rlm_execute: session=%s call=%d/%d error=%s elapsed=%.2fs",
+        "rlm_execute: session=%s call=%d/%d error=%s elapsed=%.2fs%s",
         session_id, session.execute_calls, session.max_execute_calls,
-        bool(result.error), time.monotonic() - t0,
+        bool(result.error), elapsed, helpers_summary,
     )
 
     response: dict = {

@@ -3,12 +3,14 @@ from __future__ import annotations
 import io
 import contextlib
 import builtins
+import functools
 import pathlib
 import signal
 import threading
+import time as _time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rlm_tools_bsl.helpers import make_helpers
 from rlm_tools_bsl.bsl_helpers import make_bsl_helpers
@@ -27,10 +29,17 @@ BLOCKED_BUILTINS = frozenset({
 
 
 @dataclass
+class HelperCall:
+    name: str
+    elapsed: float
+
+
+@dataclass
 class ExecutionResult:
     stdout: str
     error: str | None
     variables: list[str]
+    helper_calls: list[HelperCall] | None = None
 
 
 def _make_restricted_import(allowed: frozenset[str]):
@@ -60,6 +69,7 @@ class Sandbox:
         self._idx_reader = idx_reader
         self._namespace: dict = {}
         self._resolve_safe = None
+        self._helper_calls: list[HelperCall] = []
         self._setup_namespace()
 
     def _setup_namespace(self) -> None:
@@ -90,7 +100,7 @@ class Sandbox:
         self._namespace["__builtins__"] = safe_builtins
 
         helpers, self._resolve_safe = make_helpers(self._base_path)
-        self._namespace.update(helpers)
+        self._namespace.update(self._wrap_helpers(helpers))
 
         if self._format_info is not None:
             bsl_helpers = make_bsl_helpers(
@@ -102,7 +112,26 @@ class Sandbox:
                 format_info=self._format_info,
                 idx_reader=self._idx_reader,
             )
-            self._namespace.update(bsl_helpers)
+            self._namespace.update(self._wrap_helpers(bsl_helpers))
+
+    def _wrap_helpers(self, helpers: dict) -> dict:
+        """Wrap callable helpers with timing instrumentation."""
+        wrapped = {}
+        for name, obj in helpers.items():
+            if callable(obj):
+                @functools.wraps(obj)
+                def _timed(*args, _fn=obj, _name=name, **kwargs):
+                    t0 = _time.monotonic()
+                    try:
+                        return _fn(*args, **kwargs)
+                    finally:
+                        self._helper_calls.append(
+                            HelperCall(_name, _time.monotonic() - t0)
+                        )
+                wrapped[name] = _timed
+            else:
+                wrapped[name] = obj
+        return wrapped
 
     @contextmanager
     def _execution_timeout(self):
@@ -157,6 +186,7 @@ class Sandbox:
                     )
 
     def execute(self, code: str) -> ExecutionResult:
+        self._helper_calls.clear()
         stdout_capture = io.StringIO()
         error = None
 
@@ -176,6 +206,7 @@ class Sandbox:
             stdout=stdout,
             error=error,
             variables=self.list_variables(),
+            helper_calls=list(self._helper_calls),
         )
 
     @staticmethod
