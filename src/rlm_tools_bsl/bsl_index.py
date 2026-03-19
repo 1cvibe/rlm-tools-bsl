@@ -23,7 +23,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 3
+BUILDER_VERSION = 4
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -165,6 +165,27 @@ CREATE TABLE IF NOT EXISTS register_movements (
 );
 CREATE INDEX IF NOT EXISTS idx_rm_document ON register_movements(document_name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_rm_register ON register_movements(register_name COLLATE NOCASE);
+
+-- Level-3: enum values
+CREATE TABLE IF NOT EXISTS enum_values (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    synonym TEXT,
+    values_json TEXT NOT NULL,
+    source_file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_enum_name ON enum_values(name COLLATE NOCASE);
+
+-- Level-3: subsystem content (normalized, one row per subsystem-object pair)
+CREATE TABLE IF NOT EXISTS subsystem_content (
+    id INTEGER PRIMARY KEY,
+    subsystem_name TEXT NOT NULL,
+    subsystem_synonym TEXT,
+    object_ref TEXT NOT NULL,
+    file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sc_object ON subsystem_content(object_ref COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_sc_subsystem ON subsystem_content(subsystem_name COLLATE NOCASE);
 """
 
 
@@ -522,6 +543,13 @@ def _parse_configuration_meta(base_path: str) -> dict[str, str]:
         fmt_str = str(fmt_info)
     meta: dict[str, str] = {"source_format": fmt_str}
 
+    # Store shallow bsl_file_count from detect_format (fast glob, not rglob)
+    if hasattr(fmt_info, "bsl_file_count"):
+        meta["shallow_bsl_count"] = str(fmt_info.bsl_file_count)
+
+    # Store has_configuration_xml flag
+    meta["has_configuration_xml"] = "1" if (base / "Configuration.xml").is_file() else "0"
+
     # Try CF format: Configuration.xml in root
     cf_xml = base / "Configuration.xml"
     mdo_xml = base / "Configuration" / "Configuration.mdo"
@@ -567,8 +595,10 @@ def _parse_configuration_meta(base_path: str) -> dict[str, str]:
                     ext_el = props.find("md:ConfigurationExtensionPurpose", ns_cf)
                     if ext_el is not None and ext_el.text:
                         meta["config_role"] = "extension"
+                        meta["extension_purpose"] = ext_el.text.strip()
                     else:
                         meta["config_role"] = "base"
+                    meta["extension_prefix"] = _cf_text(props, "NamePrefix")
         except (ET.ParseError, OSError):
             pass
     elif mdo_xml.is_file():
@@ -612,7 +642,12 @@ def _parse_configuration_meta(base_path: str) -> dict[str, str]:
             meta["config_version"] = _mdo_text("version")
             meta["config_vendor"] = _mdo_text("vendor")
             ext = _mdo_text("configurationExtensionPurpose")
-            meta["config_role"] = "extension" if ext else "base"
+            if ext:
+                meta["config_role"] = "extension"
+                meta["extension_purpose"] = ext
+            else:
+                meta["config_role"] = "base"
+            meta["extension_prefix"] = _mdo_text("namePrefix")
         except (ET.ParseError, OSError):
             pass
 
@@ -629,8 +664,10 @@ def _collect_metadata_tables(base_path: str) -> dict[str, list[tuple]]:
     Each value is a list of tuples ready for INSERT.
     """
     from rlm_tools_bsl.bsl_xml_parsers import (
+        parse_enum_xml,
         parse_event_subscription_xml,
         parse_functional_option_xml,
+        parse_metadata_xml,
         parse_scheduled_job_xml,
     )
 
@@ -639,6 +676,8 @@ def _collect_metadata_tables(base_path: str) -> dict[str, list[tuple]]:
         "event_subscriptions": [],
         "scheduled_jobs": [],
         "functional_options": [],
+        "enum_values": [],
+        "subsystem_content": [],
     }
 
     def _read(fp: Path) -> str | None:
@@ -727,6 +766,42 @@ def _collect_metadata_tables(base_path: str) -> dict[str, list[tuple]]:
             rel,
         ))
 
+    # Enums
+    for fp in _glob_xml("Enums"):
+        content = _read(fp)
+        if not content:
+            continue
+        parsed = parse_enum_xml(content)
+        if not parsed or not parsed.get("name"):
+            continue
+        rel = fp.relative_to(base).as_posix()
+        result["enum_values"].append((
+            parsed["name"],
+            parsed.get("synonym") or "",
+            json.dumps(parsed.get("values", []), ensure_ascii=False),
+            rel,
+        ))
+
+    # Subsystems
+    for fp in _glob_xml("Subsystems"):
+        content = _read(fp)
+        if not content:
+            continue
+        parsed = parse_metadata_xml(content)
+        if not parsed or parsed.get("object_type") != "Subsystem":
+            continue
+        sub_name = parsed.get("name", "")
+        sub_synonym = parsed.get("synonym", "")
+        sub_content = parsed.get("content", [])
+        rel = fp.relative_to(base).as_posix()
+        for obj_ref in sub_content:
+            result["subsystem_content"].append((
+                sub_name,
+                sub_synonym,
+                obj_ref,
+                rel,
+            ))
+
     return result
 
 
@@ -736,6 +811,10 @@ def _insert_metadata_tables(conn: sqlite3.Connection, tables: dict[str, list[tup
     conn.execute("DELETE FROM event_subscriptions")
     conn.execute("DELETE FROM scheduled_jobs")
     conn.execute("DELETE FROM functional_options")
+    try:
+        conn.execute("DELETE FROM enum_values")
+    except sqlite3.OperationalError:
+        pass
 
     if tables["event_subscriptions"]:
         conn.executemany(
@@ -760,6 +839,26 @@ def _insert_metadata_tables(conn: sqlite3.Connection, tables: dict[str, list[tup
             "(name, synonym, location, content, file) "
             "VALUES (?, ?, ?, ?, ?)",
             tables["functional_options"],
+        )
+
+    if tables.get("enum_values"):
+        conn.executemany(
+            "INSERT INTO enum_values "
+            "(name, synonym, values_json, source_file) "
+            "VALUES (?, ?, ?, ?)",
+            tables["enum_values"],
+        )
+
+    try:
+        conn.execute("DELETE FROM subsystem_content")
+    except sqlite3.OperationalError:
+        pass
+    if tables.get("subsystem_content"):
+        conn.executemany(
+            "INSERT INTO subsystem_content "
+            "(subsystem_name, subsystem_synonym, object_ref, file) "
+            "VALUES (?, ?, ?, ?)",
+            tables["subsystem_content"],
         )
 
 
@@ -861,33 +960,19 @@ def _process_single_file(
 #     <name>Category.ObjectName</name>
 #     <right><name>Read</name><value>true</value></right>
 #   </object>
-_OBJECT_BLOCK_RE = re.compile(r'<object>(.*?)</object>', re.DOTALL)
-_OBJECT_NAME_RE = re.compile(r'<name>(.+?)</name>')
-_RIGHT_ENTRY_RE = re.compile(
-    r'<right>\s*<name>(\w+)</name>\s*<value>(true|false)</value>\s*</right>',
-    re.DOTALL | re.IGNORECASE,
-)
-
-
-def _parse_role_rights_regex(
+def _parse_role_rights_for_index(
     content: str, role_name: str, file_path: str,
 ) -> list[tuple[str, str, str, str]]:
-    """Parse role rights using regex. Returns list of (role_name, object_name, right_name, file)."""
+    """Parse role rights using ElementTree. Returns list of (role_name, object_name, right_name, file)."""
+    from rlm_tools_bsl.bsl_xml_parsers import parse_rights_xml
+
     results: list[tuple[str, str, str, str]] = []
-
-    for block_m in _OBJECT_BLOCK_RE.finditer(content):
-        block = block_m.group(1)
-        obj_m = _OBJECT_NAME_RE.search(block)
-        if not obj_m:
-            continue
-        full_name = obj_m.group(1).strip()
-        # Extract object name: "Catalog.MyObj" -> "MyObj", "Subsystem.A.Subsystem.B" -> "B"
+    for entry in parse_rights_xml(content):
+        full_name = entry["object"]
+        # Extract short object name: "Документ.МойДок" -> "МойДок"
         obj_name = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
-
-        for right_m in _RIGHT_ENTRY_RE.finditer(block):
-            if right_m.group(2).lower() == "true":
-                results.append((role_name, obj_name, right_m.group(1), file_path))
-
+        for right in entry["rights"]:
+            results.append((role_name, obj_name, right, file_path))
     return results
 
 
@@ -923,7 +1008,7 @@ def _collect_role_rights(base_path: str) -> list[tuple[str, str, str, str]]:
         except (OSError, UnicodeDecodeError):
             return []
         rel = f.relative_to(base).as_posix()
-        return _parse_role_rights_regex(content, role_name, rel)
+        return _parse_role_rights_for_index(content, role_name, rel)
 
     if len(rights_files) > 1:
         workers = min(os.cpu_count() or 4, 8)
@@ -1342,6 +1427,15 @@ class IndexBuilder:
                 "CREATE TABLE IF NOT EXISTS functional_options ("
                 "id INTEGER PRIMARY KEY, name TEXT NOT NULL, synonym TEXT, "
                 "location TEXT, content TEXT, file TEXT);\n"
+                "CREATE TABLE IF NOT EXISTS enum_values ("
+                "id INTEGER PRIMARY KEY, name TEXT NOT NULL, synonym TEXT, "
+                "values_json TEXT NOT NULL, source_file TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_enum_name ON enum_values(name COLLATE NOCASE);\n"
+                "CREATE TABLE IF NOT EXISTS subsystem_content ("
+                "id INTEGER PRIMARY KEY, subsystem_name TEXT NOT NULL, "
+                "subsystem_synonym TEXT, object_ref TEXT NOT NULL, file TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_sc_object ON subsystem_content(object_ref COLLATE NOCASE);\n"
+                "CREATE INDEX IF NOT EXISTS idx_sc_subsystem ON subsystem_content(subsystem_name COLLATE NOCASE);\n"
             )
             md_tables = _collect_metadata_tables(base_path)
             _insert_metadata_tables(conn, md_tables)
@@ -1642,14 +1736,23 @@ class IndexReader:
 
             # Count total
             count_query = f"SELECT COUNT(*) AS cnt FROM ({query})"
+            _t0 = time.monotonic()
             count_row = self._conn.execute(count_query, params_list).fetchone()
+            _t_count = time.monotonic() - _t0
             total_callers = count_row["cnt"] if count_row else 0
 
             # Fetch page
             query += " ORDER BY mod.rel_path, call_line LIMIT ? OFFSET ?"
             params_list.extend([limit, offset])
 
+            _t0 = time.monotonic()
             rows = self._conn.execute(query, params_list).fetchall()
+            _t_rows = time.monotonic() - _t0
+
+            logger.debug(
+                "get_callers: proc=%s count_time=%.2fs rows_time=%.2fs total=%d returned=%d",
+                proc_name, _t_count, _t_rows, total_callers, len(rows),
+            )
 
             callers = [
                 {
@@ -1806,6 +1909,68 @@ class IndexReader:
                 role_map[key]["rights"].append(r["right_name"])
             return list(role_map.values())
 
+    def get_enum_values(self, enum_name: str) -> dict | None:
+        """Get enum definition from the index.
+
+        Args:
+            enum_name: Enum name (or fragment, case-insensitive).
+
+        Returns:
+            Dict with name, synonym, values, file — or None if table missing / not found.
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT name, synonym, values_json, source_file FROM enum_values"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+            if not rows:
+                return None
+
+            name_lower = enum_name.lower()
+            for r in rows:
+                if name_lower in r["name"].lower():
+                    values = []
+                    try:
+                        values = json.loads(r["values_json"]) if r["values_json"] else []
+                    except (ValueError, TypeError):
+                        pass
+                    return {
+                        "name": r["name"],
+                        "synonym": r["synonym"] or "",
+                        "values": values,
+                        "file": r["source_file"] or "",
+                    }
+
+            # Table exists but enum not found — return error, don't fallback
+            return {"error": f"Перечисление '{enum_name}' не найдено"}
+
+    def get_startup_meta(self) -> dict | None:
+        """Get cached startup metadata for fast rlm_start.
+
+        Returns dict with source_format, shallow_bsl_count, config_role,
+        config_name, extension_prefix, extension_purpose, has_configuration_xml —
+        or None if required keys are missing.
+        """
+        with self._lock:
+            meta: dict[str, str | None] = {}
+            required_keys = ("source_format", "shallow_bsl_count")
+            for key in ("source_format", "shallow_bsl_count", "config_role",
+                         "config_name", "extension_prefix", "extension_purpose",
+                         "has_configuration_xml"):
+                row = self._conn.execute(
+                    "SELECT value FROM index_meta WHERE key = ?", (key,)
+                ).fetchone()
+                meta[key] = row["value"] if row else None
+
+            # Required keys must be present
+            if any(meta.get(k) is None for k in required_keys):
+                return None
+
+            return meta
+
     def get_detected_prefixes(self) -> list[str]:
         """Return detected custom prefixes from index_meta, or empty list."""
         with self._lock:
@@ -1901,7 +2066,7 @@ class IndexReader:
                     stats[table] = 0
 
             # Level-3 counts
-            for table in ("role_rights", "register_movements"):
+            for table in ("role_rights", "register_movements", "enum_values", "subsystem_content"):
                 try:
                     row = self._conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()  # noqa: S608
                     stats[table] = row["cnt"] if row else 0
@@ -2126,6 +2291,50 @@ class IndexReader:
                     result.append(entry)
 
             return result
+
+    def get_subsystems_for_object(self, object_name: str) -> list[dict] | None:
+        """Find subsystems containing a given object.
+
+        Args:
+            object_name: Object name (case-insensitive substring match against object_ref).
+
+        Returns:
+            List of dicts {name, synonym, file, matched_refs} or None if table missing.
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT subsystem_name, subsystem_synonym, object_ref, file "
+                    "FROM subsystem_content WHERE object_ref LIKE ? COLLATE NOCASE",
+                    (f"%{object_name}%",),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+            if not rows:
+                return []  # Table exists but no matches — don't fallback
+
+            # Group by subsystem
+            from collections import defaultdict
+
+            grouped: dict[str, dict] = {}
+            for r in rows:
+                key = r["subsystem_name"]
+                if key not in grouped:
+                    grouped[key] = {"synonym": "", "file": "", "matched_refs": []}
+                grouped[key]["synonym"] = r["subsystem_synonym"] or ""
+                grouped[key]["file"] = r["file"] or ""
+                grouped[key]["matched_refs"].append(r["object_ref"])
+
+            return [
+                {
+                    "name": name,
+                    "synonym": info["synonym"],
+                    "file": info["file"],
+                    "matched_refs": info["matched_refs"],
+                }
+                for name, info in grouped.items()
+            ]
 
     def close(self) -> None:
         """Close the database connection."""

@@ -726,40 +726,62 @@ def parse_functional_option_xml(xml_content: str) -> dict | None:
 
 # --- Rights XML parser ---
 
-_NS_RIGHTS = "http://v8.1c.ru/8.2/roles"
+_NS_RIGHTS_VERSIONS = [
+    "http://v8.1c.ru/8.2/roles",
+    "http://v8.1c.ru/8.3/roles",
+]
 
 
 def parse_rights_xml(xml_content: str, object_filter: str = "") -> list[dict]:
     """Parse Rights XML (same format for CF and EDT).
     Returns only rights with <value>true</value>.
-    Filters by object_filter substring if provided."""
+    Filters by object_filter substring if provided.
+    Supports both 8.2 and 8.3 namespace versions."""
     try:
         root = ET.fromstring(xml_content)
     except ET.ParseError:
         return []
 
-    ns = {"r": _NS_RIGHTS}
+    # Detect namespace from root tag
+    root_ns = ""
+    if "}" in root.tag:
+        root_ns = root.tag.split("}")[0].lstrip("{")
+
+    # Try detected namespace, then known versions, then no namespace
+    ns_candidates = []
+    if root_ns:
+        ns_candidates.append({"r": root_ns})
+    for ns_uri in _NS_RIGHTS_VERSIONS:
+        ns_candidates.append({"r": ns_uri})
+
     results: list[dict] = []
 
-    for obj_el in root.findall("r:object", ns):
-        obj_name_el = obj_el.find("r:name", ns)
-        if obj_name_el is None or not obj_name_el.text:
-            continue
-        obj_name = obj_name_el.text.strip()
-
-        if object_filter and object_filter not in obj_name:
+    for ns in ns_candidates:
+        obj_elements = root.findall("r:object", ns)
+        if not obj_elements:
             continue
 
-        granted: list[str] = []
-        for right_el in obj_el.findall("r:right", ns):
-            right_name_el = right_el.find("r:name", ns)
-            right_value_el = right_el.find("r:value", ns)
-            if right_name_el is None or right_value_el is None:
+        for obj_el in obj_elements:
+            obj_name_el = obj_el.find("r:name", ns)
+            if obj_name_el is None or not obj_name_el.text:
                 continue
-            if right_value_el.text and right_value_el.text.strip().lower() == "true":
-                granted.append(right_name_el.text.strip())
+            obj_name = obj_name_el.text.strip()
 
-        if granted:
-            results.append({"object": obj_name, "rights": granted})
+            if object_filter and object_filter not in obj_name:
+                continue
+
+            granted: list[str] = []
+            for right_el in obj_el.findall("r:right", ns):
+                right_name_el = right_el.find("r:name", ns)
+                right_value_el = right_el.find("r:value", ns)
+                if right_name_el is None or right_value_el is None:
+                    continue
+                if right_value_el.text and right_value_el.text.strip().lower() == "true":
+                    granted.append(right_name_el.text.strip())
+
+            if granted:
+                results.append({"object": obj_name, "rights": granted})
+
+        break  # Found working namespace, stop trying
 
     return results

@@ -1,12 +1,16 @@
 from __future__ import annotations
 import concurrent.futures
+import logging
 import os
 import re
 import threading
+import time as _time_mod
 from pathlib import Path
 from rlm_tools_bsl.format_detector import parse_bsl_path, BslFileInfo, FormatInfo
 from rlm_tools_bsl.bsl_knowledge import BSL_PATTERNS
 from rlm_tools_bsl.cache import load_index, save_index
+
+logger = logging.getLogger(__name__)
 from rlm_tools_bsl.bsl_xml_parsers import (
     _CATEGORY_ALIASES,
     _normalize_category,
@@ -458,9 +462,20 @@ def make_bsl_helpers(
         """
         # --- Fast path: SQLite call graph ---
         if idx_reader is not None and idx_reader.has_calls:
+            _t0 = _time_mod.monotonic()
             result = idx_reader.get_callers(proc_name, module_hint, offset, limit)
+            _elapsed = _time_mod.monotonic() - _t0
             if result is not None:
+                _n = len(result.get("callers", []))
+                logger.debug(
+                    "find_callers_context: proc=%s source=index rows=%d time=%.2fs",
+                    proc_name, _n, _elapsed,
+                )
                 return result
+            logger.debug(
+                "find_callers_context: proc=%s source=index returned_none time=%.2fs, falling back to scan",
+                proc_name, _elapsed,
+            )
 
         _ensure_index()
 
@@ -567,6 +582,10 @@ def make_bsl_helpers(
             except Exception:
                 pass
 
+        logger.debug(
+            "find_callers_context: proc=%s source=fallback callers=%d files_scanned=%d files_total=%d",
+            proc_name, len(callers), scanned_files, total_files,
+        )
         return {
             "callers": callers,
             "_meta": {
@@ -658,10 +677,33 @@ def make_bsl_helpers(
 
         Returns: dict with subsystems_found, subsystems list."""
         name = _strip_meta_prefix(name)
+
+        # --- Fast path: SQLite index ---
+        if idx_reader is not None:
+            matches = idx_reader.get_subsystems_for_object(name)
+            if matches is not None:
+                # matches is [] or list of dicts
+                results = []
+                for m in matches:
+                    results.append({
+                        "file": m["file"],
+                        "name": m["name"],
+                        "synonym": m["synonym"],
+                        "total_objects": len(m["matched_refs"]),
+                        "matched_refs": m["matched_refs"],
+                    })
+                if not results:
+                    return {
+                        "error": f"Подсистема с '{name}' не найдена",
+                        "hint": "Объект не входит ни в одну подсистему",
+                    }
+                return {"subsystems_found": len(results), "subsystems": results}
+
+        # --- Fallback: glob + XML parse ---
         patterns = [
             f"**/Subsystems/**/*{name}*",
             f"**/Subsystems/*{name}*",
-            f"**/*{name}*.mdo",
+            # REMOVED: f"**/*{name}*.mdo" — scans entire tree, useless for subsystems
         ]
         found_files: list[str] = []
         for p in patterns:
@@ -1313,6 +1355,14 @@ def make_bsl_helpers(
 
         Returns: dict with name, synonym, values, file — or error."""
         enum_name = _strip_meta_prefix(enum_name)
+
+        # --- Fast path: SQLite index ---
+        if idx_reader is not None:
+            result = idx_reader.get_enum_values(enum_name)
+            if result is not None:
+                return result
+
+        # --- Fallback: glob + XML parse ---
         patterns = [
             f"**/Enums/**/*{enum_name}*.xml",
             f"**/Enums/**/*{enum_name}*.mdo",
@@ -1456,7 +1506,21 @@ def make_bsl_helpers(
                     "file": f,
                 })
 
-        return {"object": object_name, "roles": roles}
+        # Group by role_name, merge rights (match index behavior)
+        grouped: dict[str, dict] = {}
+        for r in roles:
+            key = r["role_name"]
+            if key not in grouped:
+                grouped[key] = {
+                    "role_name": key,
+                    "rights": [],
+                    "file": r["file"],
+                }
+            for right in r["rights"]:
+                if right not in grouped[key]["rights"]:
+                    grouped[key]["rights"].append(right)
+
+        return {"object": object_name, "roles": list(grouped.values())}
 
     # ── FTS search (requires SQLite index with FTS5) ────────────
 

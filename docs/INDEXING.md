@@ -147,7 +147,7 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 ## 4. Структура индекса
 
-Индекс хранится в SQLite-базе `method_index.db` и содержит 7 таблиц (4 основные + 3 метаданных) + виртуальную FTS5-таблицу для полнотекстового поиска:
+Индекс хранится в SQLite-базе `method_index.db` и содержит 11 таблиц (4 основные + 7 метаданных) + виртуальную FTS5-таблицу для полнотекстового поиска:
 
 ### index_meta
 
@@ -155,8 +155,8 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 | key | Описание | Пример |
 |-----|----------|--------|
-| `version` | Версия схемы | `3` |
-| `builder_version` | Версия построителя | `3` |
+| `version` | Версия схемы | `4` |
+| `builder_version` | Версия построителя | `4` |
 | `bsl_count` | Количество .bsl файлов | `24055` |
 | `paths_hash` | MD5-хеш отсортированных путей | `6c4e5a0f0d506f67...` |
 | `built_at` | Unix-timestamp построения | `1773740509.56` |
@@ -170,6 +170,11 @@ $ rlm-bsl-index index drop D:\ERP\src
 | `config_vendor` | Поставщик | `Фирма "1С"` |
 | `source_format` | Формат исходников | `cf` или `edt` |
 | `config_role` | Роль конфигурации | `base` или `extension` |
+| `shallow_bsl_count` | Количество .bsl файлов (depth≤4, для fast-path startup) | `12036` |
+| `extension_prefix` | Префикс расширения (NamePrefix из XML) | `мое_` |
+| `extension_purpose` | Назначение расширения | `Customization` |
+| `has_configuration_xml` | Наличие Configuration.xml (0/1) | `0` |
+| `detected_prefixes` | JSON-массив авто-определённых кастомных префиксов | `["ал"]` |
 
 ### modules
 
@@ -269,6 +274,34 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 Ускоряет хелперы: `find_functional_options()`.
 
+### enum_values
+
+Значения перечислений конфигурации. Парсинг XML: `Enums/**/*.xml` и `*.mdo`.
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `name` | TEXT | Имя перечисления | `ХозяйственныеОперации` |
+| `synonym` | TEXT | Синоним | `Хозяйственные операции` |
+| `values_json` | TEXT | JSON-массив значений [{name, synonym}] | `[{"name": "Продажа", "synonym": "Продажа"}]` |
+| `source_file` | TEXT | Относительный путь к XML | `Enums/ХозяйственныеОперации/ХозяйственныеОперации.mdo` |
+
+Ускоряет хелперы: `find_enum_values()`.
+
+### subsystem_content
+
+Состав подсистем (нормализованная таблица, одна строка на пару подсистема-объект). Парсинг XML: `Subsystems/**/*.xml` и `*.mdo`.
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `subsystem_name` | TEXT | Имя подсистемы | `ОбъектыУТКАУП` |
+| `subsystem_synonym` | TEXT | Синоним подсистемы | `Объекты УТ, КА, УП` |
+| `object_ref` | TEXT | Ссылка на объект (Category.Name) | `Document.ПоступлениеТоваровНаСклад` |
+| `file` | TEXT | Относительный путь к XML | `Subsystems/ОбъектыУТКАУП/ОбъектыУТКАУП.mdo` |
+
+Ускоряет хелперы: `analyze_subsystem()`. Поддерживает обратный поиск: какие подсистемы содержат указанный объект.
+
 ### methods_fts (FTS5)
 
 Виртуальная таблица полнотекстового поиска методов. Строится по умолчанию, отключается флагом `--no-fts`. Использует trigram-токенайзер — разбивает имена на тройки символов для подстрокового поиска с BM25-ранжированием.
@@ -324,7 +357,7 @@ LIMIT 30;
 2. **Пропуск для молодых индексов** (`RLM_INDEX_SKIP_SAMPLE_HOURS`) — если индекс моложе порога, сразу `FRESH`
 3. **Выборочная проверка содержимого** — из индекса случайно выбирается `RLM_INDEX_SAMPLE_SIZE` файлов (по умолчанию 5), stat()-вызовы выполняются параллельно. Если более 20% выборки не совпадает, статус `STALE_CONTENT`
 
-Дополнительно: `rlm_start` сравнивает `bsl_file_count` из `detect_format()` (уже вычислен) с `bsl_count` из `index_meta`. Расхождение >5% добавляет предупреждение о возможном structural drift.
+Дополнительно (только при disk path): `rlm_start` сравнивает `bsl_file_count` из `detect_format()` с `shallow_bsl_count` из `index_meta` (одинаковая методика подсчёта, depth≤4). Расхождение >5% добавляет предупреждение. При fast-path startup (fresh index) drift check пропускается — обе метрики из одного источника.
 
 В ответе `rlm_start` поле `"index_check": "quick"` — явный сигнал, что полная структурная проверка не выполнялась.
 
@@ -348,7 +381,7 @@ LIMIT 30;
 
 При запуске `rlm_start` на очень больших конфигурациях (>20K BSL-файлов) время инициализации может превышать 30 секунд, особенно на медленных дисках или сетевых ресурсах. Если MCP-клиент устанавливает timeout ниже этого значения, может произойти ошибка `AssertionError: Request already responded to` в MCP SDK — клиент отправляет timeout-ответ, а сервер пытается ответить после завершения обработки.
 
-**Рекомендация:** установить client timeout не менее 60 секунд. С оптимизациями v1.3.0 (`check_index_usable`, параллельный stat) время `rlm_start` сокращается до 10-25 секунд на типичных конфигурациях.
+**Рекомендация:** установить client timeout не менее 60 секунд. С оптимизациями v1.3.1 (fast-path startup из index_meta) время `rlm_start` сокращается до <1 секунды при наличии fresh-индекса, 10-15 секунд без индекса.
 
 Если проверка выявила устаревание, агент получает предупреждение с рекомендацией запустить `index update` или `index build`.
 
@@ -366,6 +399,8 @@ LIMIT 30;
 | `find_event_subscriptions(obj)` | `SELECT` из `event_subscriptions` (мгновенно) | XML-парсинг `EventSubscriptions/**` |
 | `find_scheduled_jobs(name)` | `SELECT` из `scheduled_jobs` (мгновенно) | XML-парсинг `ScheduledJobs/**` |
 | `find_functional_options(obj)` | `SELECT` из `functional_options` (мгновенно) | XML-парсинг `FunctionalOptions/**` |
+| `find_enum_values(name)` | `SELECT` из `enum_values` (мгновенно) | Glob + XML-парсинг `Enums/**` |
+| `analyze_subsystem(name)` | `SELECT` из `subsystem_content` (мгновенно) | Glob + XML-парсинг `Subsystems/**` |
 
 ### Новый хелпер: search_methods
 

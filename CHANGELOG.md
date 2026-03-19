@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-03-19
+
+### Добавлено
+- **Fast-path startup из index_meta** — при fresh-индексе `rlm_start` восстанавливает FormatInfo и ExtensionContext из метаданных индекса, пропуская `detect_format()` и `detect_extension_context()` (43с → <1с на медленном ПК)
+- **Тайминги подэтапов в rlm_start** — логирование длительности каждого подэтапа (`format`, `ext`, `overrides`, `index`, `sandbox`, `prefixes`, `strategy`) + источник данных (`index`/`disk`/`fallback`)
+- **Таблица `enum_values` в SQLite-индексе** — значения перечислений с синонимами. `find_enum_values()` мгновенно из индекса (было 120с на медленном ПК)
+- **Таблица `subsystem_content` в SQLite-индексе** — нормализованное хранение состава подсистем. `analyze_subsystem()` мгновенно из индекса, поиск подсистем по имени объекта (обратный lookup). Удалён бесполезный glob-паттерн `**/*{name}*.mdo`
+- **`IndexReader.get_startup_meta()`** — кэшированные метаданные для быстрого старта: `source_format`, `shallow_bsl_count`, `config_role`, `extension_prefix`, `extension_purpose`
+- **`IndexReader.get_enum_values()`** — поиск перечислений по имени через SQLite
+- **`IndexReader.get_subsystems_for_object()`** — обратный поиск подсистем по имени объекта
+- **Диагностика `find_callers_context`** — debug-логирование source (index/fallback), тайминг count_query и rows_query в `get_callers()`
+
+### Изменено
+- **`builder_version = 4`** — добавлены таблицы `enum_values`, `subsystem_content`; расширена `index_meta` (shallow_bsl_count, extension_prefix, extension_purpose, has_configuration_xml)
+- **`_parse_configuration_meta()`** — дополнительно сохраняет `shallow_bsl_count`, `extension_prefix`, `extension_purpose`, `has_configuration_xml` в index_meta
+- **`_rlm_start()` реструктурирован** — индекс загружается первым, затем fast path (из meta) или disk path (полное сканирование). Drift check только при disk path
+
+### Исправлено
+- **`find_enum_values()` — fallback при промахе** — если таблица `enum_values` есть, но enum не найден, возвращает ошибку мгновенно (ранее fallback на glob 11с)
+- **`parse_rights_xml()` — поддержка namespace 8.2 и 8.3** — автоопределение namespace из root tag, поддержка обеих версий `http://v8.1c.ru/8.2/roles` и `http://v8.1c.ru/8.3/roles`
+- **Builder ролей — переход на ElementTree** — `_parse_role_rights_for_index()` использует `parse_rights_xml()` вместо regex-парсера, который пропускал >97% записей из-за несовпадения namespace
+- **`find_roles()` — дедупликация по роли** — fallback-путь группирует результаты по `role_name` и объединяет права (было 117 записей вместо 4 уникальных ролей)
+- **Drift warning — корректное сравнение** — shallow vs shallow (`shallow_bsl_count` из index_meta) вместо shallow vs full. При fast path drift check пропускается
+
+### E2E результаты (ERP, 486K методов, этот же ПК)
+
+| Хелпер | v1.3.0 без индекса | v1.3.1 с индексом v4 |
+|--------|-------------------|---------------------|
+| rlm_start | 15.5с | **0.54с** |
+| analyze_document_flow | 24.4с | **0.3с** |
+| find_roles | 25.2с | **0.0с** |
+| find_functional_options | 21.2с | **0.0с** |
+| find_enum_values (hit) | 11.7с | **0.0с** |
+| find_enum_values (miss) | 11.6с | **0.0с** |
+| analyze_subsystem | 10.6с | **0.0с** |
+| **Полная сессия (3 calls)** | ~120с | **~2.8с** |
+
 ## [1.3.0] — 2026-03-19
 
 ### Добавлено

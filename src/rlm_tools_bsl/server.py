@@ -17,8 +17,14 @@ from pydantic import Field
 from rlm_tools_bsl.session import SessionManager
 from rlm_tools_bsl.sandbox import Sandbox
 from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched
-from rlm_tools_bsl.format_detector import detect_format
-from rlm_tools_bsl.extension_detector import detect_extension_context, find_extension_overrides
+from rlm_tools_bsl.format_detector import FormatInfo, SourceFormat, detect_format
+from rlm_tools_bsl.extension_detector import (
+    ConfigRole,
+    ExtensionContext,
+    ExtensionInfo,
+    detect_extension_context,
+    find_extension_overrides,
+)
 from rlm_tools_bsl.bsl_knowledge import (
     EFFORT_LEVELS,
     RLM_EXECUTE_DESCRIPTION,
@@ -267,57 +273,123 @@ def _rlm_start(
     try:
         metadata = _scan_metadata(resolved) if include_metadata else {}
 
-        format_info = detect_format(resolved)
-        ext_context = detect_extension_context(resolved)
-        # Auto-scan extension overrides (extensions are small, <1s)
-        ext_overrides = _auto_scan_overrides(ext_context)
+        # --- Try loading index FIRST (to enable fast-path startup) ---
+        t_step = time.monotonic()
+        idx_reader = None
+        idx_warnings: list[str] = []
+        idx_stats: dict | None = None
+        idx_status = None
+        try:
+            db_path = get_index_db_path(resolved)
+            if db_path.exists():
+                idx_status = check_index_usable(db_path, resolved)
+                logger.info(
+                    "rlm_start: session=%s index status=%s db=%s",
+                    session_id, idx_status.value, db_path,
+                )
+
+                if idx_status in (IndexStatus.FRESH, IndexStatus.STALE_AGE, IndexStatus.STALE_CONTENT):
+                    idx_reader = IndexReader(db_path)
+                    idx_stats = idx_reader.get_statistics()
+                    if idx_status == IndexStatus.STALE_AGE:
+                        built_at = idx_stats.get("built_at")
+                        age_days = int((time.time() - float(built_at)) / 86400) if built_at else "?"
+                        idx_warnings.append(
+                            f"Index is {age_days} days old — verify critical findings with live read_file()"
+                        )
+                    elif idx_status == IndexStatus.STALE_CONTENT:
+                        idx_warnings.append(
+                            "Index content may be outdated — run 'rlm-bsl-index index update' to refresh"
+                        )
+        except Exception as e:
+            logger.warning("rlm_start: session=%s index load failed: %s", session_id, e)
+        t_index = time.monotonic() - t_step
+
+        # --- Format + extension detection (fast path from index or disk) ---
+        startup_meta = None
+        if idx_reader is not None and idx_status == IndexStatus.FRESH:
+            startup_meta = idx_reader.get_startup_meta()
+
+        if startup_meta is not None:
+            # Fast path: reconstruct from cached index metadata
+            t_step = time.monotonic()
+            format_info = FormatInfo(
+                primary_format=SourceFormat(startup_meta["source_format"]),
+                root_path=resolved,
+                bsl_file_count=int(startup_meta["shallow_bsl_count"]),
+                has_configuration_xml=startup_meta.get("has_configuration_xml") == "1",
+                metadata_categories_found=[],
+            )
+            t_format = time.monotonic() - t_step
+
+            t_step = time.monotonic()
+            role_str = startup_meta.get("config_role", "unknown")
+            if role_str == "base":
+                role = ConfigRole.MAIN
+            elif role_str == "extension":
+                role = ConfigRole.EXTENSION
+            else:
+                role = ConfigRole.UNKNOWN
+            ext_context = ExtensionContext(
+                current=ExtensionInfo(
+                    path=resolved,
+                    role=role,
+                    name=startup_meta.get("config_name") or "",
+                    purpose=startup_meta.get("extension_purpose") or "",
+                    name_prefix=startup_meta.get("extension_prefix") or "",
+                    source_format=startup_meta.get("source_format") or "",
+                ),
+                nearby_extensions=[],
+                nearby_main=None,
+                warnings=[],
+            )
+            t_ext = time.monotonic() - t_step
+
+            t_step = time.monotonic()
+            ext_overrides: dict[str, list[dict]] = {}
+            t_overrides = time.monotonic() - t_step
+
+            src_format = "index"
+            src_ext = "index"
+        else:
+            # Disk path: full detection
+            t_step = time.monotonic()
+            format_info = detect_format(resolved)
+            t_format = time.monotonic() - t_step
+
+            t_step = time.monotonic()
+            ext_context = detect_extension_context(resolved)
+            t_ext = time.monotonic() - t_step
+
+            # Auto-scan extension overrides (extensions are small, <1s)
+            t_step = time.monotonic()
+            ext_overrides = _auto_scan_overrides(ext_context)
+            t_overrides = time.monotonic() - t_step
+
+            src_format = "disk"
+            src_ext = "disk"
+
+            # Drift check: compare shallow counts (same methodology)
+            if idx_reader is not None:
+                _sm = idx_reader.get_startup_meta()
+                stored_shallow = int(_sm["shallow_bsl_count"]) if _sm and _sm.get("shallow_bsl_count") else None
+                if stored_shallow is not None and format_info.bsl_file_count:
+                    drift = abs(format_info.bsl_file_count - stored_shallow) / max(stored_shallow, 1)
+                    if drift > 0.05:
+                        idx_warnings.append(
+                            f"File count drift (shallow): index {stored_shallow}, "
+                            f"disk {format_info.bsl_file_count} — "
+                            "run 'rlm-bsl-index index build' if significant changes were made"
+                        )
+
         logger.info(
             "rlm_start: session=%s format=%s bsl_files=%d config_role=%s overrides=%d",
             session_id, format_info.format_label, format_info.bsl_file_count,
             ext_context.current.role.value,
             sum(len(v) for v in ext_overrides.values()),
         )
-        # --- Load method index (optional accelerator) ---
-        idx_reader = None
-        idx_warnings: list[str] = []
-        idx_stats: dict | None = None
-        try:
-            db_path = get_index_db_path(resolved)
-            if db_path.exists():
-                status = check_index_usable(db_path, resolved)
-                logger.info(
-                    "rlm_start: session=%s index status=%s db=%s",
-                    session_id, status.value, db_path,
-                )
 
-                if status in (IndexStatus.FRESH, IndexStatus.STALE_AGE, IndexStatus.STALE_CONTENT):
-                    idx_reader = IndexReader(db_path)
-                    idx_stats = idx_reader.get_statistics()
-                    if status == IndexStatus.STALE_AGE:
-                        built_at = idx_stats.get("built_at")
-                        age_days = int((time.time() - float(built_at)) / 86400) if built_at else "?"
-                        idx_warnings.append(
-                            f"Index is {age_days} days old — verify critical findings with live read_file()"
-                        )
-                    elif status == IndexStatus.STALE_CONTENT:
-                        idx_warnings.append(
-                            "Index content may be outdated — run 'rlm-bsl-index index update' to refresh"
-                        )
-
-                    # Cheap structural fingerprint: compare bsl_file_count from
-                    # detect_format() with bsl_count stored in index_meta.
-                    stored_bsl_count = idx_stats.get("bsl_count")
-                    if stored_bsl_count is not None and format_info.bsl_file_count:
-                        drift = abs(format_info.bsl_file_count - stored_bsl_count) / max(stored_bsl_count, 1)
-                        if drift > 0.05:
-                            idx_warnings.append(
-                                f"File count drift: index has {stored_bsl_count} BSL files, "
-                                f"disk has {format_info.bsl_file_count} — "
-                                "run 'rlm-bsl-index index build' if significant changes were made"
-                            )
-        except Exception as e:
-            logger.warning("rlm_start: session=%s index load failed: %s", session_id, e)
-
+        t_step = time.monotonic()
         sandbox = Sandbox(
             base_path=resolved,
             max_output_chars=max_output_chars,
@@ -326,13 +398,18 @@ def _rlm_start(
             idx_reader=idx_reader,
         )
         has_llm_tools = _install_session_llm_tools(session, sandbox)
+        t_sandbox = time.monotonic() - t_step
         logger.info("rlm_start: session=%s sandbox ready, llm_tools=%s index=%s", session_id, has_llm_tools, idx_reader is not None)
 
         # Auto-detect custom prefixes — fast path from index, fallback to glob scan
+        t_step = time.monotonic()
         detected_prefixes: list[str] = []
+        src_prefixes = "none"
         if idx_reader is not None:
             try:
                 detected_prefixes = idx_reader.get_detected_prefixes()
+                if detected_prefixes:
+                    src_prefixes = "index"
             except Exception:
                 pass
         if not detected_prefixes:
@@ -340,14 +417,19 @@ def _rlm_start(
             if callable(_prefix_fn):
                 try:
                     detected_prefixes = _prefix_fn()
+                    if detected_prefixes:
+                        src_prefixes = "fallback"
                 except Exception:
                     pass
+        t_prefixes = time.monotonic() - t_step
 
         bsl_registry = sandbox._namespace.get("_registry") or {}
+        t_step = time.monotonic()
         strategy = get_strategy(
             effort, format_info, detected_prefixes, ext_context, ext_overrides,
             registry=bsl_registry, idx_stats=idx_stats, idx_warnings=idx_warnings,
         )
+        t_strategy = time.monotonic() - t_step
 
         with _sandboxes_lock:
             _sandboxes[session_id] = sandbox
@@ -422,6 +504,14 @@ def _rlm_start(
         "available_functions": available_functions,
         "strategy": strategy,
     }
+    logger.info(
+        "rlm_start: session=%s timings: format=%.1fs ext=%.1fs overrides=%.1fs index=%.1fs sandbox=%.1fs prefixes=%.1fs strategy=%.1fs",
+        session_id, t_format, t_ext, t_overrides, t_index, t_sandbox, t_prefixes, t_strategy,
+    )
+    logger.info(
+        "rlm_start: session=%s sources: format=%s ext=%s prefixes=%s",
+        session_id, src_format, src_ext, src_prefixes,
+    )
     logger.info("rlm_start: session=%s completed in %.2fs", session_id, time.monotonic() - t0)
     return json.dumps(response, ensure_ascii=False)
 
