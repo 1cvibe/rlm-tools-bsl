@@ -1747,12 +1747,13 @@ def _can_index_glob(pattern: str) -> tuple[str, dict] | None:
     Returns (strategy_name, params) or None for FS fallback.
 
     Supported patterns:
-      **/*.ext          → ('by_extension', {ext: '.ext'})
-      Dir/*/File.ext    → ('dir_file', {dir: 'Dir', file: 'File.ext'})
-      Dir/** or Dir/**/* → ('under_prefix', {prefix: 'Dir'})
-      exact/path        → ('exact', {path: 'exact/path'})
-      **/Name.*         → ('name_wildcard', {name_prefix: 'Name', ext: ''})
-      **/Name.ext       → ('name_wildcard', {name_prefix: 'Name', ext: '.ext'})
+      **/*.ext            → ('by_extension', {ext: '.ext'})
+      **/Dir/**/*.ext     → ('under_prefix_ext', {dir_name: 'Dir', ext: '.ext'})
+      Dir/*/File.ext      → ('dir_file', {dir: 'Dir', file: 'File.ext'})
+      Dir/** or Dir/**/*  → ('under_prefix', {prefix: 'Dir'})
+      exact/path          → ('exact', {path: 'exact/path'})
+      **/Name.*           → ('name_wildcard', {name_prefix: 'Name', ext: ''})
+      **/Name.ext         → ('name_wildcard', {name_prefix: 'Name', ext: '.ext'})
     """
     if not pattern:
         return None
@@ -1780,6 +1781,11 @@ def _can_index_glob(pattern: str) -> tuple[str, dict] | None:
             name_prefix = rest[:-2]
             return ("name_wildcard", {"name_prefix": name_prefix, "ext": ""})
         return None
+
+    # **/Dir/**/*.ext — recursive under directory name, filter by extension
+    m = re.match(r"^\*\*/([^/*?]+)/\*\*/\*(\.[^/*?]+)$", pattern)
+    if m:
+        return ("under_prefix_ext", {"dir_name": m.group(1), "ext": m.group(2)})
 
     # Dir/** or Dir/**/*
     if pattern.endswith("/**") or pattern.endswith("/**/*"):
@@ -2263,6 +2269,15 @@ class IndexReader:
                     rows = self._conn.execute(
                         "SELECT rel_path FROM file_paths WHERE rel_path = ?",
                         (params["path"],),
+                    ).fetchall()
+                elif kind == "under_prefix_ext":
+                    dir_name = params["dir_name"]
+                    ext = params["ext"]
+                    rows = self._conn.execute(
+                        "SELECT rel_path FROM file_paths "
+                        "WHERE dir_path LIKE ? AND extension = ? "
+                        "ORDER BY rel_path",
+                        (f"%/{dir_name}/%", ext),
                     ).fetchall()
                 elif kind == "name_wildcard":
                     name_prefix = params["name_prefix"]

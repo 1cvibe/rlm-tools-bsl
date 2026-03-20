@@ -23,7 +23,19 @@ from rlm_tools_bsl.service import CONFIG_FILE, _config_path, load_config, save_c
 
 SERVICE_NAME = "rlm-tools-bsl"
 SERVICE_DISPLAY = "RLM Tools BSL (MCP HTTP Server)"
-SERVICE_DESC = "RLM-инструменты для анализа 1C BSL-кода. Предназначены для экономии расхода токенов и контекста при анализе BSL-проектов"
+_SERVICE_DESC_BASE = "RLM-инструменты для анализа 1C BSL-кода. Предназначены для экономии расхода токенов и контекста при анализе BSL-проектов"
+
+
+def _get_service_desc() -> str:
+    try:
+        from importlib.metadata import version
+        ver = version("rlm-tools-bsl")
+    except Exception:
+        ver = "?"
+    return f"{_SERVICE_DESC_BASE} (v{ver})"
+
+
+SERVICE_DESC = _get_service_desc()
 
 
 class RlmWindowsService(win32serviceutil.ServiceFramework):

@@ -4,7 +4,65 @@ import sys
 import tempfile
 from unittest.mock import patch, MagicMock
 
-from rlm_tools_bsl.server import _rlm_start, _rlm_execute, _rlm_end
+from rlm_tools_bsl.server import _rlm_start, _rlm_execute, _rlm_end, _format_helper_summary
+from rlm_tools_bsl.sandbox import HelperCall
+
+
+# ---------------------------------------------------------------------------
+# _format_helper_summary tests
+# ---------------------------------------------------------------------------
+
+
+def test_format_helper_summary_mixed():
+    """Mixed case: one helper once, another 5 times, third below threshold."""
+    calls = [
+        HelperCall("find_module", 0.3),
+        HelperCall("code_metrics", 0.1),
+        HelperCall("code_metrics", 0.2),
+        HelperCall("code_metrics", 0.15),
+        HelperCall("code_metrics", 0.12),
+        HelperCall("code_metrics", 0.13),
+        HelperCall("glob_files", 0.02),  # below 0.1 threshold
+    ]
+    parts, count = _format_helper_summary(calls, threshold=0.1)
+    assert count == 2  # find_module + code_metrics (glob_files excluded)
+    assert "find_module(0.3s)" in parts
+    assert "code_metrics(5\u00d7, total=0.7s)" in parts
+    assert "glob_files" not in parts
+
+
+def test_format_helper_summary_single_call():
+    """Single call above threshold."""
+    calls = [HelperCall("find_roles", 0.5)]
+    parts, count = _format_helper_summary(calls, threshold=0.1)
+    assert count == 1
+    assert parts == "find_roles(0.5s)"
+
+
+def test_format_helper_summary_all_below_threshold():
+    """All calls below threshold — empty result."""
+    calls = [HelperCall("glob_files", 0.01), HelperCall("help", 0.0)]
+    parts, count = _format_helper_summary(calls, threshold=0.1)
+    assert count == 0
+    assert parts == ""
+
+
+def test_format_helper_summary_threshold_zero():
+    """With threshold=0.0 (log_all mode), all calls are included."""
+    calls = [
+        HelperCall("find_module", 0.3),
+        HelperCall("glob_files", 0.0),
+        HelperCall("glob_files", 0.0),
+    ]
+    parts, count = _format_helper_summary(calls, threshold=0.0)
+    assert count == 2
+    assert "find_module(0.3s)" in parts
+    assert "glob_files(2\u00d7" in parts
+
+
+# ---------------------------------------------------------------------------
+# RLM flow tests
+# ---------------------------------------------------------------------------
 
 
 def test_full_rlm_flow():

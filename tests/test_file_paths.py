@@ -86,6 +86,24 @@ class TestCanIndexGlob:
         result = _can_index_glob("Documents\\**")
         assert result == ("under_prefix", {"prefix": "Documents"})
 
+    # --- under_prefix_ext pattern tests ---
+
+    def test_under_prefix_ext_xml(self):
+        result = _can_index_glob("**/EventSubscriptions/**/*.xml")
+        assert result == ("under_prefix_ext", {"dir_name": "EventSubscriptions", "ext": ".xml"})
+
+    def test_under_prefix_ext_mdo(self):
+        result = _can_index_glob("**/FunctionalOptions/**/*.mdo")
+        assert result == ("under_prefix_ext", {"dir_name": "FunctionalOptions", "ext": ".mdo"})
+
+    def test_under_prefix_ext_bsl(self):
+        result = _can_index_glob("**/Dir/**/*.bsl")
+        assert result == ("under_prefix_ext", {"dir_name": "Dir", "ext": ".bsl"})
+
+    def test_under_prefix_ext_single_star_not_matched(self):
+        """**/Dir/*/*.ext (single star) should NOT match under_prefix_ext."""
+        assert _can_index_glob("**/Dir/*/*.ext") is None
+
 
 # ---------------------------------------------------------------------------
 # _collect_file_paths tests
@@ -429,6 +447,13 @@ class TestHelpersIntegration:
         result = indexed_env["indexed"]["glob_files"]("Documents")
         assert len(result) == 1
         assert result[0].startswith("[hint:")
+
+    def test_glob_under_prefix_ext_contract(self, indexed_env):
+        """under_prefix_ext pattern: indexed result == FS result."""
+        pattern = "**/Ext/**/*.bsl"
+        indexed_result = indexed_env["indexed"]["glob_files"](pattern)
+        fs_result = indexed_env["fs"]["glob_files"](pattern)
+        assert sorted(indexed_result) == sorted(fs_result)
 
 
 # ---------------------------------------------------------------------------

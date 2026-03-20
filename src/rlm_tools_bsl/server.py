@@ -16,7 +16,7 @@ from pydantic import Field
 
 from rlm_tools_bsl.session import SessionManager
 from rlm_tools_bsl.sandbox import Sandbox
-from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched
+from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched, warmup_openai_import
 from rlm_tools_bsl.format_detector import FormatInfo, SourceFormat, detect_format
 from rlm_tools_bsl.extension_detector import (
     ConfigRole,
@@ -37,6 +37,7 @@ from rlm_tools_bsl.bsl_index import (
     check_index_usable,
     get_index_db_path,
 )
+from rlm_tools_bsl.sandbox import HelperCall
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -389,6 +390,17 @@ def _rlm_start(
             sum(len(v) for v in ext_overrides.values()),
         )
 
+        # Pre-import openai in background while Sandbox builds (~13s on slow PCs)
+        if os.environ.get("RLM_LLM_BASE_URL"):
+            threading.Thread(target=warmup_openai_import, daemon=True).start()
+
+        # Determine if index is authoritative for zero-callers results
+        _callers_authoritative = (
+            idx_status == IndexStatus.FRESH
+            and idx_reader is not None
+            and idx_reader.has_calls
+        )
+
         t_step = time.monotonic()
         sandbox = Sandbox(
             base_path=resolved,
@@ -396,6 +408,7 @@ def _rlm_start(
             execution_timeout_seconds=execution_timeout_seconds,
             format_info=format_info,
             idx_reader=idx_reader,
+            idx_zero_callers_authoritative=_callers_authoritative,
         )
         has_llm_tools = _install_session_llm_tools(session, sandbox)
         t_sandbox = time.monotonic() - t_step
@@ -516,6 +529,20 @@ def _rlm_start(
     return json.dumps(response, ensure_ascii=False)
 
 
+def _format_helper_summary(helper_calls: list[HelperCall], threshold: float) -> tuple[str, int]:
+    """Format helper calls for log. Returns (summary_string, notable_count)."""
+    grouped: dict[str, list[float]] = {}
+    for h in helper_calls:
+        if h.elapsed >= threshold:
+            grouped.setdefault(h.name, []).append(h.elapsed)
+    parts = ", ".join(
+        f"{name}({times[0]:.1f}s)" if len(times) == 1
+        else f"{name}({len(times)}\u00d7, total={sum(times):.1f}s)"
+        for name, times in grouped.items()
+    )
+    return parts, len(grouped)
+
+
 def _rlm_execute(
     session_id: str,
     code: str,
@@ -546,15 +573,14 @@ def _rlm_execute(
     result = sandbox.execute(code)
 
     elapsed = time.monotonic() - t0
-    # Log helper calls with timing
+    # Log helper calls with timing (grouped by name)
     helpers_summary = ""
     if result.helper_calls:
         total = len(result.helper_calls)
         log_all = os.environ.get("RLM_LOG_HELPERS", "").lower() == "all"
         threshold = 0.0 if log_all else 0.1
-        notable = [(h.name, h.elapsed) for h in result.helper_calls if h.elapsed >= threshold]
-        parts = ", ".join(f"{n}({e:.1f}s)" for n, e in notable)
-        if notable:
+        parts, notable_count = _format_helper_summary(result.helper_calls, threshold)
+        if notable_count:
             helpers_summary = f" [{total} helpers: {parts}]"
         else:
             helpers_summary = f" [{total} helpers]"

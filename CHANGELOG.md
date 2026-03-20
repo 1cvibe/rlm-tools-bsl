@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-03-20
+
+### Добавлено
+- **Агрегация хелперов в логе** — `_format_helper_summary()` группирует повторяющиеся хелперы: `code_metrics(6×, total=0.7s)` вместо 6 отдельных записей. Порядок групп — по первому появлению (dict insertion order)
+- **Логирование glob fallback с причинами** — `glob_files()` логирует причину FS fallback (`reason=no_index`, `reason=unsupported`, `reason=index_error`), indexed-hit на `logger.debug`. Диагностика для выявления медленных паттернов
+- **`idx_zero_callers_authoritative`** — при fresh-индексе + has_calls пустой результат `find_callers_context()` считается окончательным (без 40s+ FS fallback). Возвращает `_meta.hint` с рекомендацией `safe_grep()`. При stale/нет индекса — fallback сохраняется
+- **Warmup `openai` import** — `warmup_openai_import()` с lock+flag, запускается в фоновом потоке из `_rlm_start` только при `RLM_LLM_BASE_URL`. Параллельно с построением Sandbox (~13s на медленном ПК). Без side-effect на import-time
+- **Паттерн `**/Dir/**/*.ext` в whitelist** — стратегия `under_prefix_ext` в `_can_index_glob()`. Покрывает EventSubscriptions, ScheduledJobs, FunctionalOptions (`**/EventSubscriptions/**/*.xml` и т.п.)
+- **Версия в описании службы** — Windows и Linux службы включают номер версии в Description (`v1.3.3`)
+
+### Изменено
+- **`make_bsl_helpers()`** — новый параметр `idx_zero_callers_authoritative: bool = False`
+- **`Sandbox.__init__()`** — пробрасывает `idx_zero_callers_authoritative` в `make_bsl_helpers()`
+- **`_rlm_start()`** — вычисляет `_callers_authoritative` из `IndexStatus.FRESH + has_calls`, запускает openai warmup до Sandbox
+- **`simple-install.ps1`** — добавлено обновление глобального Python (как в `reinstall-service.ps1`), вывод версии
+
+### Ожидаемый эффект на медленном ПК (ERP, 12K BSL, с индексом)
+
+| Bottleneck | v1.3.2 | v1.3.3 |
+|------------|--------|--------|
+| find_callers_context FS fallback (0 callers) | 49s (timeout) | ~0s |
+| sandbox / openai import на HDD | 13s | ~5-8s |
+| find_event_subscriptions (без индекса) | 11.5s | ~0s |
+| find_scheduled_jobs (без индекса) | 11.9s | ~0s |
+| find_functional_options (без индекса) | 20.1s | ~0s |
+| find_roles (без индекса) | 23.8s | ~0.1s |
+
+### Тесты
+- Было: 398 (v1.3.2)
+- Стало: 418 (добавлены 20 тестов: 4 format_helper_summary, 4 glob fallback logging, 4 authoritative callers, 3 warmup, 5 under_prefix_ext)
+
 ## [1.3.2] — 2026-03-20
 
 ### Добавлено

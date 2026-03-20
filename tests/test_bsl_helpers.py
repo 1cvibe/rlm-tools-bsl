@@ -1841,3 +1841,151 @@ def test_code_metrics_basic():
         assert m["exports_count"] == 1
         assert m["max_nesting"] == 2  # Если + Для
         assert m["avg_proc_size"] > 0
+
+
+# ---------------------------------------------------------------------------
+# find_callers_context: idx_zero_callers_authoritative tests
+# ---------------------------------------------------------------------------
+
+
+def _make_bsl_fixture_authoritative(tmpdir, authoritative=False):
+    """Create fixture with idx_zero_callers_authoritative param."""
+    _create_cf_fixture(tmpdir)
+    helpers, resolve_safe = make_helpers(tmpdir)
+    format_info = detect_format(tmpdir)
+    bsl = make_bsl_helpers(
+        base_path=tmpdir,
+        resolve_safe=resolve_safe,
+        read_file_fn=helpers["read_file"],
+        grep_fn=helpers["grep"],
+        glob_files_fn=helpers["glob_files"],
+        format_info=format_info,
+        idx_zero_callers_authoritative=authoritative,
+    )
+    return bsl, helpers
+
+
+def test_authoritative_true_index_hit():
+    """authoritative=True + index returns callers -> result without fallback."""
+    from unittest.mock import MagicMock
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_bsl_fixture_authoritative(tmpdir, authoritative=True)
+        # Replace idx_reader in the closure — not possible directly,
+        # so we test via the FS path: ЗаполнитьДанные has callers
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        assert len(result["callers"]) > 0
+        assert "fallback_skipped" not in result["_meta"]
+
+
+def test_authoritative_true_zero_callers():
+    """authoritative=True + index returns 0 callers -> fallback skipped."""
+    from unittest.mock import MagicMock, patch
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _create_cf_fixture(tmpdir)
+        helpers, resolve_safe = make_helpers(tmpdir)
+        format_info = detect_format(tmpdir)
+
+        # Create a mock idx_reader that returns 0 callers
+        mock_idx = MagicMock()
+        mock_idx.has_calls = True
+        mock_idx.get_callers.return_value = {
+            "callers": [],
+            "_meta": {"total_callers": 0, "returned": 0, "offset": 0, "has_more": False},
+        }
+        mock_idx.get_all_modules.return_value = []
+        mock_idx.get_methods_by_path.return_value = None
+
+        bsl = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=resolve_safe,
+            read_file_fn=helpers["read_file"],
+            grep_fn=helpers["grep"],
+            glob_files_fn=helpers["glob_files"],
+            format_info=format_info,
+            idx_reader=mock_idx,
+            idx_zero_callers_authoritative=True,
+        )
+
+        result = bsl["find_callers_context"]("НесуществующаяФункция")
+        assert result["_meta"]["fallback_skipped"] is True
+        assert "hint" in result["_meta"]
+        assert "safe_grep" in result["_meta"]["hint"]
+        assert len(result["callers"]) == 0
+
+
+def test_authoritative_false_zero_callers_fallback():
+    """authoritative=False + index returns 0 callers -> fallback performed."""
+    from unittest.mock import MagicMock
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _create_cf_fixture(tmpdir)
+        helpers, resolve_safe = make_helpers(tmpdir)
+        format_info = detect_format(tmpdir)
+
+        mock_idx = MagicMock()
+        mock_idx.has_calls = True
+        mock_idx.get_callers.return_value = {
+            "callers": [],
+            "_meta": {"total_callers": 0, "returned": 0, "offset": 0, "has_more": False},
+        }
+        mock_idx.get_all_modules.return_value = []
+        mock_idx.get_methods_by_path.return_value = None
+
+        bsl = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=resolve_safe,
+            read_file_fn=helpers["read_file"],
+            grep_fn=helpers["grep"],
+            glob_files_fn=helpers["glob_files"],
+            format_info=format_info,
+            idx_reader=mock_idx,
+            idx_zero_callers_authoritative=False,  # not authoritative
+        )
+
+        result = bsl["find_callers_context"]("ЗаполнитьДанные")
+        # Fallback should have been performed (no fallback_skipped flag)
+        assert "fallback_skipped" not in result["_meta"]
+
+
+def test_authoritative_parity_known_call():
+    """Parity test: known qualified call returns same result from both paths."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create fixture once, build two helpers with different authoritative flag
+        _create_cf_fixture(tmpdir)
+        helpers, resolve_safe = make_helpers(tmpdir)
+        format_info = detect_format(tmpdir)
+
+        bsl_fs = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=resolve_safe,
+            read_file_fn=helpers["read_file"],
+            grep_fn=helpers["grep"],
+            glob_files_fn=helpers["glob_files"],
+            format_info=format_info,
+            idx_zero_callers_authoritative=False,
+        )
+        bsl_auth = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=resolve_safe,
+            read_file_fn=helpers["read_file"],
+            grep_fn=helpers["grep"],
+            glob_files_fn=helpers["glob_files"],
+            format_info=format_info,
+            idx_zero_callers_authoritative=True,
+        )
+
+        result_fs = bsl_fs["find_callers_context"]("ЗаполнитьДанные")
+        result_auth = bsl_auth["find_callers_context"]("ЗаполнитьДанные")
+
+        # Both should find the same callers (FS path for both, no idx_reader)
+        assert len(result_fs["callers"]) == len(result_auth["callers"])
+        fs_callers = {c["caller_name"] for c in result_fs["callers"]}
+        auth_callers = {c["caller_name"] for c in result_auth["callers"]}
+        assert fs_callers == auth_callers

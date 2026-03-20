@@ -8,6 +8,14 @@ from rlm_tools_bsl.service import CONFIG_FILE, load_config, save_config
 SERVICE_NAME = "rlm-tools-bsl"
 
 
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("rlm-tools-bsl")
+    except Exception:
+        return "?"
+
+
 def _unit_path() -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service"
 
@@ -27,7 +35,7 @@ def install(host: str, port: int, env_file: str | None) -> None:
     exe = _exe_path()
     unit = (
         "[Unit]\n"
-        "Description=RLM Tools BSL (MCP HTTP Server)\n"
+        f"Description=RLM Tools BSL (MCP HTTP Server) v{_get_version()}\n"
         "After=network.target\n"
         "\n"
         "[Service]\n"

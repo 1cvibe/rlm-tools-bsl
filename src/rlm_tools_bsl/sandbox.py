@@ -61,12 +61,14 @@ class Sandbox:
         execution_timeout_seconds: int = 45,
         format_info=None,
         idx_reader=None,
+        idx_zero_callers_authoritative: bool = False,
     ):
         self._base_path = base_path
         self._max_output_chars = max_output_chars
         self._execution_timeout_seconds = execution_timeout_seconds
         self._format_info = format_info
         self._idx_reader = idx_reader
+        self._idx_zero_callers_authoritative = idx_zero_callers_authoritative
         self._namespace: dict = {}
         self._resolve_safe = None
         self._helper_calls: list[HelperCall] = []
@@ -111,6 +113,7 @@ class Sandbox:
                 glob_files_fn=helpers["glob_files"],
                 format_info=self._format_info,
                 idx_reader=self._idx_reader,
+                idx_zero_callers_authoritative=self._idx_zero_callers_authoritative,
             )
             self._namespace.update(self._wrap_helpers(bsl_helpers))
 

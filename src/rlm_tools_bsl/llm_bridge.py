@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from anthropic import Anthropic
 
@@ -127,6 +128,28 @@ def get_llm_query_fn():
         "or ANTHROPIC_API_KEY to enable llm_query"
     )
     return None
+
+
+# ── Warmup (background pre-import) ────────────────────
+
+
+_openai_warmup_done = False
+_openai_warmup_lock = threading.Lock()
+
+
+def warmup_openai_import():
+    """Pre-cache openai in sys.modules. Safe to call multiple times."""
+    global _openai_warmup_done
+    if _openai_warmup_done:
+        return
+    with _openai_warmup_lock:
+        if _openai_warmup_done:
+            return
+        try:
+            import openai  # noqa: F401
+        except ImportError:
+            pass
+        _openai_warmup_done = True
 
 
 # ── Batched execution (unchanged) ─────────────────────

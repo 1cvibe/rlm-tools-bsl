@@ -1,11 +1,13 @@
 import os
 import sys
 from unittest.mock import patch, MagicMock
+import rlm_tools_bsl.llm_bridge as _llm_bridge_module
 from rlm_tools_bsl.llm_bridge import (
     make_llm_query,
     make_llm_query_batched,
     _make_openai_query,
     get_llm_query_fn,
+    warmup_openai_import,
 )
 
 
@@ -261,3 +263,46 @@ def test_batched_handles_error():
     assert len(results) == 1
     assert "[ERROR]" in results[0]
     assert "API down" in results[0]
+
+
+# ── Warmup tests ───────────────────────────────────────
+
+
+def test_warmup_no_crash_without_openai():
+    """warmup_openai_import should not raise even when openai is missing."""
+    # Reset flag to test fresh
+    _llm_bridge_module._openai_warmup_done = False
+    try:
+        with patch.dict(sys.modules, {"openai": None}):
+            # openai mapped to None simulates ImportError
+            _llm_bridge_module._openai_warmup_done = False
+            warmup_openai_import()
+        assert _llm_bridge_module._openai_warmup_done is True
+    finally:
+        _llm_bridge_module._openai_warmup_done = False
+
+
+def test_warmup_idempotent():
+    """Second call should be a no-op (flag already True)."""
+    _llm_bridge_module._openai_warmup_done = False
+    try:
+        warmup_openai_import()
+        assert _llm_bridge_module._openai_warmup_done is True
+        # Second call — should not fail
+        warmup_openai_import()
+        assert _llm_bridge_module._openai_warmup_done is True
+    finally:
+        _llm_bridge_module._openai_warmup_done = False
+
+
+def test_warmup_does_not_break_get_llm_query_fn():
+    """Warmup should not interfere with get_llm_query_fn without RLM_LLM_MODEL."""
+    _llm_bridge_module._openai_warmup_done = False
+    try:
+        warmup_openai_import()
+        env = _clean_llm_env({})
+        with patch.dict(os.environ, env, clear=True):
+            fn = get_llm_query_fn()
+            assert fn is None
+    finally:
+        _llm_bridge_module._openai_warmup_done = False

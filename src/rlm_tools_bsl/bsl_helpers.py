@@ -67,6 +67,7 @@ def make_bsl_helpers(
     glob_files_fn,     # callable: (pattern) -> list[str]
     format_info: FormatInfo | None = None,
     idx_reader=None,   # optional IndexReader for SQLite index acceleration
+    idx_zero_callers_authoritative: bool = False,
 ) -> dict:
     """Creates BSL helper functions for sandbox namespace.
     Internal _bsl_index is built lazily on first find_module() call.
@@ -473,8 +474,18 @@ def make_bsl_helpers(
                 )
                 if _n > 0:
                     return result
-                # Index returned 0 callers — fall back to FS text scan
-                # (the name might be an object/type name, not a procedure)
+                if idx_zero_callers_authoritative:
+                    logger.debug(
+                        "find_callers_context: proc=%s index=0, authoritative=True, skip FS fallback",
+                        proc_name,
+                    )
+                    result["_meta"]["fallback_skipped"] = True
+                    result["_meta"]["hint"] = (
+                        "No callers found in call index. "
+                        "Use safe_grep(proc_name) to search for text mentions."
+                    )
+                    return result
+                # Untrusted/stale index — fall back to FS scan
                 logger.debug(
                     "find_callers_context: proc=%s index returned 0, falling back to scan",
                     proc_name,

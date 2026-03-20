@@ -78,6 +78,21 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# Also update the global Python that the Windows service uses.
+# shutil.which() in _service_win.py finds this exe, not the uv tool one.
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+$globalExe = if ($pythonCmd) { $pythonCmd.Source } else { "" }
+$globalPython = if ($globalExe) { & $globalExe -c "import sys; print(sys.executable)" 2>$null } else { "" }
+if ($globalPython -and (Test-Path $globalPython)) {
+    Write-Host "Updating global Python package ($globalPython)..." -ForegroundColor Cyan
+    $uvPipArgs = @("pip", "install", $PSScriptRoot, "--python", $globalPython)
+    if ($NativeTls) { $uvPipArgs += "--native-tls" }
+    & uv @uvPipArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Global Python update failed - service may run an older version."
+    }
+}
+
 # Ensure rlm-tools-bsl is in PATH for this session
 if (-not (Get-Command rlm-tools-bsl -ErrorAction SilentlyContinue)) {
     Write-Host "Adding uv tool bin directory to PATH..." -ForegroundColor Yellow
@@ -154,6 +169,7 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host " Done! HTTP MCP server is running." -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
+Write-Host "Version:  $(& rlm-tools-bsl --version 2>&1)"
 Write-Host "Endpoint: $url"
 Write-Host ""
 Write-Host "Add to .claude.json / mcp.json:"

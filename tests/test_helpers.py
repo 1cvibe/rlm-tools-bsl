@@ -255,3 +255,74 @@ def test_cache_invalidation_on_rename():
         # Different count -> should still invalidate
         result3 = load_index(base, bsl_count=3, bsl_paths=["a.bsl", "b.bsl", "c.bsl"])
         assert result3 is None
+
+
+# ---------------------------------------------------------------------------
+# glob_files fallback logging tests
+# ---------------------------------------------------------------------------
+
+
+def test_glob_files_indexed_no_fallback_log(caplog, tmp_path):
+    """Supported pattern served from index should NOT log FS fallback."""
+    from unittest.mock import MagicMock
+
+    idx = MagicMock()
+    idx.glob_files.return_value = ["a.bsl", "b.bsl"]
+
+    helpers, _ = make_helpers(str(tmp_path), idx_reader=idx)
+    with caplog.at_level("INFO", logger="rlm_tools_bsl.helpers"):
+        result = helpers["glob_files"]("**/*.bsl")
+
+    assert len(result) == 2
+    assert not any("FS fallback" in msg for msg in caplog.messages)
+
+
+def test_glob_files_unsupported_logs_fallback(caplog, tmp_path):
+    """Unsupported pattern with index present should log reason=unsupported."""
+    (tmp_path / "a.bsl").write_text("// code", encoding="utf-8")
+
+    from unittest.mock import MagicMock
+
+    idx = MagicMock()
+    idx.glob_files.return_value = None  # unsupported pattern
+
+    helpers, _ = make_helpers(str(tmp_path), idx_reader=idx)
+    with caplog.at_level("INFO", logger="rlm_tools_bsl.helpers"):
+        helpers["glob_files"]("**/Dir*/*.xml")
+
+    fallback_msgs = [m for m in caplog.messages if "FS fallback" in m]
+    assert len(fallback_msgs) == 1
+    assert "reason=unsupported" in fallback_msgs[0]
+
+
+def test_glob_files_no_index_logs_fallback(caplog, tmp_path):
+    """Without index, should log reason=no_index."""
+    (tmp_path / "a.bsl").write_text("// code", encoding="utf-8")
+
+    helpers, _ = make_helpers(str(tmp_path), idx_reader=None)
+    with caplog.at_level("INFO", logger="rlm_tools_bsl.helpers"):
+        helpers["glob_files"]("**/*.bsl")
+
+    fallback_msgs = [m for m in caplog.messages if "FS fallback" in m]
+    assert len(fallback_msgs) == 1
+    assert "reason=no_index" in fallback_msgs[0]
+
+
+def test_glob_files_index_error_logs_fallback(caplog, tmp_path):
+    """Index error should log reason=index_error and fall back to FS."""
+    (tmp_path / "a.bsl").write_text("// code", encoding="utf-8")
+
+    from unittest.mock import MagicMock
+
+    idx = MagicMock()
+    idx.glob_files.side_effect = RuntimeError("db locked")
+
+    helpers, _ = make_helpers(str(tmp_path), idx_reader=idx)
+    with caplog.at_level("INFO", logger="rlm_tools_bsl.helpers"):
+        result = helpers["glob_files"]("**/*.bsl")
+
+    fallback_msgs = [m for m in caplog.messages if "FS fallback" in m]
+    assert len(fallback_msgs) == 1
+    assert "reason=index_error" in fallback_msgs[0]
+    # FS fallback should still return results
+    assert len(result) == 1

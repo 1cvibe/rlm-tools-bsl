@@ -1,8 +1,11 @@
 import collections
+import logging
 import os
 import pathlib
 import re
 import threading
+
+logger = logging.getLogger(__name__)
 
 _FILE_CACHE_MAX_SIZE = 500
 _GREP_CACHE_MAX_SIZE = 100
@@ -256,11 +259,14 @@ def make_helpers(base_path: str, idx_reader=None) -> tuple[dict, callable]:
         Uses SQLite index for supported patterns (instant), falls back to FS otherwise.
         """
         if idx_reader is not None:
+            _fallback_reason = None
             try:
                 indexed = idx_reader.glob_files(pattern)
             except Exception:
+                _fallback_reason = "index_error"
                 indexed = None
             if indexed is not None:
+                logger.debug("glob_files: indexed pattern=%s results=%d", pattern, len(indexed))
                 # Reproduce hint logic: if no file matches, check for dir-like matches
                 if not indexed:
                     # Check if pattern without wildcards is a known directory prefix
@@ -272,6 +278,12 @@ def make_helpers(base_path: str, idx_reader=None) -> tuple[dict, callable]:
                         ]
                 # Normalize separators to match FS behavior (backslash on Windows)
                 return [p.replace("/", os.sep) for p in indexed]
+            # Fallback: pattern unsupported or index error
+            if _fallback_reason is None:
+                _fallback_reason = "unsupported"
+            logger.info("glob_files: FS fallback pattern=%s reason=%s", pattern, _fallback_reason)
+        else:
+            logger.info("glob_files: FS fallback pattern=%s reason=no_index", pattern)
         return _glob_files_fs(pattern)
 
     def _tree_fs(path: str = ".", max_depth: int = 3) -> str:
