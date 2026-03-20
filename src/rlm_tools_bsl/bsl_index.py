@@ -23,7 +23,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 4
+BUILDER_VERSION = 5
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -186,6 +186,22 @@ CREATE TABLE IF NOT EXISTS subsystem_content (
 );
 CREATE INDEX IF NOT EXISTS idx_sc_object ON subsystem_content(object_ref COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_sc_subsystem ON subsystem_content(subsystem_name COLLATE NOCASE);
+
+-- Level-4: file navigation index (glob/tree/find_files acceleration)
+CREATE TABLE IF NOT EXISTS file_paths (
+    id INTEGER PRIMARY KEY,
+    rel_path TEXT NOT NULL UNIQUE,
+    extension TEXT NOT NULL,
+    dir_path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    size INTEGER,
+    mtime REAL
+);
+CREATE INDEX IF NOT EXISTS idx_fp_ext ON file_paths(extension);
+CREATE INDEX IF NOT EXISTS idx_fp_dir ON file_paths(dir_path);
+CREATE INDEX IF NOT EXISTS idx_fp_filename ON file_paths(filename COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_fp_depth ON file_paths(depth);
 """
 
 
@@ -863,6 +879,71 @@ def _insert_metadata_tables(conn: sqlite3.Connection, tables: dict[str, list[tup
 
 
 # ---------------------------------------------------------------------------
+# File paths collection for navigation index
+# ---------------------------------------------------------------------------
+_FILE_NAV_EXTENSIONS = {".bsl", ".mdo", ".xml"}
+
+# Directories to skip (same as helpers._SKIP_DIRS)
+_SKIP_DIRS_NAV = {
+    ".git", ".build", "node_modules", ".venv", "venv",
+    "__pycache__", ".tox", ".mypy_cache", ".cache", ".rlm_cache",
+}
+
+
+def _collect_file_paths(base_path: str) -> list[tuple]:
+    """Collect all .bsl/.mdo/.xml file paths for the navigation index.
+
+    Returns list of tuples ready for INSERT:
+        (rel_path, extension, dir_path, filename, depth, size, mtime)
+    """
+    base = Path(base_path)
+    rows: list[tuple] = []
+
+    for dirpath, dirnames, filenames in os.walk(base):
+        # Filter out hidden/skip directories
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _SKIP_DIRS_NAV and not d.startswith(".")
+        ]
+        for fname in filenames:
+            if fname.startswith("."):
+                continue
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in _FILE_NAV_EXTENSIONS:
+                continue
+
+            full_path = Path(dirpath) / fname
+            try:
+                st = full_path.stat()
+            except OSError:
+                continue
+
+            rel = full_path.relative_to(base).as_posix()
+            parts = rel.split("/")
+            dir_path = "/".join(parts[:-1]) if len(parts) > 1 else ""
+            depth = len(parts)
+
+            rows.append((rel, ext, dir_path, fname, depth, st.st_size, st.st_mtime))
+
+    return rows
+
+
+def _insert_file_paths(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    """Insert file navigation paths into the database."""
+    try:
+        conn.execute("DELETE FROM file_paths")
+    except sqlite3.OperationalError:
+        pass
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO file_paths "
+            "(rel_path, extension, dir_path, filename, depth, size, mtime) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Regex for register movements (in-band extraction from Document BSL)
 # ---------------------------------------------------------------------------
 _MOVEMENTS_RE = re.compile(r'\u0414\u0432\u0438\u0436\u0435\u043d\u0438\u044f\.(\w+)')  # Движения.RegName
@@ -871,9 +952,24 @@ _ERP_MECHANISM_RE = re.compile(
     r'\.\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c\(\s*"(\w+)"'
 )  # МеханизмыДокумента.Добавить("RegName")
 _MANAGER_TABLE_RE = re.compile(
+    r'(?:\u0424\u0443\u043d\u043a\u0446\u0438\u044f|\u041f\u0440\u043e\u0446\u0435\u0434\u0443\u0440\u0430)\s+'
     r'\u0422\u0435\u043a\u0441\u0442\u0417\u0430\u043f\u0440\u043e\u0441\u0430'
-    r'\u0422\u0430\u0431\u043b\u0438\u0446\u0430(\w+)'
-)  # ТекстЗапросаТаблицаRegName
+    r'\u0422\u0430\u0431\u043b\u0438\u0446\u0430(\w+)\s*\(',
+    re.IGNORECASE,
+)  # Функция|Процедура ТекстЗапросаТаблицаRegName(
+_ADAPTED_PROC_RE = re.compile(
+    r'(?:\u0424\u0443\u043d\u043a\u0446\u0438\u044f|\u041f\u0440\u043e\u0446\u0435\u0434\u0443\u0440\u0430)\s+'
+    r'\u0410\u0434\u0430\u043f\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439'
+    r'\u0422\u0435\u043a\u0441\u0442\u0417\u0430\u043f\u0440\u043e\u0441\u0430'
+    r'\u0414\u0432\u0438\u0436\u0435\u043d\u0438\u0439\u041f\u043e\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0443\b.*?\n'
+    r'(.*?)'
+    r'\n\s*\u041a\u043e\u043d\u0435\u0446(?:\u0424\u0443\u043d\u043a\u0446\u0438\u0438|\u041f\u0440\u043e\u0446\u0435\u0434\u0443\u0440\u044b)',
+    re.IGNORECASE | re.DOTALL,
+)  # Функция|Процедура АдаптированныйТекстЗапросаДвиженийПоРегистру...КонецФункции|КонецПроцедуры
+_ADAPTED_REG_RE = re.compile(
+    r'\u0418\u043c\u044f\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\s*=\s*"(\w+)"',
+    re.IGNORECASE,
+)  # ИмяРегистра = "RegName"
 
 
 class FileResult(NamedTuple):
@@ -905,6 +1001,10 @@ def _extract_movements(
             results.append((m.group(1), "erp_mechanism", rel_path))
         for m in _MANAGER_TABLE_RE.finditer(content):
             results.append((m.group(1), "manager_table", rel_path))
+        adapted_match = _ADAPTED_PROC_RE.search(content)
+        if adapted_match:
+            for m in _ADAPTED_REG_RE.finditer(adapted_match.group(1)):
+                results.append((m.group(1), "adapted", rel_path))
 
     return results
 
@@ -969,10 +1069,8 @@ def _parse_role_rights_for_index(
     results: list[tuple[str, str, str, str]] = []
     for entry in parse_rights_xml(content):
         full_name = entry["object"]
-        # Extract short object name: "Документ.МойДок" -> "МойДок"
-        obj_name = full_name.rsplit(".", 1)[-1] if "." in full_name else full_name
         for right in entry["rights"]:
-            results.append((role_name, obj_name, right, file_path))
+            results.append((role_name, full_name, right, file_path))
     return results
 
 
@@ -1100,11 +1198,13 @@ class IndexBuilder:
         logger.info("Found %d .bsl files", total_files)
 
         if total_files == 0:
-            # Create empty DB with schema
+            # Create empty DB with schema + file_paths for .mdo/.xml
             conn = sqlite3.connect(str(db_path))
             conn.executescript(_SCHEMA_SQL)
+            fp_rows = _collect_file_paths(base_path)
+            _insert_file_paths(conn, fp_rows)
             self._write_meta(conn, base_path, 0, "", build_calls, build_metadata,
-                             build_fts=build_fts)
+                             build_fts=build_fts, file_paths_count=len(fp_rows))
             conn.close()
             return db_path
 
@@ -1180,6 +1280,12 @@ class IndexBuilder:
             logger.info("Role rights: %d entries from %d roles",
                        len(role_rights), len(set(r[0] for r in role_rights)))
 
+        # Level-4: file navigation index (.bsl/.mdo/.xml paths)
+        file_paths_rows = _collect_file_paths(base_path)
+        _insert_file_paths(conn, file_paths_rows)
+        conn.commit()
+        logger.info("File paths: %d entries", len(file_paths_rows))
+
         # FTS5 full-text search index for methods
         if build_fts:
             conn.execute(
@@ -1199,6 +1305,7 @@ class IndexBuilder:
             conn, base_path, total_files, paths_hash,
             build_calls, build_metadata, config_meta, build_fts,
             detected_prefixes=detected_prefixes,
+            file_paths_count=len(file_paths_rows),
         )
 
         conn.execute("ANALYZE")
@@ -1293,115 +1400,109 @@ class IndexBuilder:
             len(added_paths), len(changed_paths), len(removed_paths),
         )
 
-        if not to_remove and not to_add:
-            conn.close()
-            return {"added": 0, "changed": 0, "removed": 0}
+        bsl_changed = bool(to_remove or to_add)
 
-        # Process new/changed files
-        results: list[FileResult] = []
-        if to_add:
-            workers = min(os.cpu_count() or 4, 8)
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(
-                        _process_single_file, disk_files[rel], base_path, build_calls,
-                    ): rel
-                    for rel in to_add
-                    if rel in disk_files
-                }
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result is not None:
-                        results.append(result)
+        # Process BSL delta (modules, methods, calls, movements)
+        if bsl_changed:
+            results: list[FileResult] = []
+            if to_add:
+                workers = min(os.cpu_count() or 4, 8)
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {
+                        pool.submit(
+                            _process_single_file, disk_files[rel], base_path, build_calls,
+                        ): rel
+                        for rel in to_add
+                        if rel in disk_files
+                    }
+                    for future in as_completed(futures):
+                        result = future.result()
+                        if result is not None:
+                            results.append(result)
 
-        # Apply changes in a single transaction
-        with conn:
-            # Delete old data for removed + changed
-            if to_remove:
-                for rel in to_remove:
-                    mod_info = db_modules.get(rel)
-                    if mod_info is None:
-                        continue
-                    mod_id = mod_info["id"]
-                    # Get method IDs for cascade delete of calls
-                    method_ids = [
-                        row[0]
-                        for row in conn.execute(
-                            "SELECT id FROM methods WHERE module_id = ?", (mod_id,)
-                        )
-                    ]
-                    if method_ids:
-                        placeholders = ",".join("?" * len(method_ids))
-                        conn.execute(
-                            f"DELETE FROM calls WHERE caller_id IN ({placeholders})",
-                            method_ids,
-                        )
-                        if has_fts:
+            with conn:
+                # Delete old data for removed + changed
+                if to_remove:
+                    for rel in to_remove:
+                        mod_info = db_modules.get(rel)
+                        if mod_info is None:
+                            continue
+                        mod_id = mod_info["id"]
+                        method_ids = [
+                            row[0]
+                            for row in conn.execute(
+                                "SELECT id FROM methods WHERE module_id = ?", (mod_id,)
+                            )
+                        ]
+                        if method_ids:
+                            placeholders = ",".join("?" * len(method_ids))
                             conn.execute(
-                                f"DELETE FROM methods_fts WHERE rowid IN ({placeholders})",
+                                f"DELETE FROM calls WHERE caller_id IN ({placeholders})",
                                 method_ids,
                             )
-                    conn.execute("DELETE FROM methods WHERE module_id = ?", (mod_id,))
-                    conn.execute("DELETE FROM modules WHERE id = ?", (mod_id,))
+                            if has_fts:
+                                conn.execute(
+                                    f"DELETE FROM methods_fts WHERE rowid IN ({placeholders})",
+                                    method_ids,
+                                )
+                        conn.execute("DELETE FROM methods WHERE module_id = ?", (mod_id,))
+                        conn.execute("DELETE FROM modules WHERE id = ?", (mod_id,))
 
-            # Insert new data
-            self._bulk_insert(conn, results, build_calls)
+                # Insert new data
+                self._bulk_insert(conn, results, build_calls)
 
-            # Update FTS for newly inserted methods
-            if has_fts and results:
-                new_rel_paths = [r.info.relative_path for r in results]
-                placeholders = ",".join("?" * len(new_rel_paths))
-                conn.execute(
-                    f"INSERT INTO methods_fts(rowid, name, object_name) "
-                    f"SELECT m.id, m.name, mod.object_name "
-                    f"FROM methods m JOIN modules mod ON mod.id = m.module_id "
-                    f"WHERE mod.rel_path IN ({placeholders})",
-                    new_rel_paths,
-                )
-
-            # Update register_movements for changed/added Document modules
-            if results:
-                # Collect document names that need refresh
-                changed_doc_names = set()
-                for r in results:
-                    if r.info.category == "Documents" and r.info.object_name:
-                        changed_doc_names.add(r.info.object_name)
-                # Remove old movements for changed documents
-                for doc_name in changed_doc_names:
-                    try:
-                        conn.execute(
-                            "DELETE FROM register_movements WHERE document_name = ?",
-                            (doc_name,),
-                        )
-                    except sqlite3.OperationalError:
-                        pass
-                # Insert new movements
-                new_movements: list[tuple[str, str, str, str]] = []
-                for r in results:
-                    if r.movements and r.info.object_name:
-                        for reg_name, source, fpath in r.movements:
-                            new_movements.append((r.info.object_name, reg_name, source, fpath))
-                if new_movements:
-                    conn.executemany(
-                        "INSERT INTO register_movements "
-                        "(document_name, register_name, source, file) VALUES (?, ?, ?, ?)",
-                        new_movements,
+                # Update FTS for newly inserted methods
+                if has_fts and results:
+                    new_rel_paths = [r.info.relative_path for r in results]
+                    placeholders = ",".join("?" * len(new_rel_paths))
+                    conn.execute(
+                        f"INSERT INTO methods_fts(rowid, name, object_name) "
+                        f"SELECT m.id, m.name, mod.object_name "
+                        f"FROM methods m JOIN modules mod ON mod.id = m.module_id "
+                        f"WHERE mod.rel_path IN ({placeholders})",
+                        new_rel_paths,
                     )
 
-            # Update meta
-            new_paths_hash = _paths_hash(sorted(disk_files.keys()))
-            conn.execute(
-                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
-                ("bsl_count", str(len(disk_files))),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
-                ("paths_hash", new_paths_hash),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
-                ("built_at", str(time.time())),
-            )
+                # Update register_movements for changed/added Document modules
+                if results:
+                    changed_doc_names = set()
+                    for r in results:
+                        if r.info.category == "Documents" and r.info.object_name:
+                            changed_doc_names.add(r.info.object_name)
+                    for doc_name in changed_doc_names:
+                        try:
+                            conn.execute(
+                                "DELETE FROM register_movements WHERE document_name = ?",
+                                (doc_name,),
+                            )
+                        except sqlite3.OperationalError:
+                            pass
+                    new_movements: list[tuple[str, str, str, str]] = []
+                    for r in results:
+                        if r.movements and r.info.object_name:
+                            for reg_name, source, fpath in r.movements:
+                                new_movements.append((r.info.object_name, reg_name, source, fpath))
+                    if new_movements:
+                        conn.executemany(
+                            "INSERT INTO register_movements "
+                            "(document_name, register_name, source, file) VALUES (?, ?, ?, ?)",
+                            new_movements,
+                        )
+
+                # Update meta
+                new_paths_hash = _paths_hash(sorted(disk_files.keys()))
+                conn.execute(
+                    "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                    ("bsl_count", str(len(disk_files))),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                    ("paths_hash", new_paths_hash),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                    ("built_at", str(time.time())),
+                )
 
         # Refresh Level-1 metadata (config version may have changed)
         config_meta = _parse_configuration_meta(base_path)
@@ -1439,6 +1540,42 @@ class IndexBuilder:
             )
             md_tables = _collect_metadata_tables(base_path)
             _insert_metadata_tables(conn, md_tables)
+
+        # Refresh role_rights (full rebuild — cheap, ~346K entries in ~2s)
+        conn.executescript(
+            "CREATE TABLE IF NOT EXISTS role_rights ("
+            "id INTEGER PRIMARY KEY, role_name TEXT NOT NULL, "
+            "object_name TEXT NOT NULL, right_name TEXT NOT NULL, file TEXT);\n"
+            "CREATE INDEX IF NOT EXISTS idx_rr_object ON role_rights(object_name COLLATE NOCASE);\n"
+        )
+        conn.execute("DELETE FROM role_rights")
+        role_rights = _collect_role_rights(base_path)
+        if role_rights:
+            conn.executemany(
+                "INSERT INTO role_rights (role_name, object_name, right_name, file) "
+                "VALUES (?, ?, ?, ?)",
+                role_rights,
+            )
+
+        # Refresh file_paths (full rebuild — cheap for 30-50K files)
+        file_paths_rows = _collect_file_paths(base_path)
+        # Ensure table exists (schema upgrade v4→v5)
+        conn.executescript(
+            "CREATE TABLE IF NOT EXISTS file_paths ("
+            "id INTEGER PRIMARY KEY, rel_path TEXT NOT NULL UNIQUE, "
+            "extension TEXT NOT NULL, dir_path TEXT NOT NULL, "
+            "filename TEXT NOT NULL, depth INTEGER NOT NULL, "
+            "size INTEGER, mtime REAL);\n"
+            "CREATE INDEX IF NOT EXISTS idx_fp_ext ON file_paths(extension);\n"
+            "CREATE INDEX IF NOT EXISTS idx_fp_dir ON file_paths(dir_path);\n"
+            "CREATE INDEX IF NOT EXISTS idx_fp_filename ON file_paths(filename COLLATE NOCASE);\n"
+            "CREATE INDEX IF NOT EXISTS idx_fp_depth ON file_paths(depth);\n"
+        )
+        _insert_file_paths(conn, file_paths_rows)
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("file_paths_count", str(len(file_paths_rows))),
+        )
 
         conn.commit()
         conn.execute("ANALYZE")
@@ -1568,6 +1705,7 @@ class IndexBuilder:
         config_meta: dict[str, str] | None = None,
         build_fts: bool = False,
         detected_prefixes: list[str] | None = None,
+        file_paths_count: int = 0,
     ) -> None:
         """Write index metadata."""
         meta_entries = [
@@ -1580,6 +1718,7 @@ class IndexBuilder:
             ("has_calls", "1" if build_calls else "0"),
             ("has_metadata", "1" if build_metadata else "0"),
             ("has_fts", "1" if build_fts else "0"),
+            ("file_paths_count", str(file_paths_count)),
         ]
         # Level-1: Configuration metadata
         if config_meta:
@@ -1597,6 +1736,69 @@ class IndexBuilder:
             meta_entries,
         )
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Glob pattern dispatcher (whitelist-based, not universal translator)
+# ---------------------------------------------------------------------------
+def _can_index_glob(pattern: str) -> tuple[str, dict] | None:
+    """Check if a glob pattern can be served from the file_paths index.
+
+    Returns (strategy_name, params) or None for FS fallback.
+
+    Supported patterns:
+      **/*.ext          → ('by_extension', {ext: '.ext'})
+      Dir/*/File.ext    → ('dir_file', {dir: 'Dir', file: 'File.ext'})
+      Dir/** or Dir/**/* → ('under_prefix', {prefix: 'Dir'})
+      exact/path        → ('exact', {path: 'exact/path'})
+      **/Name.*         → ('name_wildcard', {name_prefix: 'Name', ext: ''})
+      **/Name.ext       → ('name_wildcard', {name_prefix: 'Name', ext: '.ext'})
+    """
+    if not pattern:
+        return None
+
+    # Normalize to POSIX
+    pattern = pattern.replace("\\", "/")
+
+    # **/*.ext — all files with given extension
+    if pattern.startswith("**/") and pattern.count("/") == 1:
+        rest = pattern[3:]  # after **/
+        if "*" not in rest and "?" not in rest:
+            # **/Name.ext — specific file by name
+            if "." in rest:
+                name, ext = rest.rsplit(".", 1)
+                return ("name_wildcard", {"name_prefix": name, "ext": "." + ext})
+            return None
+        if rest.startswith("*.") and "*" not in rest[2:] and "?" not in rest[2:]:
+            ext = "." + rest[2:]
+            return ("by_extension", {"ext": ext})
+        if rest == "*":
+            # **/* — all files (too broad, let FS handle)
+            return None
+        # **/Name.* — name wildcard
+        if rest.endswith(".*") and "*" not in rest[:-2] and "?" not in rest[:-2]:
+            name_prefix = rest[:-2]
+            return ("name_wildcard", {"name_prefix": name_prefix, "ext": ""})
+        return None
+
+    # Dir/** or Dir/**/*
+    if pattern.endswith("/**") or pattern.endswith("/**/*"):
+        prefix = pattern.split("/**")[0]
+        if "*" not in prefix and "?" not in prefix:
+            return ("under_prefix", {"prefix": prefix})
+        return None
+
+    # Dir/*/File.ext — single-level wildcard
+    parts = pattern.split("/")
+    if len(parts) == 3 and parts[1] == "*" and "*" not in parts[0] and "*" not in parts[2]:
+        return ("dir_file", {"dir": parts[0], "file": parts[2]})
+
+    # No wildcards — exact path
+    if "*" not in pattern and "?" not in pattern:
+        return ("exact", {"path": pattern})
+
+    # Everything else → fallback to FS
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1816,7 +2018,7 @@ class IndexReader:
         with self._lock:
             try:
                 rows = self._conn.execute(
-                    "SELECT register_name, source, file "
+                    "SELECT DISTINCT register_name, source, file "
                     "FROM register_movements WHERE document_name = ? COLLATE NOCASE",
                     (document_name,),
                 ).fetchall()
@@ -1878,8 +2080,8 @@ class IndexReader:
             try:
                 rows = self._conn.execute(
                     "SELECT role_name, object_name, right_name, file "
-                    "FROM role_rights WHERE object_name = ? COLLATE NOCASE",
-                    (object_name,),
+                    "FROM role_rights WHERE object_name LIKE ?",
+                    (f"%{object_name}%",),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return None
@@ -1895,7 +2097,7 @@ class IndexReader:
                 except sqlite3.Error:
                     return None
 
-            # Group by role_name
+            # Group by role_name, deduplicate rights
             role_map: dict[str, dict] = {}
             for r in rows:
                 key = r["role_name"]
@@ -1906,7 +2108,9 @@ class IndexReader:
                         "rights": [],
                         "file": r["file"],
                     }
-                role_map[key]["rights"].append(r["right_name"])
+                right = r["right_name"]
+                if right not in role_map[key]["rights"]:
+                    role_map[key]["rights"].append(right)
             return list(role_map.values())
 
     def get_enum_values(self, enum_name: str) -> dict | None:
@@ -2006,6 +2210,163 @@ class IndexReader:
                 for r in rows
             ]
 
+    # ------------------------------------------------------------------
+    # File navigation (Level-4: file_paths table)
+    # ------------------------------------------------------------------
+    @property
+    def has_file_paths(self) -> bool:
+        """Check if file_paths table exists and has data."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM file_paths"
+                ).fetchone()
+                return row is not None and row["cnt"] > 0
+            except sqlite3.OperationalError:
+                return False
+
+    def glob_files(self, pattern: str) -> list[str] | None:
+        """Resolve a glob pattern from the index.
+
+        Returns sorted list of POSIX-relative paths, or None if the pattern
+        is not supported (caller should fall back to FS).
+        """
+        strategy = _can_index_glob(pattern)
+        if strategy is None:
+            return None
+        kind, params = strategy
+        with self._lock:
+            try:
+                if kind == "by_extension":
+                    rows = self._conn.execute(
+                        "SELECT rel_path FROM file_paths WHERE extension = ? "
+                        "ORDER BY rel_path",
+                        (params["ext"],),
+                    ).fetchall()
+                elif kind == "under_prefix":
+                    prefix = params["prefix"]
+                    rows = self._conn.execute(
+                        "SELECT rel_path FROM file_paths WHERE rel_path LIKE ? "
+                        "ORDER BY rel_path",
+                        (prefix + "/%",),
+                    ).fetchall()
+                elif kind == "dir_file":
+                    dir_pat = params["dir"]
+                    fname = params["file"]
+                    rows = self._conn.execute(
+                        "SELECT rel_path FROM file_paths "
+                        "WHERE dir_path LIKE ? AND filename = ? "
+                        "ORDER BY rel_path",
+                        (dir_pat + "/%", fname),
+                    ).fetchall()
+                elif kind == "exact":
+                    rows = self._conn.execute(
+                        "SELECT rel_path FROM file_paths WHERE rel_path = ?",
+                        (params["path"],),
+                    ).fetchall()
+                elif kind == "name_wildcard":
+                    name_prefix = params["name_prefix"]
+                    ext = params.get("ext", "")
+                    if ext:
+                        rows = self._conn.execute(
+                            "SELECT rel_path FROM file_paths "
+                            "WHERE filename LIKE ? AND extension = ? "
+                            "ORDER BY rel_path",
+                            (name_prefix + "%", ext),
+                        ).fetchall()
+                    else:
+                        rows = self._conn.execute(
+                            "SELECT rel_path FROM file_paths "
+                            "WHERE filename LIKE ? "
+                            "ORDER BY rel_path",
+                            (name_prefix + "%",),
+                        ).fetchall()
+                else:
+                    return None
+            except sqlite3.OperationalError:
+                return None
+
+        return [r["rel_path"] for r in rows]
+
+    def tree_paths(self, prefix: str, max_depth: int) -> list[str] | None:
+        """Get file paths for tree rendering from the index.
+
+        Args:
+            prefix: Directory prefix (POSIX), empty string for root.
+            max_depth: Maximum depth relative to prefix.
+
+        Returns sorted list of POSIX-relative paths, or None if table missing.
+        """
+        with self._lock:
+            try:
+                if prefix and prefix != ".":
+                    # Normalize prefix
+                    prefix = prefix.replace("\\", "/").strip("/")
+                    base_depth = prefix.count("/") + 1
+                    rows = self._conn.execute(
+                        "SELECT rel_path FROM file_paths "
+                        "WHERE rel_path LIKE ? AND depth <= ? "
+                        "ORDER BY rel_path",
+                        (prefix + "/%", base_depth + max_depth),
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        "SELECT rel_path FROM file_paths "
+                        "WHERE depth <= ? "
+                        "ORDER BY rel_path",
+                        (max_depth,),
+                    ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+        return [r["rel_path"] for r in rows]
+
+    def find_files_indexed(self, name: str, limit: int = 100) -> list[str] | None:
+        """Find files by substring match using the index.
+
+        Ranking: exact filename > prefix filename > substring filename > substring path.
+
+        Returns sorted list of POSIX-relative paths, or None if table missing.
+        """
+        if not name:
+            return None
+        with self._lock:
+            try:
+                # NOTE: SQLite LOWER() only works for ASCII.
+                # For Unicode (Cyrillic) we match case-sensitively in SQL
+                # then do Python-side case-insensitive ranking.
+                needle_sql = "%" + name + "%"
+                rows = self._conn.execute(
+                    "SELECT rel_path, filename "
+                    "FROM file_paths "
+                    "WHERE filename LIKE ? OR rel_path LIKE ? "
+                    "ORDER BY length(rel_path), rel_path "
+                    "LIMIT ?",
+                    (needle_sql, needle_sql, limit * 3),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+        # Python-side ranking: exact filename > prefix > substring filename > substring path
+        needle_lower = name.lower()
+        ranked: list[tuple[int, str]] = []
+        for r in rows:
+            fn = r["filename"].lower()
+            rp = r["rel_path"].lower()
+            if fn == needle_lower:
+                rank = 0
+            elif fn.startswith(needle_lower):
+                rank = 1
+            elif needle_lower in fn:
+                rank = 2
+            elif needle_lower in rp:
+                rank = 3
+            else:
+                continue
+            ranked.append((rank, r["rel_path"]))
+        ranked.sort(key=lambda x: (x[0], len(x[1]), x[1]))
+        return [rp for _, rp in ranked[:limit]]
+
     def get_statistics(self) -> dict:
         """Get summary statistics about the index.
 
@@ -2072,6 +2433,13 @@ class IndexReader:
                     stats[table] = row["cnt"] if row else 0
                 except sqlite3.Error:
                     stats[table] = 0
+
+            # Level-4: file navigation
+            try:
+                row = self._conn.execute("SELECT COUNT(*) AS cnt FROM file_paths").fetchone()
+                stats["file_paths"] = row["cnt"] if row else 0
+            except sqlite3.Error:
+                stats["file_paths"] = 0
 
             return stats
 

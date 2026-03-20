@@ -99,7 +99,7 @@ class Sandbox:
 
         self._namespace["__builtins__"] = safe_builtins
 
-        helpers, self._resolve_safe = make_helpers(self._base_path)
+        helpers, self._resolve_safe = make_helpers(self._base_path, idx_reader=self._idx_reader)
         self._namespace.update(self._wrap_helpers(helpers))
 
         if self._format_info is not None:

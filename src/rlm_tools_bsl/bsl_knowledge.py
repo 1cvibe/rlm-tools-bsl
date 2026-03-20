@@ -96,6 +96,8 @@ File I/O:
   read_file(path), read_files(paths)       → str / dict
   grep(pattern, path), grep_summary(pattern), grep_read(pattern, path)
   glob_files(pattern), tree(path, max_depth=3), find_files(name)
+  NOTE: For BSL modules prefer find_module()/find_by_type() over glob_files()
+  NOTE: tree('.') on large configs produces too much output — use tree('SubDir') or find_files()
 LLM (if available):
   llm_query(prompt, context='')            → str (keep context <3000 chars, split if empty response)
   llm_query_batched(prompts, context)      → [str]"""
@@ -178,6 +180,9 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
         register_movements_count = idx_stats.get("register_movements", 0)
         if register_movements_count:
             instant_helpers.extend(["find_register_movements()", "find_register_writers()"])
+        file_paths_count = idx_stats.get("file_paths", 0)
+        if file_paths_count:
+            instant_helpers.extend(["glob_files(indexed)", "tree(indexed)", "find_files(indexed)"])
         idx_lines.append(f"INSTANT from index: {', '.join(instant_helpers)}.")
 
         # FTS discovery
@@ -188,12 +193,22 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
             )
 
         # Workflow hints
-        idx_lines.append(
-            "INDEX TIPS:\n"
-            "  - find_callers_context() returns instantly — no need to limit scope with hint, search the whole codebase.\n"
-            "  - Batch 5-10 helpers per rlm_execute (index calls are <1ms each).\n"
-            "  - extract_procedures + find_exports + find_callers_context in ONE call is fine."
-        )
+        tips = [
+            "INDEX TIPS:",
+            "  - find_callers_context() returns instantly — no need to limit scope with hint, search the whole codebase.",
+            "  - Batch 5-10 helpers per rlm_execute (index calls are <1ms each).",
+            "  - extract_procedures + find_exports + find_callers_context in ONE call is fine.",
+        ]
+        if file_paths_count:
+            tips.extend([
+                f"  - File navigation indexed: {file_paths_count} paths (.bsl/.mdo/.xml) — "
+                "glob_files(), tree(), find_files() are instant for supported patterns.",
+                "  - FAST: glob_files('**/*.mdo'), glob_files('Documents/**'), tree('Documents'), find_files('name')",
+                "  - SLOW (FS fallback): complex globs with multiple wildcards, glob_files('**/Dir*/*.xml')",
+                "  - For BSL modules: ALWAYS prefer find_module()/find_by_type() over glob_files() — faster and more precise.",
+                "  - NEVER use tree('.') on root of large configs — too much data. Use tree('SubDir') instead.",
+            ])
+        idx_lines.append("\n".join(tips))
 
         idx_lines.append(
             "NOTE: Index freshness uses quick check (age + content sampling). "
@@ -323,11 +338,12 @@ RLM_EXECUTE_DESCRIPTION = (
     "Call helper functions and use print() to see results. Variables persist between calls.\n"
     "Example: code=\"modules = find_module('MyModule')\\nfor m in modules:\\n    print(m['path'])\"\n"
     "BSL helpers: help, find_module, find_by_type, extract_procedures, find_exports,\n"
-    "safe_grep, read_procedure, find_callers, find_callers_context, parse_object_xml.\n"
+    "safe_grep, read_procedure, find_callers, find_callers_context, parse_object_xml,\n"
+    "search_methods, extract_queries, code_metrics.\n"
     "Composite: analyze_object, analyze_subsystem, find_custom_modifications,\n"
     "find_event_subscriptions, find_scheduled_jobs, find_register_movements,\n"
     "find_register_writers, analyze_document_flow, find_based_on_documents,\n"
     "find_print_forms, find_functional_options, find_roles, find_enum_values.\n"
-    "Standard: read_file, read_files, grep, grep_summary, grep_read, glob_files, tree.\n"
+    "Standard: read_file, read_files, grep, grep_summary, grep_read, glob_files, tree, find_files.\n"
     "CRITICAL: grep on path='.' ALWAYS times out on large 1C configs. Use find_module() first."
 )

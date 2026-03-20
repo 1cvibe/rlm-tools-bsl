@@ -618,3 +618,233 @@ def test_find_register_movements_fast_path(tmp_path, monkeypatch):
     assert "ТоварыНаСкладах" in reg_names
 
     reader.close()
+
+
+# ---------------------------------------------------------------------------
+# Index vs FS parity fixes (v1.3.2 bugfixes)
+# ---------------------------------------------------------------------------
+
+def test_role_rights_full_object_name_stored(tmp_path, monkeypatch):
+    """Builder stores full object name (Catalog.ТестСправочник), reader finds by substring."""
+    cm_dir = tmp_path / "CommonModules" / "Модуль" / "Ext"
+    cm_dir.mkdir(parents=True)
+    (cm_dir / "Module.bsl").write_text("Процедура Тест()\nКонецПроцедуры\n", encoding="utf-8-sig")
+
+    role_dir = tmp_path / "Roles" / "ТестРоль"
+    role_dir.mkdir(parents=True)
+    (role_dir / "ТестРоль.rights").write_text(RIGHTS_EDT_CONTENT, encoding="utf-8")
+
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path))
+    reader = IndexReader(db_path)
+
+    # Full name stored in DB
+    rows = reader._conn.execute(
+        "SELECT object_name FROM role_rights WHERE role_name = 'ТестРоль'"
+    ).fetchall()
+    obj_names = [r["object_name"] for r in rows]
+    assert any("Catalog.ТестСправочник" in n for n in obj_names), f"Expected full name, got {obj_names}"
+
+    # Reader finds by short name via LIKE
+    roles = reader.get_roles("ТестСправочник")
+    assert roles is not None
+    assert len(roles) >= 1
+
+    reader.close()
+
+
+def test_register_movements_code_filter(tmp_path, monkeypatch):
+    """code_registers in fast path contains only source='code', not erp_mechanism."""
+    doc_dir = tmp_path / "Documents" / "ТестДок" / "Ext"
+    doc_dir.mkdir(parents=True)
+    (doc_dir / "ObjectModule.bsl").write_text(DOCUMENT_OBJECT_MODULE, encoding="utf-8-sig")
+    (doc_dir / "ManagerModule.bsl").write_text(DOCUMENT_MANAGER_MODULE, encoding="utf-8-sig")
+
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path))
+    reader = IndexReader(db_path)
+
+    bsl = _make_helpers(tmp_path, idx_reader=reader)
+    result = bsl["find_register_movements"]("ТестДок")
+
+    # code_registers must only contain source='code'
+    for r in result["code_registers"]:
+        assert r["source"] == "code", f"code_registers has non-code source: {r}"
+
+    # erp_mechanisms are separate
+    assert len(result["erp_mechanisms"]) >= 2
+
+    reader.close()
+
+
+_MANAGER_MODULE_WITH_CALLS = """\
+Процедура ЗарегистрироватьУчетныеМеханизмы(Менеджер)
+    МеханизмыДокумента.Добавить("РегистрА");
+КонецПроцедуры
+
+Функция ТекстЗапросаТаблицаРегистрА()
+    Возврат "";
+КонецФункции
+
+Процедура ОбработатьДанные()
+    Текст = ТекстЗапросаТаблицаФейк();
+КонецПроцедуры
+"""
+
+
+def test_manager_table_only_definitions(tmp_path, monkeypatch):
+    """manager_tables regex matches only Функция/Процедура definitions, not calls."""
+    doc_dir = tmp_path / "Documents" / "МТДок" / "Ext"
+    doc_dir.mkdir(parents=True)
+    (doc_dir / "ObjectModule.bsl").write_text(
+        "Процедура Проведение()\nКонецПроцедуры\n", encoding="utf-8-sig"
+    )
+    (doc_dir / "ManagerModule.bsl").write_text(_MANAGER_MODULE_WITH_CALLS, encoding="utf-8-sig")
+
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path))
+    reader = IndexReader(db_path)
+
+    movements = reader.get_register_movements("МТДок")
+    mgr_tables = [m for m in movements if m["source"] == "manager_table"]
+    mgr_names = [m["register_name"] for m in mgr_tables]
+
+    # Only definition (РегистрА) should be found, not call (Фейк)
+    assert "РегистрА" in mgr_names
+    assert "Фейк" not in mgr_names, f"Call-site match leaked into manager_tables: {mgr_names}"
+
+    reader.close()
+
+
+_MANAGER_MODULE_ADAPTED = """\
+Процедура ЗарегистрироватьУчетныеМеханизмы(Менеджер)
+    МеханизмыДокумента.Добавить("РегистрБ");
+КонецПроцедуры
+
+Функция АдаптированныйТекстЗапросаДвиженийПоРегистру(ИмяДокумента, ИмяТаблицы)
+    Если ИмяТаблицы = "Продажи" Тогда
+        ИмяРегистра = "НакоплениеПродажи";
+    ИначеЕсли ИмяТаблицы = "Расчеты" Тогда
+        ИмяРегистра = "ВзаиморасчетыСКонтрагентами";
+    КонецЕсли;
+    Возврат "";
+КонецФункции
+"""
+
+
+def test_adapted_registers_build(tmp_path, monkeypatch):
+    """Builder extracts adapted registers from АдаптированныйТекстЗапросаДвиженийПоРегистру."""
+    doc_dir = tmp_path / "Documents" / "АдДок" / "Ext"
+    doc_dir.mkdir(parents=True)
+    (doc_dir / "ObjectModule.bsl").write_text(
+        "Процедура Проведение()\nКонецПроцедуры\n", encoding="utf-8-sig"
+    )
+    (doc_dir / "ManagerModule.bsl").write_text(_MANAGER_MODULE_ADAPTED, encoding="utf-8-sig")
+
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path))
+    reader = IndexReader(db_path)
+
+    movements = reader.get_register_movements("АдДок")
+    adapted = [m for m in movements if m["source"] == "adapted"]
+    adapted_names = [m["register_name"] for m in adapted]
+
+    assert "НакоплениеПродажи" in adapted_names
+    assert "ВзаиморасчетыСКонтрагентами" in adapted_names
+    assert len(adapted) == 2
+
+    reader.close()
+
+
+def test_register_movements_fast_path_parity(tmp_path, monkeypatch):
+    """Fast-path (index) result has same structure as FS path for find_register_movements."""
+    doc_dir = tmp_path / "Documents" / "ПаритетДок" / "Ext"
+    doc_dir.mkdir(parents=True)
+    (doc_dir / "ObjectModule.bsl").write_text(DOCUMENT_OBJECT_MODULE, encoding="utf-8-sig")
+    (doc_dir / "ManagerModule.bsl").write_text(_MANAGER_MODULE_ADAPTED, encoding="utf-8-sig")
+
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path))
+    reader = IndexReader(db_path)
+
+    bsl = _make_helpers(tmp_path, idx_reader=reader)
+    result = bsl["find_register_movements"]("ПаритетДок")
+
+    # code_registers: only from ObjectModule (source=code)
+    code_names = [r["name"] for r in result["code_registers"]]
+    assert "ТоварыНаСкладах" in code_names
+    assert "ВзаиморасчетыСКлиентами" in code_names
+    for r in result["code_registers"]:
+        assert r["source"] == "code"
+
+    # erp_mechanisms from ManagerModule
+    assert "РегистрБ" in result["erp_mechanisms"]
+
+    # adapted_registers from ManagerModule
+    assert "НакоплениеПродажи" in result["adapted_registers"]
+    assert "ВзаиморасчетыСКонтрагентами" in result["adapted_registers"]
+
+    reader.close()
+
+
+def test_update_refreshes_role_rights(tmp_path, monkeypatch):
+    """index update refreshes role_rights table when .rights files change."""
+    cm_dir = tmp_path / "CommonModules" / "Модуль" / "Ext"
+    cm_dir.mkdir(parents=True)
+    (cm_dir / "Module.bsl").write_text("Процедура Тест()\nКонецПроцедуры\n", encoding="utf-8-sig")
+
+    role_dir = tmp_path / "Roles" / "РольА"
+    role_dir.mkdir(parents=True)
+    (role_dir / "РольА.rights").write_text(RIGHTS_EDT_CONTENT, encoding="utf-8")
+
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path))
+
+    # Verify initial state
+    reader = IndexReader(db_path)
+    roles = reader.get_roles("ТестСправочник")
+    assert roles is not None
+    assert len(roles) >= 1
+    assert roles[0]["role_name"] == "РольА"
+    reader.close()
+
+    # Add a second role
+    role_dir_b = tmp_path / "Roles" / "РольБ"
+    role_dir_b.mkdir(parents=True)
+    rights_b = RIGHTS_EDT_CONTENT.replace("Catalog.ТестСправочник", "Document.ТестДокумент")
+    (role_dir_b / "РольБ.rights").write_text(rights_b, encoding="utf-8")
+
+    # Run update
+    builder.update(str(tmp_path))
+
+    # Verify new role appeared
+    reader = IndexReader(db_path)
+    roles_doc = reader.get_roles("ТестДокумент")
+    assert roles_doc is not None
+    role_names = [r["role_name"] for r in roles_doc]
+    assert "РольБ" in role_names
+
+    # Original role still there
+    roles_cat = reader.get_roles("ТестСправочник")
+    assert roles_cat is not None
+    assert any(r["role_name"] == "РольА" for r in roles_cat)
+
+    reader.close()

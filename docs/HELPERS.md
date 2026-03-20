@@ -10,8 +10,9 @@
 
 - `read_file(path)`, `read_files(paths)` — чтение файлов (кэшируется между вызовами)
 - `grep(pattern, path)`, `grep_summary(pattern)` — поиск по содержимому
-- `glob_files(pattern)` — поиск файлов по маске
-- `tree(path, max_depth)` — дерево каталогов
+- `glob_files(pattern)` — поиск файлов по маске. **При наличии SQLite-индекса** — мгновенный ответ из таблицы `file_paths` для поддерживаемых паттернов (`**/*.ext`, `Dir/**`, `Dir/*/File.ext`, `**/Name.ext`, точные пути). Остальные паттерны → fallback на `pathlib.Path.glob()`
+- `tree(path, max_depth)` — дерево каталогов. **При наличии SQLite-индекса** — мгновенное построение из `file_paths` (без обхода FS)
+- `find_files(name, limit)` — поиск файлов по подстроке имени. **При наличии SQLite-индекса** — мгновенный ответ с ранжированием: точное совпадение имени > префикс > подстрока имени > подстрока пути
 
 ## BSL-специфичные (добавлены в rlm-tools-bsl)
 
@@ -39,6 +40,30 @@
 - `find_enum_values(enum_name)` — значения перечисления с синонимами. При наличии SQLite-индекса — мгновенный ответ из таблицы `enum_values`. Без индекса — glob + XML-парсинг
 - `extract_queries(path)` — извлечение встроенных запросов 1С из BSL-модуля: парсит `Запрос.Текст = "..."` и многострочные `|`-тексты, определяет таблицы (`ИЗ РегистрНакопления.X`, `СОЕДИНЕНИЕ Справочник.Y`) и процедуру-владельца запроса
 - `code_metrics(path)` — метрики BSL-модуля: общее число строк, строк кода/комментариев/пустых, число процедур и экспортных, средний размер процедуры, максимальная вложенность (`Если/Для/Пока`)
+
+## Ускорение индексом (SQLite)
+
+При наличии предварительно построенного SQLite-индекса (`rlm-bsl-index index build`) следующие хелперы работают мгновенно из базы данных вместо live-парсинга и обхода файловой системы:
+
+| Хелпер | С индексом | Без индекса |
+|--------|-----------|-------------|
+| `extract_procedures(path)` | `SELECT` из `methods` | Regex-парсинг .bsl |
+| `find_exports(path)` | `SELECT WHERE is_export=1` | Фильтр `extract_procedures` |
+| `find_callers_context(proc)` | `JOIN calls+methods+modules` | Параллельный scan+grep .bsl |
+| `find_event_subscriptions(obj)` | `SELECT` из `event_subscriptions` | XML-парсинг |
+| `find_scheduled_jobs(name)` | `SELECT` из `scheduled_jobs` | XML-парсинг |
+| `find_functional_options(obj)` | `SELECT` из `functional_options` | XML-парсинг |
+| `find_enum_values(name)` | `SELECT` из `enum_values` | Glob + XML-парсинг |
+| `analyze_subsystem(name)` | `SELECT` из `subsystem_content` | Glob + XML-парсинг |
+| `find_roles(obj)` | `SELECT` из `role_rights` | Парсинг Rights.xml |
+| `find_register_movements(doc)` | `SELECT` из `register_movements` | Grep по ObjectModule |
+| `find_register_writers(reg)` | `SELECT` из `register_movements` | Параллельный поиск |
+| `glob_files(pattern)` | `SELECT` из `file_paths` (поддерживаемые паттерны) | `pathlib.Path.glob()` |
+| `tree(path)` | `SELECT` из `file_paths` | Рекурсивный `iterdir()` |
+| `find_files(name)` | `SELECT` из `file_paths` с ранжированием | `os.walk()` |
+| `search_methods(query)` | FTS5 (BM25) | Недоступен |
+
+Подробности: [docs/INDEXING.md](INDEXING.md)
 
 ## Расширения (CFE)
 

@@ -90,6 +90,8 @@ def _cmd_build(args: argparse.Namespace) -> None:
         print(f"  EventSubs:  {stats.get('event_subscriptions', 0)}")
         print(f"  SchedJobs:  {stats.get('scheduled_jobs', 0)}")
         print(f"  FuncOpts:   {stats.get('functional_options', 0)}")
+    if stats.get("file_paths"):
+        print(f"  FilePaths:  {stats['file_paths']}")
     print(f"  DB size:  {_fmt_size(db_size)}")
     print(f"  DB path:  {db_path}")
 
@@ -181,6 +183,8 @@ def _cmd_info(args: argparse.Namespace) -> None:
         print(f"  FuncOpts:   {stats.get('functional_options', 0)}")
     elif stats.get("has_metadata") is not None:
         print("  Metadata: not indexed")
+    if stats.get("file_paths"):
+        print(f"  FilePaths:  {stats['file_paths']}")
     print(f"  FTS:      {'yes' if stats.get('has_fts') else 'no'}")
     print(f"  DB size:  {_fmt_size(db_size)}")
 

@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-03-20
+
+### Добавлено
+- **Таблица `file_paths` в SQLite-индексе** — навигационный индекс всех `.bsl`/`.mdo`/`.xml` файлов. `glob_files()`, `tree()`, `find_files()` мгновенно из индекса для поддерживаемых паттернов (было ~315с на медленном ПК, стало <1с)
+- **Whitelist-диспетчер `_can_index_glob()`** — безопасная трансляция ограниченного набора glob-паттернов в SQL-запросы: `**/*.ext`, `Dir/**`, `Dir/*/File.ext`, точные пути, `**/Name.ext`. Всё остальное → fallback на FS
+- **`IndexReader.glob_files()`** — поиск файлов по glob-паттерну из индекса
+- **`IndexReader.tree_paths()`** — получение путей для tree-рендеринга из индекса
+- **`IndexReader.find_files_indexed()`** — поиск файлов по подстроке с ранжированием: exact filename > prefix > substring filename > substring path
+- **Ранжирование `find_files()`** — при использовании индекса результаты ранжируются по релевантности, а не только по алфавиту
+- **Hints в стратегии для файловой навигации** — описание быстрых (indexed) и медленных (FS) паттернов, рекомендация `find_module()`/`find_by_type()` вместо `glob_files()` для BSL
+
+### Изменено
+- **`builder_version = 5`** — добавлена таблица `file_paths`, расширена `index_meta` (file_paths_count)
+- **`make_helpers(base_path, idx_reader=None)`** — стандартные хелперы `glob_files`/`tree`/`find_files` теперь принимают `idx_reader` через замыкание (thread-safe, без глобального состояния)
+- **`Sandbox._setup_namespace()`** — передаёт `idx_reader` в `make_helpers()` для ускорения файловой навигации
+- **`index info` / `index build`** — показывают `FilePaths: N` в выводе
+- **Стратегия `== INDEX ==`** — включает информацию о file_paths и tips по использованию индексированных паттернов
+- **`RLM_EXECUTE_DESCRIPTION`** — добавлены `search_methods`, `extract_queries`, `code_metrics`, `find_files` в описание MCP-инструмента
+
+### Исправлено
+- **`find_files_indexed()` + Кириллица** — SQLite `LOWER()` работает только с ASCII; кириллические имена файлов не находились. Убран `LOWER()` из SQL, ранжирование перенесено в Python (`str.lower()` корректно обрабатывает Unicode)
+- **Рецепты `find_register_movements` / `find_register_writers`** — использовали `r['lines']`, которого нет в indexed-пути (KeyError). Теперь `r.get('lines') or r.get('source', '')` — совместимы с обоими путями
+- **`_STRATEGY_IO_SECTION`** — убрано дублирование FAST/SLOW glob-паттернов (оставлено только в условной секции INDEX TIPS). Уточнена формулировка `tree('.')`: "produces too much output" вместо "Avoid" (с индексом быстро, но объём вывода чрезмерен)
+- **`find_roles()` — полное имя объекта в индексе** — builder делал `rsplit(".", 1)[-1]`, сохраняя `ТестСправочник` вместо `Catalog.ТестСправочник`. Wildcard-роли (напр. `лтхБазовыеПрава` с правами на `Document.*`) терялись. Теперь хранится полное имя, reader ищет через `LIKE`
+- **`find_register_movements()` — паритет index vs FS** — три исправления: (1) `code_registers` включал все source, теперь фильтруется по `source='code'`; (2) `_MANAGER_TABLE_RE` ловил вызовы `ТекстЗапросаТаблицаXxx()`, теперь только определения `Функция|Процедура ТекстЗапросаТаблицаXxx()`; (3) добавлено извлечение `adapted`-регистров из `АдаптированныйТекстЗапросаДвиженийПоРегистру` в builder и helper
+- **`get_register_movements()` — SELECT DISTINCT** — убраны дубли записей (напр. `РеестрДокументов` дважды в adapted-ветке)
+- **`index update` — refresh role_rights** — при инкрементальном обновлении таблица `role_rights` не обновлялась. Также исправлен early return при отсутствии BSL-дельты: теперь metadata/role_rights/file_paths обновляются всегда
+
+### Ожидаемый эффект на медленном ПК (ERP, 12K BSL)
+
+| Хелпер | Было (v1.3.1) | Стало (v1.3.2) |
+|--------|--------------|----------------|
+| glob_files(`**/*.mdo`) | 88.6с (timeout) | <0.1с |
+| glob_files(Documents/*) | 65.4с (timeout) | <0.1с |
+| tree(.) | 45.0с (timeout) | <1с |
+| find_files() | 49.5с (timeout) | <0.1с |
+| **Суммарно FS-операции** | **~315с** | **<2с** |
+
+### Тесты
+- Было: 376 (v1.3.1)
+- Стало: 398 (добавлены 49 тестов file_paths + 5 тестов index/FS parity + 1 тест update role_rights refresh)
+
 ## [1.3.1] — 2026-03-19
 
 ### Добавлено

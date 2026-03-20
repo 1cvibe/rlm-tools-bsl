@@ -471,11 +471,19 @@ def make_bsl_helpers(
                     "find_callers_context: proc=%s source=index rows=%d time=%.2fs",
                     proc_name, _n, _elapsed,
                 )
-                return result
-            logger.debug(
-                "find_callers_context: proc=%s source=index returned_none time=%.2fs, falling back to scan",
-                proc_name, _elapsed,
-            )
+                if _n > 0:
+                    return result
+                # Index returned 0 callers — fall back to FS text scan
+                # (the name might be an object/type name, not a procedure)
+                logger.debug(
+                    "find_callers_context: proc=%s index returned 0, falling back to scan",
+                    proc_name,
+                )
+            else:
+                logger.debug(
+                    "find_callers_context: proc=%s source=index returned_none time=%.2fs, falling back to scan",
+                    proc_name, _elapsed,
+                )
 
         _ensure_index()
 
@@ -1082,11 +1090,12 @@ def make_bsl_helpers(
                     "code_registers": [
                         {"name": m["register_name"], "source": m["source"], "file": m["file"]}
                         for m in idx_movements
+                        if m["source"] == "code"
                     ],
                     "modules_scanned": [],
                     "erp_mechanisms": [m["register_name"] for m in idx_movements if m["source"] == "erp_mechanism"],
                     "manager_tables": [m["register_name"] for m in idx_movements if m["source"] == "manager_table"],
-                    "adapted_registers": [],
+                    "adapted_registers": [m["register_name"] for m in idx_movements if m["source"] == "adapted"],
                 }
 
         modules = find_by_type("Documents", document_name)
@@ -1332,6 +1341,8 @@ def make_bsl_helpers(
             path = mod["path"]
             body = read_procedure(path, "ДобавитьКомандыПечати")
             if body:
+                # Pattern 1: helper-function style (ERP 1.x / UPP)
+                #   ДобавитьКомандуПечати(КомандыПечати, "Ид", НСтр("ru = 'Представление'"))
                 print_re = re.compile(
                     r'ДобавитьКомандуПечати\([^,]+,\s*"(\w+)"(?:,\s*НСтр\("ru\s*=\s*\'([^\']+)\')?',
                     re.IGNORECASE,
@@ -1342,6 +1353,27 @@ def make_bsl_helpers(
                         "presentation": m.group(2) or "",
                         "file": path,
                     })
+
+                # Pattern 2: property-style (ERP 2.x)
+                #   КомандаПечати.Идентификатор = "Ид";
+                #   КомандаПечати.Представление = НСтр("ru = 'Текст'");
+                if not result["print_forms"]:
+                    id_re = re.compile(
+                        r'КомандаПечати\.Идентификатор\s*=\s*"(\w+)"',
+                        re.IGNORECASE,
+                    )
+                    pres_re = re.compile(
+                        r"КомандаПечати\.Представление\s*=\s*НСтр\(\"ru\s*=\s*'([^']+)'",
+                        re.IGNORECASE,
+                    )
+                    ids = id_re.findall(body)
+                    presentations = pres_re.findall(body)
+                    for i, name in enumerate(ids):
+                        result["print_forms"].append({
+                            "name": name,
+                            "presentation": presentations[i] if i < len(presentations) else "",
+                            "file": path,
+                        })
 
         return result
 
@@ -1911,14 +1943,16 @@ def make_bsl_helpers(
          "TRACE DOCUMENT REGISTER MOVEMENTS:\n"
          "  result = find_register_movements('ПриобретениеТоваровУслуг')\n"
          "  for r in result['code_registers']:\n"
-         "      print(f\"  Движения.{r['name']} (строки: {r['lines']})\")\n"
+         "      detail = r.get('lines') or r.get('source', '')\n"
+         "      print(f\"  Движения.{r['name']} ({detail})\")\n"
          "\n"
          "FIND WHO WRITES TO REGISTER:\n"
          "  result = find_register_writers('ТоварыНаСкладах')\n"
          "  for w in result['writers']:\n"
-         "      print(f\"  {w['document']} (строки: {w['lines']})\")")
+         "      detail = w.get('lines') or w.get('source', '')\n"
+         "      print(f\"  {w['document']} ({detail})\")")
     _reg("find_register_writers", find_register_writers,
-         "find_register_writers(reg_name) -> {writers: [{document, file, lines}]}",
+         "find_register_writers(reg_name) -> {writers: [{document, source|lines, file}]}",
          "business")
     _reg("find_based_on_documents", find_based_on_documents,
          "find_based_on_documents(doc_name) -> {can_create_from_here, can_be_created_from}",

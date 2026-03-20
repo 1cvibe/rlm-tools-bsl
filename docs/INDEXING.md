@@ -8,8 +8,8 @@
 
 | Возможность | CodeRLM | Aider RepoMap | GitHub BM25 | **rlm-tools-bsl** |
 |---|---|---|---|---|
-| Таблица символов (методы/функции) | tree-sitter → JSON API | ctags / tree-sitter | — | regex-парсинг → SQLite `methods` (617K методов ERP) |
-| Граф вызовов | нет | «файл → символ» + PageRank | нет | эвристический regex → SQLite `calls` (4.9M рёбер ERP). PageRank — Future, данные есть |
+| Таблица символов (методы/функции) | tree-sitter → JSON API | ctags / tree-sitter | — | regex-парсинг → SQLite `methods` (569K методов ERP) |
+| Граф вызовов | нет | «файл → символ» + PageRank | нет | эвристический regex → SQLite `calls` (4.5M рёбер ERP). PageRank — Future, данные есть |
 | Полнотекстовый поиск | нет | нет | BM25 (Elasticsearch) | FTS5 trigram + BM25, встроен в SQLite (`search_methods`) |
 | Метаданные конфигурации | нет | нет | нет | `index_meta` (имя, версия, формат, роль), Level-2: ES/SJ/FO (3 таблицы) |
 | Прозрачная интеграция | отдельный API | карта для промпта | отдельный сервис | хелперы автоматически ускоряются при наличии индекса, fallback на live-парсинг |
@@ -65,17 +65,18 @@ Call graph:  yes
 Metadata:    yes
 FTS search:  yes
 
-Index built in 429.2s
-  Config:   УправлениеПредприятием 2.5.20.80
+Index built in 390.9s
+  Config:   УправлениеПредприятием 2.5.14.59
   Format:   cf
-  Modules:  24055
-  Methods:  617207
-  Calls:    4897432
-  Exports:  206207
-  EventSubs:  532
+  Modules:  23461
+  Methods:  569068
+  Calls:    4554311
+  Exports:  187585
+  EventSubs:  536
   SchedJobs:  238
-  FuncOpts:   944
-  DB size:  981.2 MB
+  FuncOpts:   929
+  FilePaths:  103128
+  DB size:  1117.8 MB
   DB path:  C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
 ```
 
@@ -112,20 +113,21 @@ rlm-bsl-index index info <path>
 ```
 $ rlm-bsl-index index info "D:\ERP\src\cf"
 Index: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
-  Config:   УправлениеПредприятием 2.5.20.80
+  Config:   УправлениеПредприятием 2.5.14.59
   Format:   cf
   Status:   fresh
-  Modules:  24055
-  Methods:  617207
-  Calls:    4897432
-  Exports:  206207
-  EventSubs:  532
+  Modules:  23461
+  Methods:  569068
+  Calls:    4554311
+  Exports:  187585
+  EventSubs:  536
   SchedJobs:  238
-  FuncOpts:   944
+  FuncOpts:   929
+  FilePaths:  103128
   FTS:      yes
-  DB size:  981.2 MB
+  DB size:  1117.8 MB
   Built:    10s ago
-  BSL files on disk: 24055
+  BSL files on disk: 23461
 ```
 
 Возможные статусы: `fresh`, `stale (structure changed)`, `stale (age)`, `stale (content)`, `missing`.
@@ -147,7 +149,7 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 ## 4. Структура индекса
 
-Индекс хранится в SQLite-базе `method_index.db` и содержит 11 таблиц (4 основные + 7 метаданных) + виртуальную FTS5-таблицу для полнотекстового поиска:
+Индекс хранится в SQLite-базе `method_index.db` и содержит 12 таблиц (4 основные + 7 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
 
 ### index_meta
 
@@ -155,9 +157,9 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 | key | Описание | Пример |
 |-----|----------|--------|
-| `version` | Версия схемы | `4` |
-| `builder_version` | Версия построителя | `4` |
-| `bsl_count` | Количество .bsl файлов | `24055` |
+| `version` | Версия схемы | `5` |
+| `builder_version` | Версия построителя | `5` |
+| `bsl_count` | Количество .bsl файлов | `23461` |
 | `paths_hash` | MD5-хеш отсортированных путей | `6c4e5a0f0d506f67...` |
 | `built_at` | Unix-timestamp построения | `1773740509.56` |
 | `base_path` | Исходный каталог конфигурации | `D:\ERP\src\cf` |
@@ -175,6 +177,7 @@ $ rlm-bsl-index index drop D:\ERP\src
 | `extension_purpose` | Назначение расширения | `Customization` |
 | `has_configuration_xml` | Наличие Configuration.xml (0/1) | `0` |
 | `detected_prefixes` | JSON-массив авто-определённых кастомных префиксов | `["ал"]` |
+| `file_paths_count` | Количество записей в таблице file_paths | `35000` |
 
 ### modules
 
@@ -302,6 +305,71 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 Ускоряет хелперы: `analyze_subsystem()`. Поддерживает обратный поиск: какие подсистемы содержат указанный объект.
 
+### role_rights
+
+Нормализованное хранение прав ролей. Парсинг XML: `Roles/**/Rights.xml` (CF) и `*.rights` (EDT) через `parse_rights_xml` (ElementTree, поддержка namespace 8.2/8.3).
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `role_name` | TEXT | Имя роли | `ДобавлениеИзменениеДокументов` |
+| `object_name` | TEXT | Полное имя объекта (Category.Name) | `Document.РеализацияТоваровУслуг` |
+| `right_name` | TEXT | Имя права | `Read`, `Insert`, `Posting` |
+| `file` | TEXT | Относительный путь к XML | `Roles/Имя/Ext/Rights.xml` |
+
+Хранятся только granted-права (`<value>true</value>`). Объект хранится с полным именем (напр. `Document.РеализацияТоваровУслуг`), reader ищет через `LIKE '%name%'` — поиск и по полному, и по короткому имени.
+
+Ускоряет хелперы: `find_roles()`.
+
+### register_movements
+
+Движения документов по регистрам. Извлекаются in-band при обработке BSL-файлов документов (без дополнительного I/O).
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `document_name` | TEXT | Имя документа | `РеализацияТоваровУслуг` |
+| `register_name` | TEXT | Имя регистра | `ТоварыНаСкладах` |
+| `source` | TEXT | Источник | `code`, `erp_mechanism`, `manager_table`, `adapted` |
+| `file` | TEXT | Относительный путь к BSL | `Documents/Имя/Ext/ObjectModule.bsl` |
+
+Четыре типа source:
+- `code` — прямые обращения `Движения.RegName` в ObjectModule
+- `erp_mechanism` — `МеханизмыДокумента.Добавить("RegName")` в ManagerModule
+- `manager_table` — определения `Функция ТекстЗапросаТаблицаRegName()` в ManagerModule
+- `adapted` — `ИмяРегистра = "RegName"` внутри `АдаптированныйТекстЗапросаДвиженийПоРегистру` в ManagerModule
+
+Ускоряет хелперы: `find_register_movements()`, `find_register_writers()`, `analyze_document_flow()`.
+
+### file_paths
+
+Навигационный индекс файлов (.bsl/.mdo/.xml) для ускорения `glob_files()`, `tree()`, `find_files()`.
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `rel_path` | TEXT UNIQUE | POSIX-путь от корня конфигурации | `Documents/МойДокумент/ObjectModule.bsl` |
+| `extension` | TEXT | Расширение файла | `.bsl`, `.mdo`, `.xml` |
+| `dir_path` | TEXT | Директория файла | `Documents/МойДокумент` |
+| `filename` | TEXT | Имя файла | `ObjectModule.bsl` |
+| `depth` | INTEGER | Количество сегментов в пути | `3` |
+| `size` | INTEGER | Размер файла в байтах | `3064` |
+| `mtime` | REAL | Время модификации | `1773653983.0` |
+
+При `update()` таблица пересобирается целиком (DROP + INSERT). Причина: .mdo/.xml меняются крайне редко, full rebuild дешёвый (~1-2с для 30-50K записей).
+
+**Поддерживаемые glob-паттерны (indexed, мгновенные):**
+
+| Паттерн | SQL-стратегия |
+|---------|---------------|
+| `**/*.ext` | `WHERE extension = '.ext'` |
+| `Dir/*/File.ext` | `WHERE dir_path LIKE 'Dir/%' AND filename = 'File.ext'` |
+| `Dir/**` или `Dir/**/*` | `WHERE rel_path LIKE 'Dir/%'` |
+| Точный путь | `WHERE rel_path = 'path'` |
+| `**/Name.ext` | `WHERE filename LIKE 'Name%' AND extension = '.ext'` |
+
+Все остальные паттерны → fallback на FS (`pathlib.Path.glob()`).
+
 ### methods_fts (FTS5)
 
 Виртуальная таблица полнотекстового поиска методов. Строится по умолчанию, отключается флагом `--no-fts`. Использует trigram-токенайзер — разбивает имена на тройки символов для подстрокового поиска с BM25-ранжированием.
@@ -331,7 +399,7 @@ LIMIT 30;
 
 Значение `rank` — BM25 score (отрицательное, ближе к 0 = менее релевантно).
 
-**Размер:** +232 MB на ERP (~617K методов с длинными русскими CamelCase-именами). **Время построения:** +5 секунд к общему build. Отключение: `--no-fts`.
+**Размер:** +232 MB на ERP (~569K методов с длинными русскими CamelCase-именами). **Время построения:** +5 секунд к общему build. Отключение: `--no-fts`.
 
 ## 5. Инкрементальное обновление
 
@@ -401,8 +469,15 @@ LIMIT 30;
 | `find_functional_options(obj)` | `SELECT` из `functional_options` (мгновенно) | XML-парсинг `FunctionalOptions/**` |
 | `find_enum_values(name)` | `SELECT` из `enum_values` (мгновенно) | Glob + XML-парсинг `Enums/**` |
 | `analyze_subsystem(name)` | `SELECT` из `subsystem_content` (мгновенно) | Glob + XML-парсинг `Subsystems/**` |
+| `find_roles(obj)` | `SELECT` из `role_rights` (мгновенно) | Парсинг Rights.xml / .rights |
+| `find_register_movements(doc)` | `SELECT DISTINCT` из `register_movements` (мгновенно) | Grep по ObjectModule + ManagerModule |
+| `find_register_writers(reg)` | `SELECT` из `register_movements` (мгновенно) | Параллельный поиск по ObjectModule |
+| `glob_files(pattern)` | `SELECT` из `file_paths` (мгновенно, для поддерживаемых паттернов) | `pathlib.Path.glob()` — полный обход FS |
+| `tree(path)` | `SELECT` из `file_paths` + Python-форматирование (мгновенно) | Рекурсивный `iterdir()` |
+| `find_files(name)` | `SELECT` из `file_paths` с ранжированием (мгновенно) | `os.walk()` + in-memory поиск |
+| `search_methods(query)` | FTS5 (BM25) (мгновенно) | Недоступен |
 
-### Новый хелпер: search_methods
+### search_methods — полнотекстовый поиск
 
 ```python
 search_methods(query, limit=30) -> list[dict]
@@ -424,7 +499,7 @@ for r in results:
 
 ```
 == INDEX ==
-Pre-built method index loaded (617207 methods, 4897432 call edges, config: УправлениеПредприятием v2.5.20.80).
+Pre-built method index loaded (569068 methods, 4554311 call edges, config: УправлениеПредприятием v2.5.14.59).
 extract_procedures() / find_callers_context() / find_event_subscriptions() return instantly from index.
 search_methods(query) — full-text search by method name substring.
 ```
@@ -439,8 +514,8 @@ search_methods(query) — full-text search by method name substring.
 {
   "index": {
     "loaded": true,
-    "methods": 617207,
-    "calls": 4897432,
+    "methods": 569068,
+    "calls": 4554311,
     "has_fts": true,
     "config_name": "УправлениеПредприятием",
     "config_version": "2.5.20.80",
@@ -463,6 +538,7 @@ search_methods(query) — full-text search by method name substring.
 - **UNIQUE(module_id, name, line)** — парсер может создать дубликаты для нестандартного кода (например, несколько процедур с одинаковым именем в одном модуле). При конфликте используется `INSERT OR REPLACE`
 - **Переименование методов** — инкрементальное обновление не пересчитывает входящие рёбра в `calls`, если метод был переименован. Для полной корректности графа после массовых переименований рекомендуется `index build`
 - **Точность mtime** — зависит от файловой системы (FAT32 — 2 сек, NTFS — 100 нс, ext4 — 1 нс). Допуск в 1 секунду учтён при сравнении
-- **Время первого построения** — на ERP (~24K файлов, ~617K методов, ~4.9M вызовов) полный `index build` занимает ~7 минут (calls + metadata + FTS). FTS добавляет ~5 секунд к общему времени. Без графа вызовов (`--no-calls`) — ~30-90 секунд
+- **Время первого построения** — на ERP (~23K файлов, ~569K методов, ~4.5M вызовов) полный `index build` занимает ~6.5 минут на быстром SSD (calls + metadata + FTS). FTS добавляет ~5 секунд к общему времени. Без графа вызовов (`--no-calls`) — ~30-90 секунд
 - **Потребление памяти при построении** — все результаты парсинга (методы + вызовы) накапливаются в ОЗУ до момента записи в SQLite. На конфигурации ERP пиковое потребление составляет ~3 GB RAM. Если на машине мало оперативной памяти, используйте `--no-calls` для снижения нагрузки
-- **Размер БД** — на ERP: ~981 MB (calls + metadata + FTS), из которых ~232 MB — FTS-индекс (trigram), ~3.8 MB — таблицы метаданных (ES/SJ/FO). Без FTS (`--no-fts`) — ~749 MB. Без графа вызовов (`--no-calls`) — ~35 MB
+- **`extension_purpose`** — ключ в `index_meta` присутствует только для расширений (`config_role = extension`). Для основных конфигураций не записывается
+- **Размер БД** — на ERP: ~1118 MB (calls + metadata + FTS), из которых ~232 MB — FTS-индекс (trigram), ~3.8 MB — таблицы метаданных (ES/SJ/FO). Без FTS (`--no-fts`) — ~886 MB. Без графа вызовов (`--no-calls`) — ~35 MB

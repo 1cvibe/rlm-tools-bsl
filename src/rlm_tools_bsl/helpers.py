@@ -33,7 +33,7 @@ def _walk_files(root: pathlib.Path):
             yield pathlib.Path(dirpath) / fname
 
 
-def make_helpers(base_path: str) -> tuple[dict, callable]:
+def make_helpers(base_path: str, idx_reader=None) -> tuple[dict, callable]:
     base = pathlib.Path(base_path).resolve()
     _file_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
     _file_cache_lock = threading.Lock()
@@ -227,8 +227,8 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
             "summary": summary,
         }
 
-    def glob_files(pattern: str) -> list[str]:
-        """Find files by glob pattern. Returns list of relative path strings."""
+    def _glob_files_fs(pattern: str) -> list[str]:
+        """FS-based glob (original implementation)."""
         safe_matches: list[str] = []
         dir_matches = 0
         for match in base.glob(pattern):
@@ -250,8 +250,32 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
             ]
         return safe_matches
 
-    def tree(path: str = ".", max_depth: int = 3) -> str:
-        """Print directory tree. Returns formatted string."""
+    def glob_files(pattern: str) -> list[str]:
+        """Find files by glob pattern. Returns list of relative path strings.
+
+        Uses SQLite index for supported patterns (instant), falls back to FS otherwise.
+        """
+        if idx_reader is not None:
+            try:
+                indexed = idx_reader.glob_files(pattern)
+            except Exception:
+                indexed = None
+            if indexed is not None:
+                # Reproduce hint logic: if no file matches, check for dir-like matches
+                if not indexed:
+                    # Check if pattern without wildcards is a known directory prefix
+                    norm = pattern.replace("\\", "/").rstrip("/")
+                    if "*" not in norm and "?" not in norm:
+                        return [
+                            f"[hint: pattern '{pattern}' matched directories but no files. "
+                            f"Add a file suffix, e.g. '{pattern}/**' or '{pattern}/Module.bsl']"
+                        ]
+                # Normalize separators to match FS behavior (backslash on Windows)
+                return [p.replace("/", os.sep) for p in indexed]
+        return _glob_files_fs(pattern)
+
+    def _tree_fs(path: str = ".", max_depth: int = 3) -> str:
+        """FS-based tree (original implementation)."""
         target = _resolve_safe(path)
         lines = []
 
@@ -274,6 +298,53 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
         _walk(target, "", 0)
         return "\n".join(lines)
 
+    def _tree_from_paths(paths: list[str], root_label: str, prefix_strip: str, max_depth: int) -> str:
+        """Build a tree string from a flat list of POSIX paths."""
+        # Build a nested dict structure
+        tree_dict: dict = {}
+        for p in paths:
+            if prefix_strip:
+                if not p.startswith(prefix_strip + "/"):
+                    continue
+                p = p[len(prefix_strip) + 1:]
+            parts = p.split("/")
+            if len(parts) > max_depth:
+                continue
+            node = tree_dict
+            for part in parts:
+                node = node.setdefault(part, {})
+
+        lines = [root_label]
+
+        def _render(node: dict, prefix: str):
+            # Sort: directories first (non-empty children), then files
+            items = sorted(node.items(), key=lambda kv: (len(kv[1]) == 0, kv[0]))
+            for i, (name, children) in enumerate(items):
+                connector = "└── " if i == len(items) - 1 else "├── "
+                lines.append(f"{prefix}{connector}{name}")
+                if children:
+                    extension = "    " if i == len(items) - 1 else "│   "
+                    _render(children, prefix + extension)
+
+        _render(tree_dict, "")
+        return "\n".join(lines)
+
+    def tree(path: str = ".", max_depth: int = 3) -> str:
+        """Print directory tree. Returns formatted string.
+
+        Uses SQLite index for fast tree rendering when available.
+        """
+        if idx_reader is not None:
+            try:
+                norm_path = path.replace("\\", "/").strip("/") if path != "." else ""
+                indexed_paths = idx_reader.tree_paths(norm_path, max_depth)
+            except Exception:
+                indexed_paths = None
+            if indexed_paths is not None:
+                root_label = norm_path if norm_path else "."
+                return _tree_from_paths(indexed_paths, root_label, norm_path, max_depth)
+        return _tree_fs(path, max_depth)
+
     _file_index: list[str] = []
     _file_index_built = [False]
     _file_index_lock = threading.Lock()
@@ -292,7 +363,17 @@ def make_helpers(base_path: str) -> tuple[dict, callable]:
             _file_index_built[0] = True
 
     def find_files(name: str) -> list[str]:
-        """Find files by substring match in relative path (case-insensitive)."""
+        """Find files by substring match in relative path (case-insensitive).
+
+        Uses SQLite index for ranked results when available, falls back to FS scan.
+        """
+        if idx_reader is not None:
+            try:
+                indexed = idx_reader.find_files_indexed(name, limit=100)
+            except Exception:
+                indexed = None
+            if indexed is not None:
+                return [p.replace("/", os.sep) for p in indexed]
         _build_file_index()
         needle = name.lower()
         return [f for f in _file_index if needle in f.lower()][:100]
