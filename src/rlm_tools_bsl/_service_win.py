@@ -56,7 +56,7 @@ class RlmWindowsService(win32serviceutil.ServiceFramework):
         exe = cfg.get("exe_path") or "rlm-tools-bsl"
         host = cfg["host"]
         port = str(cfg["port"])
-        health_url = f"http://{host}:{port}/mcp"
+        health_url = f"http://{host}:{port}/health"
 
         env = os.environ.copy()
         env_file = cfg.get("env_file")
@@ -85,6 +85,7 @@ class RlmWindowsService(win32serviceutil.ServiceFramework):
 
             # Health-check loop: check every 30s, poll stop_event every 1s
             health_failed = False
+            first_health_ok = True
             while self._proc.poll() is None:
                 for _ in range(30):
                     if win32event.WaitForSingleObject(self._stop_event, 1000) != win32event.WAIT_TIMEOUT:
@@ -93,8 +94,12 @@ class RlmWindowsService(win32serviceutil.ServiceFramework):
                     if self._proc.poll() is not None:
                         break
                 else:
-                    if not _check_health(health_url):
-                        _log_watchdog(log_file, "Health check failed, terminating process")
+                    if _check_health(health_url):
+                        if first_health_ok:
+                            _log_watchdog(log_file, "Health check OK (%s)", health_url)
+                            first_health_ok = False
+                    else:
+                        _log_watchdog(log_file, "Health check failed (%s), terminating process", health_url)
                         self._proc.terminate()
                         try:
                             self._proc.wait(timeout=10)
@@ -152,21 +157,13 @@ def _load_env_file(path: str, env: dict) -> None:
 
 
 def _check_health(url: str) -> bool:
-    """Check if MCP server process is alive (any HTTP response = alive)."""
+    """Check if MCP server process is alive via GET /health."""
     try:
-        req = urllib.request.Request(
-            url,
-            data=b'{"jsonrpc":"2.0","method":"ping","id":0}',
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return True
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return resp.status == 200
     except urllib.error.HTTPError:
-        # Any HTTP response (including 4xx like 406) means server is alive
         return True
     except Exception:
-        # Connection refused, timeout, etc. = server is down
         return False
 
 

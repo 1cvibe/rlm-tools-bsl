@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Исправлено
+- **Утечка MCP transport-сессий** — включён `stateless_http=True` в FastMCP. Ранее каждый HTTP-запрос без заголовка `Mcp-Session-Id` создавал transport-сессию, которая оставалась в памяти навсегда (клиенты не шлют DELETE при отключении). Накопление сессий приводило к `WinError 10055` (исчерпание сокетов Windows) и падению службы
+- **Health check создавал MCP-сессии** — watchdog делал `POST /mcp` с JSON-RPC телом каждые 30 сек, что создавало лишнюю transport-сессию при каждой проверке. Добавлен лёгкий `GET /health` endpoint (`{"status": "ok"}`), watchdog и `reinstall-service.ps1` переведены на него
+- **Предупреждение PowerShell при Invoke-WebRequest** — добавлен `-UseBasicParsing` в verify-шаге `reinstall-service.ps1`
+
+### Добавлено
+- **Лог режима при старте** — `transport=streamable-http stateless_http=True host=... port=...` в server.log для диагностики
+- **Лог первого успешного health check** — watchdog пишет `Health check OK (url)` один раз после старта
+- **Фильтр `GET /health` в uvicorn access log** — `_HealthLogFilter` подавляет шум от health check каждые 30 сек
+
+### Документация
+- Актуализирован подсчёт хелперов: 28 BSL + 8 I/O + 2 LLM = **38** (было указано 29)
+- Добавлены `grep_read` и `search_methods` в docs/HELPERS.md
+
 ## [1.3.4] — 2026-03-22
 
 ### Добавлено

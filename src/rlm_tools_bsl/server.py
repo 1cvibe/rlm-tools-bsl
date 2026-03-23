@@ -42,7 +42,7 @@ from rlm_tools_bsl.sandbox import HelperCall
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("rlm-tools-bsl")
+mcp = FastMCP("rlm-tools-bsl", stateless_http=True)
 
 session_manager = SessionManager(
     max_sessions=int(os.environ.get("RLM_MAX_SESSIONS", "5")),
@@ -52,6 +52,12 @@ session_manager = SessionManager(
 _sandboxes: dict[str, Sandbox] = {}
 _idx_readers: dict[str, IndexReader] = {}
 _sandboxes_lock = threading.Lock()
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def _health_endpoint(request):  # type: ignore[no-untyped-def]
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok"})
 
 
 from rlm_tools_bsl.helpers import _SKIP_DIRS, _BINARY_EXTENSIONS
@@ -700,6 +706,14 @@ async def rlm_end(
     return await anyio.to_thread.run_sync(lambda: _rlm_end(session_id))
 
 
+class _HealthLogFilter(logging.Filter):
+    """Suppress noisy uvicorn access-log lines for GET /health."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "GET /health" not in msg
+
+
 def _setup_file_logging():
     """Add rotating file handler for HTTP transport mode."""
     from logging.handlers import RotatingFileHandler
@@ -724,6 +738,7 @@ def _setup_file_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
     logging.getLogger().addHandler(handler)
+    logging.getLogger("uvicorn.access").addFilter(_HealthLogFilter())
     logger.info("File logging enabled: %s", log_path)
 
 
@@ -799,6 +814,14 @@ def main():
             mcp.settings.transport_security = TransportSecuritySettings(
                 enable_dns_rebinding_protection=False,
             )
+
+    if args.transport != "stdio":
+        logger.info(
+            "transport=%s stateless_http=%s host=%s port=%s",
+            args.transport, mcp.settings.stateless_http,
+            getattr(mcp.settings, "host", "?"),
+            getattr(mcp.settings, "port", "?"),
+        )
 
     threading.Thread(target=_warmup_imports, daemon=True).start()
     mcp.run(transport=args.transport)
