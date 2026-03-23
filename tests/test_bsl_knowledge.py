@@ -6,6 +6,8 @@ from rlm_tools_bsl.bsl_knowledge import (
     EffortConfig,
     RLM_EXECUTE_DESCRIPTION,
     RLM_START_DESCRIPTION,
+    _BUSINESS_RECIPES,
+    _match_recipe,
     get_strategy,
 )
 
@@ -158,3 +160,95 @@ def test_rlm_execute_description():
     assert "BSL" in RLM_EXECUTE_DESCRIPTION
     assert "find_module" in RLM_EXECUTE_DESCRIPTION
     assert "grep" in RLM_EXECUTE_DESCRIPTION
+
+
+# --- Business recipes ---
+
+def test_business_recipes_structure():
+    """All domains must have compact and full keys."""
+    assert len(_BUSINESS_RECIPES) == 5
+    for domain, recipe in _BUSINESS_RECIPES.items():
+        assert "compact" in recipe, f"{domain}: missing compact"
+        assert "full" in recipe, f"{domain}: missing full"
+        assert len(recipe["compact"]) >= 3, f"{domain}: compact too short"
+        assert len(recipe["full"]) >= 6, f"{domain}: full too short"
+
+
+def test_match_recipe_found():
+    assert _match_recipe("Как рассчитывается себестоимость?") == "себестоимость"
+    assert _match_recipe("Проведение документа РеализацияТоваров") == "проведение"
+    assert _match_recipe("Распределение затрат по номенклатуре") == "распределение"
+    assert _match_recipe("Печать товарной накладной") == "печать"
+    assert _match_recipe("Права доступа к справочнику") == "права"
+
+
+def test_match_recipe_not_found():
+    assert _match_recipe("Найди все HTTP-сервисы") is None
+    assert _match_recipe("") is None
+    assert _match_recipe("Покажи структуру модуля") is None
+
+
+def test_match_recipe_case_insensitive():
+    assert _match_recipe("СЕБЕСТОИМОСТЬ товаров") == "себестоимость"
+    assert _match_recipe("Печать ТОРГ-12") == "печать"
+
+
+def test_strategy_step0_always_present():
+    text = get_strategy("medium", None)
+    assert "Step 0" in text
+    assert "UNDERSTAND" in text
+
+
+def test_strategy_compact_recipe_low_effort():
+    text = get_strategy("low", None, query="себестоимость")
+    assert "BUSINESS RECIPE: себестоимость" in text
+    # Extract only the recipe section
+    start = text.index("BUSINESS RECIPE")
+    rest = text[start:]
+    end = rest.index("\n\n") if "\n\n" in rest else len(rest)
+    recipe_section = rest[:end]
+    # compact has exactly 3 numbered steps
+    assert "  1." in recipe_section
+    assert "  3." in recipe_section
+    assert "find_by_type" in recipe_section
+    assert "find_register_writers" in recipe_section
+    # full-only items must NOT be in the recipe section
+    assert "find_callers_context" not in recipe_section
+    assert "analyze_subsystem" not in recipe_section
+
+
+def test_strategy_compact_recipe_medium_effort():
+    text = get_strategy("medium", None, query="себестоимость")
+    assert "BUSINESS RECIPE: себестоимость" in text
+
+
+def test_strategy_full_recipe_high_effort():
+    text = get_strategy("high", None, query="себестоимость")
+    assert "BUSINESS RECIPE: себестоимость" in text
+    assert "find_callers_context" in text
+    assert "analyze_subsystem" in text
+
+
+def test_strategy_full_recipe_max_effort():
+    text = get_strategy("max", None, query="себестоимость")
+    assert "BUSINESS RECIPE: себестоимость" in text
+    assert "ALT:" in text
+
+
+def test_strategy_no_recipe_without_query():
+    text = get_strategy("high", None, query="")
+    assert "BUSINESS RECIPE" not in text
+    # Step 0 generic hint still present
+    assert "Step 0" in text
+
+
+def test_strategy_no_recipe_no_match():
+    text = get_strategy("high", None, query="Найди HTTP-сервисы")
+    assert "BUSINESS RECIPE" not in text
+
+
+def test_strategy_recipe_all_domains():
+    """Each domain can be matched and injected."""
+    for domain in _BUSINESS_RECIPES:
+        text = get_strategy("high", None, query=domain)
+        assert f"BUSINESS RECIPE: {domain}" in text

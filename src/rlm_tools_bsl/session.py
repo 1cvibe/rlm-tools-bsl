@@ -17,6 +17,8 @@ class Session:
     llm_calls_used: int = 0
     max_execute_calls: int = 50
     execute_calls: int = 0
+    total_in_chars: int = 0
+    total_out_chars: int = 0
 
 
 class SessionManager:

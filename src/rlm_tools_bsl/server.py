@@ -447,6 +447,7 @@ def _rlm_start(
         strategy = get_strategy(
             effort, format_info, detected_prefixes, ext_context, ext_overrides,
             registry=bsl_registry, idx_stats=idx_stats, idx_warnings=idx_warnings,
+            query=query,
         )
         t_strategy = time.monotonic() - t_step
 
@@ -531,8 +532,14 @@ def _rlm_start(
         "rlm_start: session=%s sources: format=%s ext=%s prefixes=%s",
         session_id, src_format, src_ext, src_prefixes,
     )
-    logger.info("rlm_start: session=%s completed in %.2fs", session_id, time.monotonic() - t0)
-    return json.dumps(response, ensure_ascii=False)
+    result_json = json.dumps(response, ensure_ascii=False)
+    out_chars = len(result_json)
+    session.total_out_chars += out_chars
+    logger.info(
+        "rlm_start: session=%s completed in %.2fs out_chars=%d out_tokens~%d",
+        session_id, time.monotonic() - t0, out_chars, int(out_chars / 1.75),
+    )
+    return result_json
 
 
 def _format_helper_summary(helper_calls: list[HelperCall], threshold: float) -> tuple[str, int]:
@@ -590,11 +597,7 @@ def _rlm_execute(
             helpers_summary = f" [{total} helpers: {parts}]"
         else:
             helpers_summary = f" [{total} helpers]"
-    logger.info(
-        "rlm_execute: session=%s call=%d/%d error=%s elapsed=%.2fs%s",
-        session_id, session.execute_calls, session.max_execute_calls,
-        bool(result.error), elapsed, helpers_summary,
-    )
+    session.total_in_chars += len(code)
 
     response: dict = {
         "stdout": result.stdout,
@@ -632,11 +635,29 @@ def _rlm_execute(
         if len(new_vars) > max_new_variables:
             response["new_variables_truncated_count"] = len(new_vars) - max_new_variables
 
-    return json.dumps(response, ensure_ascii=False)
+    result_json = json.dumps(response, ensure_ascii=False)
+    out_chars = len(result_json)
+    session.total_out_chars += out_chars
+    logger.info(
+        "rlm_execute: session=%s call=%d/%d error=%s elapsed=%.2fs out_chars=%d out_tokens~%d%s",
+        session_id, session.execute_calls, session.max_execute_calls,
+        bool(result.error), elapsed, out_chars, int(out_chars / 1.75), helpers_summary,
+    )
+    return result_json
 
 
 def _rlm_end(session_id: str) -> str:
-    logger.info("rlm_end: session=%s", session_id)
+    session = session_manager.get(session_id)
+    if session:
+        total_chars = session.total_in_chars + session.total_out_chars
+        logger.info(
+            "rlm_end: session=%s calls=%d in_chars=%d out_chars=%d total_chars=%d total_tokens~%d",
+            session_id, session.execute_calls,
+            session.total_in_chars, session.total_out_chars,
+            total_chars, int(total_chars / 1.75),
+        )
+    else:
+        logger.info("rlm_end: session=%s (not found)", session_id)
     session_manager.end(session_id)
     with _sandboxes_lock:
         _sandboxes.pop(session_id, None)

@@ -45,6 +45,10 @@ If a helper returns an error, read the HINT at the end — it tells you what to 
 == WORKFLOW ==
 BEFORE YOU START: check rlm_start response — warnings, extension_context, detected_custom_prefixes.
 
+Step 0 — UNDERSTAND: decode the business question
+  Check _BUSINESS_RECIPES for guided analysis plan
+  analyze_subsystem('ПодсистемаИмя') → all objects in the business domain
+
 Step 1 — DISCOVER: find what you need
   find_module('name') or find_by_type('Documents', 'name') → get file paths
   search_methods('substring') → find methods across all modules by name (needs index)
@@ -91,6 +95,89 @@ _CATEGORY_ORDER = [
     ("navigation", "Navigation"),
 ]
 
+_BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
+    "себестоимость": {
+        "compact": [
+            "find_by_type('AccumulationRegisters', 'Себестоимость') → регистры",
+            "find_register_writers('РегистрИмя') → документы-писатели",
+            "analyze_document_flow('ДокИмя') → проводки + подписки",
+        ],
+        "full": [
+            "find_by_type('AccumulationRegisters', 'Себестоимость') → регистры себестоимости",
+            "find_register_writers('РегистрИмя') → какие документы пишут в регистр",
+            "analyze_document_flow('ДокИмя') → проводки + подписки + задания",
+            "search_methods('Себестоимость') → методы расчёта по всей кодовой базе",
+            "find_callers_context('РассчитатьСебестоимость') → цепочка вызовов",
+            "analyze_subsystem('РасчетСебестоимости') → все объекты домена",
+            "ALT: grep('Себестоимость', path=module) если регистр не найден",
+        ],
+    },
+    "проведение": {
+        "compact": [
+            "find_by_type('Documents', 'ДокИмя') → найти документ",
+            "find_register_movements('ДокИмя') → какие регистры пишет",
+            "analyze_document_flow('ДокИмя') → подписки + движения + задания",
+        ],
+        "full": [
+            "find_by_type('Documents', 'ДокИмя') → найти документ",
+            "find_register_movements('ДокИмя') → регистры, в которые пишет документ",
+            "analyze_document_flow('ДокИмя') → проводки + подписки + рег.задания",
+            "find_event_subscriptions('ДокИмя') → подписки на события документа",
+            "read_procedure(path, 'ОбработкаПроведения') → код проведения",
+            "find_callers_context('ОбработкаПроведения') → кто вызывает проведение",
+            "ALT: search_methods('Проведение') если имя процедуры нестандартное",
+        ],
+    },
+    "распределение": {
+        "compact": [
+            "search_methods('Распредел') → методы распределения",
+            "find_by_type('AccumulationRegisters', 'Распредел') → регистры",
+            "find_register_writers('РегистрИмя') → документы-источники",
+        ],
+        "full": [
+            "search_methods('Распредел') → все методы распределения",
+            "find_by_type('AccumulationRegisters', 'Распредел') → регистры распределения",
+            "find_register_writers('РегистрИмя') → какие документы пишут в регистр",
+            "analyze_document_flow('ДокИмя') → полный flow документа распределения",
+            "analyze_subsystem('РаспределениеЗатрат') → все объекты домена",
+            "find_callers_context('Распределить') → цепочка вызовов",
+            "ALT: grep('Распредел', path=module) для поиска в конкретных модулях",
+        ],
+    },
+    "печать": {
+        "compact": [
+            "find_print_forms('ОбъектИмя') → печатные формы объекта",
+            "find_module('Печать') → общие модули печати",
+            "search_methods('Печат') → методы формирования печати",
+        ],
+        "full": [
+            "find_print_forms('ОбъектИмя') → все печатные формы объекта",
+            "find_module('Печать') → модули подсистемы печати",
+            "search_methods('Печат') → методы формирования печатных форм",
+            "find_callers_context('СформироватьПечатнуюФорму') → цепочка вызовов",
+            "analyze_subsystem('Печать') → все объекты подсистемы печати",
+            "find_by_type('CommonModules', 'Печат') → общие модули печати",
+            "ALT: grep('ТабличныйДокумент', path=module) для поиска макетов",
+        ],
+    },
+    "права": {
+        "compact": [
+            "find_roles('ОбъектИмя') → роли с доступом к объекту",
+            "find_by_type('Roles') → список всех ролей",
+            "find_functional_options('ОбъектИмя') → функциональные опции",
+        ],
+        "full": [
+            "find_roles('ОбъектИмя') → роли с правами на объект (чтение, запись, и т.д.)",
+            "find_by_type('Roles') → полный список ролей конфигурации",
+            "find_functional_options('ОбъектИмя') → функциональные опции объекта",
+            "search_methods('ПравоДоступа') → проверки прав в коде",
+            "search_methods('РольДоступна') → программные проверки ролей",
+            "analyze_subsystem('УправлениеДоступом') → все объекты подсистемы прав",
+            "ALT: grep('ПравоДоступа|РольДоступна', path=module) в конкретных модулях",
+        ],
+    },
+}
+
 _STRATEGY_IO_SECTION = """\
 File I/O:
   read_file(path), read_files(paths)       → str / dict
@@ -121,11 +208,21 @@ def build_helpers_table(registry: dict) -> str:
     return "\n".join(lines)
 
 
+def _match_recipe(query: str) -> str | None:
+    """Match query text against _BUSINESS_RECIPES domain keys."""
+    q = query.lower()
+    for domain in _BUSINESS_RECIPES:
+        if domain in q:
+            return domain
+    return None
+
+
 def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None = None,
                  extension_context=None, ext_overrides: dict | None = None,
                  registry: dict | None = None,
                  idx_stats: dict | None = None,
-                 idx_warnings: list[str] | None = None) -> str:
+                 idx_warnings: list[str] | None = None,
+                 query: str = "") -> str:
     config = EFFORT_LEVELS.get(effort, EFFORT_LEVELS["medium"])
 
     has_extensions = (
@@ -143,6 +240,17 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
 
     # --- Base strategy (critical, workflow) ---
     parts.append(_STRATEGY_HEADER)
+
+    # --- Business recipe (dynamic injection based on query) ---
+    if query:
+        domain = _match_recipe(query)
+        if domain:
+            level = "compact" if effort in ("low", "medium") else "full"
+            steps = _BUSINESS_RECIPES[domain][level]
+            recipe_lines = [f"\n== BUSINESS RECIPE: {domain} =="]
+            for i, step in enumerate(steps, 1):
+                recipe_lines.append(f"  {i}. {step}")
+            parts.append("\n".join(recipe_lines))
 
     # --- Helpers table (dynamic from registry, or static fallback for IO/LLM) ---
     if registry:
