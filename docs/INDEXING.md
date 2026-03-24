@@ -11,7 +11,7 @@
 | Таблица символов (методы/функции) | tree-sitter → JSON API | ctags / tree-sitter | — | regex-парсинг → SQLite `methods` (569K методов ERP) |
 | Граф вызовов | нет | «файл → символ» + PageRank | нет | эвристический regex → SQLite `calls` (4.5M рёбер ERP). PageRank — Future, данные есть |
 | Полнотекстовый поиск | нет | нет | BM25 (Elasticsearch) | FTS5 trigram + BM25, встроен в SQLite (`search_methods`) |
-| Метаданные конфигурации | нет | нет | нет | `index_meta` (имя, версия, формат, роль), Level-2: ES/SJ/FO (3 таблицы) |
+| Метаданные конфигурации | нет | нет | нет | `index_meta` (имя, версия, формат, роль), Level-2: ES/SJ/FO, Level-5: HTTP/WS/XDTO (6 таблиц метаданных) |
 | Прозрачная интеграция | отдельный API | карта для промпта | отдельный сервис | хелперы автоматически ускоряются при наличии индекса, fallback на live-парсинг |
 | Инкрементальное обновление | нет | полная перестройка | нет | `index update` — только изменённые/новые/удалённые файлы (10–20с vs 6 мин full build) |
 | Зависимости | Rust + tree-sitter | tree-sitter / ctags + networkx | Elasticsearch | чистый Python + SQLite (stdlib), ноль внешних зависимостей |
@@ -53,7 +53,7 @@ rlm-bsl-index index build <path> [--no-calls] [--no-metadata] [--no-fts]
 
 Флаги:
 - `--no-calls` — отключает построение графа вызовов (значительно ускоряет сборку)
-- `--no-metadata` — отключает парсинг таблиц метаданных (EventSubscriptions, ScheduledJobs, FunctionalOptions)
+- `--no-metadata` — отключает парсинг таблиц метаданных (EventSubscriptions, ScheduledJobs, FunctionalOptions, HTTPServices, WebServices, XDTOPackages)
 - `--no-fts` — отключает построение FTS5-индекса полнотекстового поиска
 
 Пример:
@@ -75,6 +75,9 @@ Index built in 390.9s
   EventSubs:  536
   SchedJobs:  238
   FuncOpts:   929
+  HTTPSvcs:   5
+  WebSvcs:    34
+  XDTOPkgs:   382
   FilePaths:  103128
   DB size:  1117.8 MB
   DB path:  C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
@@ -123,6 +126,9 @@ Index: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
   EventSubs:  536
   SchedJobs:  238
   FuncOpts:   929
+  HTTPSvcs:   5
+  WebSvcs:    34
+  XDTOPkgs:   382
   FilePaths:  103128
   FTS:      yes
   DB size:  1117.8 MB
@@ -149,7 +155,7 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 ## 4. Структура индекса
 
-Индекс хранится в SQLite-базе `method_index.db` и содержит 12 таблиц (4 основные + 7 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
+Индекс хранится в SQLite-базе `method_index.db` и содержит 15 таблиц (4 основные + 10 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
 
 ### index_meta
 
@@ -157,8 +163,8 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 | key | Описание | Пример |
 |-----|----------|--------|
-| `version` | Версия схемы | `5` |
-| `builder_version` | Версия построителя | `5` |
+| `version` | Версия схемы | `6` |
+| `builder_version` | Версия построителя | `6` |
 | `bsl_count` | Количество .bsl файлов | `23461` |
 | `paths_hash` | MD5-хеш отсортированных путей | `6c4e5a0f0d506f67...` |
 | `built_at` | Unix-timestamp построения | `1773740509.56` |
@@ -340,6 +346,50 @@ $ rlm-bsl-index index drop D:\ERP\src
 - `adapted` — `ИмяРегистра = "RegName"` внутри `АдаптированныйТекстЗапросаДвиженийПоРегистру` в ManagerModule
 
 Ускоряет хелперы: `find_register_movements()`, `find_register_writers()`, `analyze_document_flow()`.
+
+### http_services
+
+HTTP-сервисы (REST API). Заполняется при построении без `--no-metadata`. Парсинг XML: `HTTPServices/**/*.xml` и `*.mdo`.
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `name` | TEXT | Имя сервиса | `ПередачаДанных` |
+| `root_url` | TEXT | Корневой URL | `dt` |
+| `templates_json` | TEXT | JSON-массив шаблонов URL с методами | `[{"name": "...", "template": "/storage/{ID}", "methods": [...]}]` |
+| `file` | TEXT | Относительный путь к XML | `HTTPServices/ПередачаДанных/ПередачаДанных.mdo` |
+
+Ускоряет хелперы: `find_http_services()`.
+
+### web_services
+
+Веб-сервисы (SOAP). Заполняется при построении без `--no-metadata`. Парсинг XML: `WebServices/**/*.xml` и `*.mdo`.
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `name` | TEXT | Имя сервиса | `Exchange` |
+| `namespace` | TEXT | Пространство имён | `http://www.1c.ru/SSL/Exchange` |
+| `operations_json` | TEXT | JSON-массив операций с параметрами | `[{"name": "Upload", "return_type": "xs:string", "procedure_name": "...", "params": [...]}]` |
+| `file` | TEXT | Относительный путь к XML | `WebServices/Exchange/Exchange.mdo` |
+
+Ускоряет хелперы: `find_web_services()`.
+
+### xdto_packages
+
+XDTO-пакеты (контракты данных). Заполняется при построении без `--no-metadata`. Парсинг XML: `XDTOPackages/**/*.xml` и `*.mdo`. Для EDT: типы из sibling `Package.xdto`.
+
+| Колонка | Тип | Описание | Пример |
+|---------|-----|----------|--------|
+| `id` | INTEGER PK | Идентификатор | `1` |
+| `name` | TEXT | Имя пакета | `AgentScripts` |
+| `namespace` | TEXT | Пространство имён | `http://v8.1c.ru/agent/scripts/1.0` |
+| `types_json` | TEXT | JSON-массив типов (objectType/valueType) | `[{"name": "Info", "kind": "objectType", "properties": [...]}]` |
+| `file` | TEXT | Относительный путь к XML | `XDTOPackages/AgentScripts/AgentScripts.mdo` |
+
+Типы заполняются только для EDT-формата (из `Package.xdto`). Для CF-формата типы хранятся в бинарном `Package.bin` — `types_json = "[]"`.
+
+Ускоряет хелперы: `find_xdto_packages()`.
 
 ### file_paths
 

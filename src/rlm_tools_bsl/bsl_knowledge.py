@@ -176,6 +176,43 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
             "ALT: grep('ПравоДоступа|РольДоступна', path=module) в конкретных модулях",
         ],
     },
+    "интеграция": {
+        "compact": [
+            "find_http_services() → HTTP endpoints (REST API)",
+            "find_web_services() → SOAP операции",
+            "find_by_type('ExchangePlans') → планы обмена",
+        ],
+        "full": [
+            "find_http_services() → HTTP endpoints (REST API)",
+            "find_web_services() → SOAP операции",
+            "find_xdto_packages() → XDTO контракты данных",
+            "plans = find_by_type('ExchangePlans') → получить имена планов обмена",
+            "find_exchange_plan_content('КонкретноеИмяПлана') → состав плана (передать реальное имя из шага 4)",
+            "all_jobs = find_scheduled_jobs() → затем отфильтровать: [j for j in all_jobs if any(k in j['name'] for k in ('Обмен','Exchange','Синхрониз','Загруз','Выгруз'))]",
+        ],
+        "code_hint": (
+            "# Готовый код для интеграционного анализа (можно вставить в rlm_execute):\n"
+            "hs = find_http_services()\n"
+            "ws = find_web_services()\n"
+            "xdto = find_xdto_packages()\n"
+            "plans = find_by_type('ExchangePlans')\n"
+            "plan_names = sorted(set(p['object_name'] for p in plans))\n"
+            "print(f'HTTP: {len(hs)}, SOAP: {len(ws)}, XDTO: {len(xdto)}, Plans: {len(plan_names)}')\n"
+            "for name in plan_names[:3]:\n"
+            "    ep = find_exchange_plan_content(name)\n"
+            "    print(f'  {name}: {len(ep)} objects')\n"
+            "all_jobs = find_scheduled_jobs()\n"
+            "kw = ('Обмен','Exchange','Синхрониз','Загруз','Выгруз')\n"
+            "ex_jobs = [j for j in all_jobs if any(k in j['name'] for k in kw)]\n"
+            "print(f'Exchange jobs: {len(ex_jobs)} of {len(all_jobs)}')"
+        ),
+    },
+}
+
+_RECIPE_ALIASES: dict[str, str] = {
+    "обмен": "интеграция",
+    "синхрониз": "интеграция",
+    "exchange": "интеграция",
 }
 
 _STRATEGY_IO_SECTION = """\
@@ -209,10 +246,13 @@ def build_helpers_table(registry: dict) -> str:
 
 
 def _match_recipe(query: str) -> str | None:
-    """Match query text against _BUSINESS_RECIPES domain keys."""
+    """Match query text against _BUSINESS_RECIPES domain keys and aliases."""
     q = query.lower()
     for domain in _BUSINESS_RECIPES:
         if domain in q:
+            return domain
+    for alias, domain in _RECIPE_ALIASES.items():
+        if alias in q:
             return domain
     return None
 
@@ -246,10 +286,14 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
         domain = _match_recipe(query)
         if domain:
             level = "compact" if effort in ("low", "medium") else "full"
-            steps = _BUSINESS_RECIPES[domain][level]
+            recipe = _BUSINESS_RECIPES[domain]
+            steps = recipe[level]
             recipe_lines = [f"\n== BUSINESS RECIPE: {domain} =="]
             for i, step in enumerate(steps, 1):
                 recipe_lines.append(f"  {i}. {step}")
+            code_hint = recipe.get("code_hint")
+            if code_hint:
+                recipe_lines.append(f"\nReady-to-use code (paste into rlm_execute):\n```python\n{code_hint}\n```")
             parts.append("\n".join(recipe_lines))
 
     # --- Helpers table (dynamic from registry, or static fallback for IO/LLM) ---

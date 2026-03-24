@@ -32,6 +32,7 @@ from rlm_tools_bsl.bsl_knowledge import (
     get_strategy,
 )
 from rlm_tools_bsl.bsl_index import (
+    BUILDER_VERSION,
     IndexReader,
     IndexStatus,
     check_index_usable,
@@ -308,6 +309,15 @@ def _rlm_start(
                         idx_warnings.append(
                             "Index content may be outdated — run 'rlm-bsl-index index update' to refresh"
                         )
+                    # Check index builder version
+                    idx_version = int(idx_stats.get("builder_version") or 0)
+                    if idx_version < BUILDER_VERSION:
+                        msg = (
+                            f"Index built with v{idx_version}, current v{BUILDER_VERSION} — "
+                            f"new helpers available after rebuild: rlm-bsl-index index build \"{resolved}\""
+                        )
+                        idx_warnings.append(msg)
+                        logger.warning("rlm_start: session=%s %s", session_id, msg)
         except Exception as e:
             logger.warning("rlm_start: session=%s index load failed: %s", session_id, e)
         t_index = time.monotonic() - t_step

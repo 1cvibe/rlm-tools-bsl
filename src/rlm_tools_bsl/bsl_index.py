@@ -23,7 +23,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 5
+BUILDER_VERSION = 6
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -202,6 +202,35 @@ CREATE INDEX IF NOT EXISTS idx_fp_ext ON file_paths(extension);
 CREATE INDEX IF NOT EXISTS idx_fp_dir ON file_paths(dir_path);
 CREATE INDEX IF NOT EXISTS idx_fp_filename ON file_paths(filename COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_fp_depth ON file_paths(depth);
+
+-- Level-5: integration metadata
+CREATE TABLE IF NOT EXISTS http_services (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    root_url TEXT NOT NULL,
+    templates_json TEXT NOT NULL,
+    file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hs_name ON http_services(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS web_services (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    operations_json TEXT NOT NULL,
+    file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ws_name ON web_services(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS xdto_packages (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    types_json TEXT NOT NULL,
+    file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_xp_name ON xdto_packages(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_xp_ns ON xdto_packages(namespace);
 """
 
 
@@ -683,8 +712,12 @@ def _collect_metadata_tables(base_path: str) -> dict[str, list[tuple]]:
         parse_enum_xml,
         parse_event_subscription_xml,
         parse_functional_option_xml,
+        parse_http_service_xml,
         parse_metadata_xml,
         parse_scheduled_job_xml,
+        parse_web_service_xml,
+        parse_xdto_package_xml,
+        parse_xdto_types,
     )
 
     base = Path(base_path)
@@ -694,6 +727,9 @@ def _collect_metadata_tables(base_path: str) -> dict[str, list[tuple]]:
         "functional_options": [],
         "enum_values": [],
         "subsystem_content": [],
+        "http_services": [],
+        "web_services": [],
+        "xdto_packages": [],
     }
 
     def _read(fp: Path) -> str | None:
@@ -818,6 +854,61 @@ def _collect_metadata_tables(base_path: str) -> dict[str, list[tuple]]:
                 rel,
             ))
 
+    # HTTPServices
+    for fp in _glob_xml("HTTPServices"):
+        content = _read(fp)
+        if not content:
+            continue
+        parsed = parse_http_service_xml(content)
+        if not parsed or not parsed.get("name"):
+            continue
+        rel = fp.relative_to(base).as_posix()
+        result["http_services"].append((
+            parsed["name"],
+            parsed.get("root_url") or "",
+            json.dumps(parsed.get("templates", []), ensure_ascii=False),
+            rel,
+        ))
+
+    # WebServices
+    for fp in _glob_xml("WebServices"):
+        content = _read(fp)
+        if not content:
+            continue
+        parsed = parse_web_service_xml(content)
+        if not parsed or not parsed.get("name"):
+            continue
+        rel = fp.relative_to(base).as_posix()
+        result["web_services"].append((
+            parsed["name"],
+            parsed.get("namespace") or "",
+            json.dumps(parsed.get("operations", []), ensure_ascii=False),
+            rel,
+        ))
+
+    # XDTOPackages
+    for fp in _glob_xml("XDTOPackages"):
+        content = _read(fp)
+        if not content:
+            continue
+        parsed = parse_xdto_package_xml(content)
+        if not parsed or not parsed.get("name"):
+            continue
+        # For EDT: check for sibling Package.xdto
+        if fp.suffix.lower() == ".mdo":
+            xdto_path = fp.parent / "Package.xdto"
+            if xdto_path.exists():
+                xdto_content = _read(xdto_path)
+                if xdto_content:
+                    parsed["types"] = parse_xdto_types(xdto_content)
+        rel = fp.relative_to(base).as_posix()
+        result["xdto_packages"].append((
+            parsed["name"],
+            parsed.get("namespace") or "",
+            json.dumps(parsed.get("types", []), ensure_ascii=False),
+            rel,
+        ))
+
     return result
 
 
@@ -875,6 +966,29 @@ def _insert_metadata_tables(conn: sqlite3.Connection, tables: dict[str, list[tup
             "(subsystem_name, subsystem_synonym, object_ref, file) "
             "VALUES (?, ?, ?, ?)",
             tables["subsystem_content"],
+        )
+
+    # Integration metadata
+    for table in ("http_services", "web_services", "xdto_packages"):
+        try:
+            conn.execute(f"DELETE FROM {table}")
+        except sqlite3.OperationalError:
+            pass
+
+    if tables.get("http_services"):
+        conn.executemany(
+            "INSERT INTO http_services (name, root_url, templates_json, file) VALUES (?, ?, ?, ?)",
+            tables["http_services"],
+        )
+    if tables.get("web_services"):
+        conn.executemany(
+            "INSERT INTO web_services (name, namespace, operations_json, file) VALUES (?, ?, ?, ?)",
+            tables["web_services"],
+        )
+    if tables.get("xdto_packages"):
+        conn.executemany(
+            "INSERT INTO xdto_packages (name, namespace, types_json, file) VALUES (?, ?, ?, ?)",
+            tables["xdto_packages"],
         )
 
 
@@ -2445,7 +2559,8 @@ class IndexReader:
             # Configuration metadata from index_meta
             for key in ("config_name", "config_version", "config_synonym",
                         "config_vendor", "source_format", "config_role",
-                        "has_metadata", "has_fts", "bsl_count"):
+                        "has_metadata", "has_fts", "bsl_count",
+                        "builder_version"):
                 meta_row = self._conn.execute(
                     "SELECT value FROM index_meta WHERE key = ?", (key,)
                 ).fetchone()
@@ -2469,6 +2584,14 @@ class IndexReader:
 
             # Level-3 counts
             for table in ("role_rights", "register_movements", "enum_values", "subsystem_content"):
+                try:
+                    row = self._conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()  # noqa: S608
+                    stats[table] = row["cnt"] if row else 0
+                except sqlite3.Error:
+                    stats[table] = 0
+
+            # Level-5: integration metadata counts
+            for table in ("http_services", "web_services", "xdto_packages"):
                 try:
                     row = self._conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()  # noqa: S608
                     stats[table] = row["cnt"] if row else 0
@@ -2743,6 +2866,84 @@ class IndexReader:
                     "matched_refs": info["matched_refs"],
                 }
                 for name, info in grouped.items()
+            ]
+
+    def get_http_services(self, name: str = "") -> list[dict] | None:
+        """Get HTTP services from the index, optionally filtered by name."""
+        with self._lock:
+            try:
+                sql = "SELECT name, root_url, templates_json, file FROM http_services"
+                params: tuple = ()
+                if name:
+                    sql += " WHERE name LIKE ? COLLATE NOCASE"
+                    params = (f"%{name}%",)
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+            if not rows:
+                return [] if name else None
+
+            return [
+                {
+                    "name": r["name"],
+                    "root_url": r["root_url"],
+                    "templates": json.loads(r["templates_json"]),
+                    "file": r["file"],
+                }
+                for r in rows
+            ]
+
+    def get_web_services(self, name: str = "") -> list[dict] | None:
+        """Get web services from the index, optionally filtered by name."""
+        with self._lock:
+            try:
+                sql = "SELECT name, namespace, operations_json, file FROM web_services"
+                params: tuple = ()
+                if name:
+                    sql += " WHERE name LIKE ? COLLATE NOCASE"
+                    params = (f"%{name}%",)
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+            if not rows:
+                return [] if name else None
+
+            return [
+                {
+                    "name": r["name"],
+                    "namespace": r["namespace"],
+                    "operations": json.loads(r["operations_json"]),
+                    "file": r["file"],
+                }
+                for r in rows
+            ]
+
+    def get_xdto_packages(self, name: str = "") -> list[dict] | None:
+        """Get XDTO packages from the index, optionally filtered by name."""
+        with self._lock:
+            try:
+                sql = "SELECT name, namespace, types_json, file FROM xdto_packages"
+                params: tuple = ()
+                if name:
+                    sql += " WHERE name LIKE ? COLLATE NOCASE"
+                    params = (f"%{name}%",)
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+            if not rows:
+                return [] if name else None
+
+            return [
+                {
+                    "name": r["name"],
+                    "namespace": r["namespace"],
+                    "types": json.loads(r["types_json"]),
+                    "file": r["file"],
+                }
+                for r in rows
             ]
 
     def close(self) -> None:

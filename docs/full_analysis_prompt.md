@@ -34,7 +34,7 @@ Replace `РеализацияТоваровУслуг` with your target object n
 Начни с help() чтобы узнать доступные инструменты, затем используй их по своему усмотрению.
 Обрати внимание на Step 0 — UNDERSTAND в стратегии и бизнес-рецепт, если он был предложен.
 
-Дай итоговую сводку со всеми цифрами. Файл с анализом сохрани в текущий рабочий каталог
+Дай итоговую сводку со всеми цифрами. Сохрани файл с анализом в текущий рабочий каталог своими инструментами (НЕ через rlm_execute)
 
 ## ВАЖНЫЕ ПРАВИЛА
 
@@ -48,7 +48,7 @@ Replace `РеализацияТоваровУслуг` with your target object n
 
 ## What it covers
 
-This prompt exercises all 28 BSL helpers without explicitly naming them. The AI agent discovers the toolset via `help()` and decides which helpers to use. Business questions in the prompt trigger `_BUSINESS_RECIPES` injection via `get_strategy()` (v1.3.5+).
+This prompt exercises all 32 BSL helpers without explicitly naming them. The AI agent discovers the toolset via `help()` and decides which helpers to use. Business questions in the prompt trigger `_BUSINESS_RECIPES` injection via `get_strategy()` (v1.3.5+).
 
 | Area | Expected helpers |
 |------|-----------------|
@@ -59,7 +59,8 @@ This prompt exercises all 28 BSL helpers without explicitly naming them. The AI 
 | Business analysis | `analyze_object`, `analyze_document_flow`, `analyze_subsystem` |
 | Customizations | `find_custom_modifications`, `detect_extensions`, `find_ext_overrides` |
 | Infrastructure | `find_register_movements`, `find_register_writers`, `find_based_on_documents`, `find_event_subscriptions`, `find_scheduled_jobs`, `find_print_forms`, `find_functional_options`, `find_roles` |
-| Strategy | Step 0 UNDERSTAND + business recipe (проведение/печать) via `get_strategy(query=...)` |
+| Integration (v1.4.0) | `find_http_services`, `find_web_services`, `find_xdto_packages`, `find_exchange_plan_content` |
+| Strategy | Step 0 UNDERSTAND + business recipe (проведение/печать/интеграция) via `get_strategy(query=...)` |
 | Help | `help` |
 
 ## Recommended settings
@@ -84,3 +85,92 @@ This prompt exercises all 28 BSL helpers without explicitly naming them. The AI 
 |--------|-------|------------|----------|-------|
 | Claude Code | Sonnet 4.6 | 35 | 15 | 33% fewer calls, ~11 min, FTS used |
 | Kilo Code | Minimax m2.5 | 10 | 14 | Huge improvement: clean report, correct data |
+
+---
+
+# Integration Analysis Prompt — E2E Test for v1.4.0 Helpers
+
+Use this prompt to verify the new integration metadata helpers added in v1.4.0.
+Replace `<path>` with the actual path to your 1C source code (EDT or CF format).
+
+---
+
+## Prompt
+
+```
+Мне нужно провести полный анализ интеграционных возможностей конфигурации ERP.
+Путь: <путь к каталогу исходников 1С>
+
+Используй ТОЛЬКО MCP-сервер rlm-tools-bsl (rlm_start / rlm_execute / rlm_end).
+Не используй встроенные инструменты чтения файлов — всё делай через песочницу.
+
+Мне нужно знать:
+
+1. **HTTP-сервисы (REST API)**:
+   - Полный список HTTP-сервисов с корневыми URL
+   - Для каждого: шаблоны URL, доступные HTTP-методы (GET/POST/PUT/DELETE), обработчики
+   - Какие из них типовые (БСП), какие кастомные
+   - Статистика: сколько всего сервисов, шаблонов, методов
+
+2. **Веб-сервисы (SOAP)**:
+   - Полный список веб-сервисов с namespace
+   - Для каждого: операции, параметры операций, типы возвращаемых значений, процедуры-обработчики
+   - Статистика: сколько сервисов, операций
+
+3. **XDTO-пакеты**:
+   - Полный список пакетов с namespace
+   - Для пакетов с типами: objectType и valueType с их свойствами
+   - Какие пакеты относятся к обмену данными, какие к интеграции с внешними системами
+   - Статистика: сколько пакетов, сколько из них с типами
+
+4. **Планы обмена**:
+   - Список всех планов обмена (через find_by_type)
+   - Для основного плана обмена (например, ОбменУправлениеПредприятием): полный состав — какие объекты входят и с каким режимом авторегистрации
+   - Регламентные задания, связанные с обменом (фильтр по 'Обмен|Exchange|Синхрониз|Загруз|Выгруз')
+
+5. **Связи между компонентами**:
+   - Какие HTTP-сервисы используют XDTO-пакеты (по namespace)
+   - Какие веб-сервисы ссылаются на XDTO-типы
+   - Общие модули, связанные с интеграцией (поиск по 'Интеграц|Обмен|Exchange')
+
+Начни с help('http') и help('обмен') чтобы узнать доступные рецепты и инструменты.
+Затем используй find_http_services(), find_web_services(), find_xdto_packages(), find_exchange_plan_content() и другие хелперы.
+
+Дай итоговую сводку со всеми цифрами в виде структурированного отчёта. Сохрани файл с анализом в текущий рабочий каталог своими инструментами (НЕ через rlm_execute).
+
+## ВАЖНЫЕ ПРАВИЛА
+
+1. Каждый rlm_execute должен батчить несколько связанных операций. Плохо: один вызов на один хелпер. Хорошо: несколько хелперов + print() в одном вызове.
+2. Переменные сохраняются между вызовами rlm_execute.
+3. Используй print() для вывода результатов.
+4. В конце ОБЯЗАТЕЛЬНО вызови rlm_end для освобождения ресурсов.
+```
+
+---
+
+## What it covers
+
+This prompt specifically targets the 4 new integration helpers from v1.4.0 and verifies they work correctly on real 1C configurations. It also tests the integration business recipe and alias routing.
+
+| Area | Expected helpers | What to verify |
+|------|-----------------|----------------|
+| HTTP services | `find_http_services()` | name, root_url, templates with methods |
+| Web services | `find_web_services()` | name, namespace, operations with params |
+| XDTO packages | `find_xdto_packages()` | name, namespace, types (EDT only) |
+| Exchange plans | `find_exchange_plan_content(name)` | ref, auto_record for each object |
+| Exchange plan list | `find_by_type('ExchangePlans')` | BSL modules of exchange plans |
+| Related jobs | `find_scheduled_jobs()` + filter | jobs related to exchange/sync |
+| Integration recipe | `help('http')`, `help('обмен')` | recipe displayed correctly |
+| Strategy injection | `get_strategy(query='интеграция')` | BUSINESS RECIPE injected |
+| Index version | `rlm_start` warnings | no version warning with v6 index |
+
+## Expected results on ERP 2.5 (EDT, ~20K BSL modules)
+
+| Metric | Expected range |
+|--------|---------------|
+| HTTP services | 20–30 |
+| Web services | 15–20 |
+| XDTO packages | 250–350 |
+| XDTO packages with types | 200+ (EDT format) |
+| Exchange plans | 5–15 |
+| Exchange-related scheduled jobs | 10–30 |

@@ -4,6 +4,7 @@ import tempfile
 
 from test_bsl_helpers import _make_bsl_fixture
 from rlm_tools_bsl.bsl_helpers import _normalize_category
+from rlm_tools_bsl.format_detector import METADATA_CATEGORIES
 
 
 # --- _normalize_category unit tests ---
@@ -77,6 +78,26 @@ def test_find_by_type_russian_alias():
         russian = bsl["find_by_type"]("Документ")
         assert len(english) >= 1
         assert english == russian
+
+
+def test_xdto_packages_in_categories():
+    assert "XDTOPackages" in METADATA_CATEGORIES
+
+
+def test_external_data_sources_in_categories():
+    assert "ExternalDataSources" in METADATA_CATEGORIES
+
+
+def test_normalize_xdto_aliases():
+    assert _normalize_category("XDTOPackage") == "xdtopackages"
+    assert _normalize_category("ПакетXDTO") == "xdtopackages"
+    assert _normalize_category("xdtopackages") == "xdtopackages"
+
+
+def test_normalize_external_data_source_aliases():
+    assert _normalize_category("ExternalDataSource") == "externaldatasources"
+    assert _normalize_category("ВнешнийИсточникДанных") == "externaldatasources"
+    assert _normalize_category("externaldatasources") == "externaldatasources"
 
 
 def test_find_by_type_plural_still_works():

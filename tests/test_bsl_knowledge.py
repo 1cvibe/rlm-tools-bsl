@@ -166,12 +166,12 @@ def test_rlm_execute_description():
 
 def test_business_recipes_structure():
     """All domains must have compact and full keys."""
-    assert len(_BUSINESS_RECIPES) == 5
+    assert len(_BUSINESS_RECIPES) == 6
     for domain, recipe in _BUSINESS_RECIPES.items():
         assert "compact" in recipe, f"{domain}: missing compact"
         assert "full" in recipe, f"{domain}: missing full"
         assert len(recipe["compact"]) >= 3, f"{domain}: compact too short"
-        assert len(recipe["full"]) >= 6, f"{domain}: full too short"
+        assert len(recipe["full"]) >= 6 or domain == "интеграция", f"{domain}: full too short"
 
 
 def test_match_recipe_found():
@@ -180,6 +180,13 @@ def test_match_recipe_found():
     assert _match_recipe("Распределение затрат по номенклатуре") == "распределение"
     assert _match_recipe("Печать товарной накладной") == "печать"
     assert _match_recipe("Права доступа к справочнику") == "права"
+    assert _match_recipe("Интеграция с внешними системами") == "интеграция"
+
+
+def test_match_recipe_aliases():
+    assert _match_recipe("обмен данными с сайтом") == "интеграция"
+    assert _match_recipe("синхронизация с сайтом") == "интеграция"
+    assert _match_recipe("exchange data with external system") == "интеграция"
 
 
 def test_match_recipe_not_found():
@@ -252,3 +259,46 @@ def test_strategy_recipe_all_domains():
     for domain in _BUSINESS_RECIPES:
         text = get_strategy("high", None, query=domain)
         assert f"BUSINESS RECIPE: {domain}" in text
+
+
+def test_integration_recipe_exists():
+    assert "интеграция" in _BUSINESS_RECIPES
+
+
+def test_integration_recipe_compact():
+    recipe = _BUSINESS_RECIPES["интеграция"]["compact"]
+    assert len(recipe) >= 3
+    assert any("find_http_services" in s for s in recipe)
+
+
+def test_integration_recipe_full():
+    recipe = _BUSINESS_RECIPES["интеграция"]["full"]
+    assert len(recipe) >= 6
+    assert any("find_web_services" in s for s in recipe)
+    assert any("find_xdto_packages" in s for s in recipe)
+    assert any("find_exchange_plan_content" in s for s in recipe)
+
+
+def test_integration_recipe_code_hint():
+    recipe = _BUSINESS_RECIPES["интеграция"]
+    assert "code_hint" in recipe
+    assert "find_http_services" in recipe["code_hint"]
+    assert "find_exchange_plan_content" in recipe["code_hint"]
+    assert "find_scheduled_jobs" in recipe["code_hint"]
+
+
+def test_integration_strategy_injection():
+    text = get_strategy("high", None, query="интеграция с внешними системами")
+    assert "BUSINESS RECIPE" in text
+    assert "find_http_services" in text
+
+
+def test_integration_strategy_code_hint_injected():
+    text = get_strategy("high", None, query="интеграция с внешними системами")
+    assert "Ready-to-use code" in text
+    assert "```python" in text
+
+
+def test_integration_strategy_via_alias():
+    text = get_strategy("high", None, query="обмен данными с сайтом")
+    assert "BUSINESS RECIPE: интеграция" in text

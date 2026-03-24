@@ -1082,6 +1082,148 @@ def make_bsl_helpers(
         name_lower = name.lower()
         return [j for j in all_jobs if name_lower in j["name"].lower()]
 
+    # ── Integration metadata helpers ─────────────────────────────
+
+    def find_http_services(name: str = "") -> list[dict]:
+        """Find HTTP services, optionally filtered by name.
+        Uses SQLite index when available, falls back to XML parsing.
+
+        Args:
+            name: Name substring to filter by (case-insensitive). Empty = all.
+
+        Returns: list of dicts with name, root_url, templates, file."""
+        if name:
+            name = _strip_meta_prefix(name)
+
+        # Fast path: SQLite index
+        if idx_reader is not None:
+            idx_result = idx_reader.get_http_services(name)
+            if idx_result is not None:
+                return idx_result
+
+        # Fallback: glob + parse
+        from rlm_tools_bsl.bsl_xml_parsers import parse_http_service_xml
+        files = glob_files_fn("HTTPServices/**/*.xml") + glob_files_fn("HTTPServices/**/*.mdo")
+        results: list[dict] = []
+        for fp in files:
+            content = read_file_fn(fp)
+            if not content:
+                continue
+            parsed = parse_http_service_xml(content)
+            if parsed and (not name or name.lower() in parsed["name"].lower()):
+                parsed["file"] = fp if not os.path.isabs(fp) else os.path.relpath(fp, base_path).replace("\\", "/")
+                results.append(parsed)
+        return results
+
+    def find_web_services(name: str = "") -> list[dict]:
+        """Find web services (SOAP), optionally filtered by name.
+        Uses SQLite index when available, falls back to XML parsing.
+
+        Args:
+            name: Name substring to filter by (case-insensitive). Empty = all.
+
+        Returns: list of dicts with name, namespace, operations, file."""
+        if name:
+            name = _strip_meta_prefix(name)
+
+        # Fast path: SQLite index
+        if idx_reader is not None:
+            idx_result = idx_reader.get_web_services(name)
+            if idx_result is not None:
+                return idx_result
+
+        # Fallback: glob + parse
+        from rlm_tools_bsl.bsl_xml_parsers import parse_web_service_xml
+        files = glob_files_fn("WebServices/**/*.xml") + glob_files_fn("WebServices/**/*.mdo")
+        results: list[dict] = []
+        for fp in files:
+            content = read_file_fn(fp)
+            if not content:
+                continue
+            parsed = parse_web_service_xml(content)
+            if parsed and (not name or name.lower() in parsed["name"].lower()):
+                parsed["file"] = fp if not os.path.isabs(fp) else os.path.relpath(fp, base_path).replace("\\", "/")
+                results.append(parsed)
+        return results
+
+    def find_xdto_packages(name: str = "") -> list[dict]:
+        """Find XDTO packages, optionally filtered by name.
+        Uses SQLite index when available, falls back to XML parsing.
+
+        Args:
+            name: Name substring to filter by (case-insensitive). Empty = all.
+
+        Returns: list of dicts with name, namespace, types, file."""
+        if name:
+            name = _strip_meta_prefix(name)
+
+        # Fast path: SQLite index
+        if idx_reader is not None:
+            idx_result = idx_reader.get_xdto_packages(name)
+            if idx_result is not None:
+                return idx_result
+
+        # Fallback: glob + parse
+        from rlm_tools_bsl.bsl_xml_parsers import parse_xdto_package_xml, parse_xdto_types
+        files = glob_files_fn("XDTOPackages/**/*.xml") + glob_files_fn("XDTOPackages/**/*.mdo")
+        results: list[dict] = []
+        for fp in files:
+            content = read_file_fn(fp)
+            if not content:
+                continue
+            parsed = parse_xdto_package_xml(content)
+            if parsed and (not name or name.lower() in parsed["name"].lower()):
+                # For EDT: check sibling Package.xdto
+                if fp.endswith(".mdo"):
+                    xdto_path = os.path.join(os.path.dirname(fp), "Package.xdto")
+                    xdto_content = read_file_fn(xdto_path)
+                    if xdto_content:
+                        parsed["types"] = parse_xdto_types(xdto_content)
+                parsed["file"] = fp if not os.path.isabs(fp) else os.path.relpath(fp, base_path).replace("\\", "/")
+                results.append(parsed)
+        return results
+
+    def find_exchange_plan_content(name: str) -> list[dict]:
+        """Find exchange plan content (objects registered for exchange).
+        Always parses XML at runtime (no index table).
+
+        Args:
+            name: Exchange plan name.
+
+        Returns: list of dicts with ref, auto_record."""
+        name = _strip_meta_prefix(name)
+        from rlm_tools_bsl.bsl_xml_parsers import parse_exchange_plan_content as _parse_ep
+
+        def _valid_files(pattern: str) -> list[str]:
+            """Glob and filter out hint strings."""
+            return [f for f in glob_files_fn(pattern) if not f.startswith("[")]
+
+        # EDT: .mdo file of the exchange plan itself (content is inline)
+        # CF: Ext/Content.xml
+        files = (
+            _valid_files(f"ExchangePlans/{name}/*.mdo")
+            + _valid_files(f"ExchangePlans/{name}/**/*.mdo")
+            + _valid_files(f"ExchangePlans/{name}/**/*.xml")
+        )
+        if not files:
+            # Try wildcard search across all exchange plans
+            all_files = _valid_files("ExchangePlans/**/*.xml") + _valid_files("ExchangePlans/**/*.mdo")
+            name_lower = name.lower()
+            files = [f for f in all_files if name_lower in f.lower()]
+
+        results: list[dict] = []
+        seen_refs: set[str] = set()
+        for fp in files:
+            content = read_file_fn(fp)
+            if not content:
+                continue
+            items = _parse_ep(content)
+            for item in items:
+                if item["ref"] not in seen_refs:
+                    results.append(item)
+                    seen_refs.add(item["ref"])
+        return results
+
     def find_register_movements(document_name: str) -> dict:
         """Find all registers that a document writes to during posting.
         Searches ObjectModule code for 'Движения.RegisterName' pattern.
@@ -1368,23 +1510,25 @@ def make_bsl_helpers(
                 # Pattern 2: property-style (ERP 2.x)
                 #   КомандаПечати.Идентификатор = "Ид";
                 #   КомандаПечати.Представление = НСтр("ru = 'Текст'");
-                if not result["print_forms"]:
-                    id_re = re.compile(
-                        r'КомандаПечати\.Идентификатор\s*=\s*"(\w+)"',
-                        re.IGNORECASE,
-                    )
-                    pres_re = re.compile(
-                        r"КомандаПечати\.Представление\s*=\s*НСтр\(\"ru\s*=\s*'([^']+)'",
-                        re.IGNORECASE,
-                    )
-                    ids = id_re.findall(body)
-                    presentations = pres_re.findall(body)
-                    for i, name in enumerate(ids):
+                seen_ids = {pf["name"] for pf in result["print_forms"]}
+                id_re = re.compile(
+                    r'КомандаПечати\.Идентификатор\s*=\s*"(\w+)"',
+                    re.IGNORECASE,
+                )
+                pres_re = re.compile(
+                    r"КомандаПечати\.Представление\s*=\s*НСтр\(\"ru\s*=\s*'([^']+)'",
+                    re.IGNORECASE,
+                )
+                ids = id_re.findall(body)
+                presentations = pres_re.findall(body)
+                for i, name in enumerate(ids):
+                    if name not in seen_ids:
                         result["print_forms"].append({
                             "name": name,
                             "presentation": presentations[i] if i < len(presentations) else "",
                             "file": path,
                         })
+                        seen_ids.add(name)
 
         return result
 
@@ -2039,6 +2183,43 @@ def make_bsl_helpers(
          "  # Returns [] if index or FTS not available\n"
          "  # Combine with read_procedure() to read found methods:\n"
          "  #   body = read_procedure(r['module_path'], r['name'])")
+
+    _reg("find_http_services", find_http_services,
+         "find_http_services(name='') -> [{name, root_url, templates}]",
+         "business",
+         ["http", "сервис", "endpoint", "rest", "api"],
+         "FIND HTTP SERVICES:\n"
+         "  services = find_http_services()\n"
+         "  for s in services:\n"
+         "      print(f\"  {s['name']} (/{s['root_url']})\")\n"
+         "      for t in s['templates']:\n"
+         "          print(f\"    {t['template']}: {[m['http_method'] for m in t['methods']]}\")")
+    _reg("find_web_services", find_web_services,
+         "find_web_services(name='') -> [{name, namespace, operations}]",
+         "business",
+         ["soap", "wsdl", "веб", "web service", "ws"],
+         "FIND WEB SERVICES (SOAP):\n"
+         "  services = find_web_services()\n"
+         "  for s in services:\n"
+         "      print(f\"  {s['name']} ns={s['namespace']}\")\n"
+         "      for op in s['operations']:\n"
+         "          print(f\"    {op['name']}({', '.join(op['params'])}) -> {op['return_type']}\")")
+    _reg("find_xdto_packages", find_xdto_packages,
+         "find_xdto_packages(name='') -> [{name, namespace, types}]",
+         "business",
+         ["xdto", "пакет", "namespace", "схема", "тип данных"],
+         "FIND XDTO PACKAGES:\n"
+         "  pkgs = find_xdto_packages()\n"
+         "  for p in pkgs:\n"
+         "      print(f\"  {p['name']} ns={p['namespace']} types={len(p.get('types', []))}\")")
+    _reg("find_exchange_plan_content", find_exchange_plan_content,
+         "find_exchange_plan_content(name) -> [{ref, auto_record}]",
+         "business",
+         ["обмен", "exchange", "план обмена", "синхрониз", "регистрац"],
+         "FIND EXCHANGE PLAN CONTENT:\n"
+         "  content = find_exchange_plan_content('ОбменУправлениеПредприятием')\n"
+         "  for item in content:\n"
+         "      print(f\"  {item['ref']} auto_record={item['auto_record']}\")")
 
     _reg("detect_extensions", detect_extensions,
          "detect_extensions() -> {config_role, nearby_extensions, nearby_main, warnings}",

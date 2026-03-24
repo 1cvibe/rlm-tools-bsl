@@ -34,13 +34,22 @@
 - `find_register_writers(register_name)` — какие документы пишут в указанный регистр. При наличии SQLite-индекса — мгновенный ответ. Без индекса — параллельный поиск по всем ObjectModule
 - `analyze_document_flow(document_name)` — полный жизненный цикл документа за один вызов: метаданные + подписки + движения регистров + связанные рег. задания
 - `find_based_on_documents(document_name)` — ввод на основании: какие документы можно создать из этого (`ДобавитьКомандыСозданияНаОсновании`) и на основании чего можно создать его (`ОбработкаЗаполнения`)
-- `find_print_forms(object_name)` — печатные формы объекта из `ДобавитьКомандыПечати` в ManagerModule
+- `find_print_forms(object_name)` — печатные формы объекта из `ДобавитьКомандыПечати` в ManagerModule. Распознаёт оба паттерна регистрации: helper-style (`ДобавитьКомандуПечати(КП, "Ид", НСтр(...))`) и property-style ERP 2.x (`КомандаПечати.Идентификатор = "Ид"`), с дедупликацией
 - `find_functional_options(object_name)` — функциональные опции, влияющие на объект: из XML метаданных + вызовы `ПолучитьФункциональнуюОпцию()` в коде
 - `find_roles(object_name)` — роли с правами на объект. При наличии SQLite-индекса — мгновенный ответ из нормализованной таблицы `role_rights`. Без индекса — парсинг Rights.xml / .rights через `parse_rights_xml`, только granted-права
 - `find_enum_values(enum_name)` — значения перечисления с синонимами. При наличии SQLite-индекса — мгновенный ответ из таблицы `enum_values`. Без индекса — glob + XML-парсинг
 - `extract_queries(path)` — извлечение встроенных запросов 1С из BSL-модуля: парсит `Запрос.Текст = "..."` и многострочные `|`-тексты, определяет таблицы (`ИЗ РегистрНакопления.X`, `СОЕДИНЕНИЕ Справочник.Y`) и процедуру-владельца запроса
 - `code_metrics(path)` — метрики BSL-модуля: общее число строк, строк кода/комментариев/пустых, число процедур и экспортных, средний размер процедуры, максимальная вложенность (`Если/Для/Пока`)
 - `search_methods(query, limit=30)` — полнотекстовый поиск методов по подстроке имени во всей конфигурации. Требует SQLite-индекс (FTS5, ранжирование BM25). Возвращает имя, тип, is_export, путь к модулю, имя объекта
+- `find_http_services(name='')` — HTTP-сервисы (REST API) конфигурации. Извлекает имя, корневой URL, шаблоны URL с HTTP-методами и обработчиками. CF и EDT форматы. Поддерживает фильтрацию по имени (LIKE)
+- `find_web_services(name='')` — веб-сервисы SOAP. Извлекает имя, namespace, операции с параметрами, типами возврата и процедурами-обработчиками. CF и EDT форматы
+- `find_xdto_packages(name='')` — XDTO-пакеты (контракты данных). Метаданные (имя, namespace) для обоих форматов. Типы (objectType/valueType с properties) — только для EDT (из `Package.xdto`). Для CF типы бинарные (`Package.bin`) — `types=[]`
+- `find_exchange_plan_content(name)` — состав плана обмена: какие объекты входят и с каким режимом авторегистрации (Allow/Deny). CF: `Ext/Content.xml`, EDT: inline в `.mdo`. Всегда fallback (нет индексной таблицы)
+
+## LLM-хелперы
+
+- `llm_query(prompt, context='')` — отправить запрос в LLM (OpenAI-совместимый API). Контекст ограничен ~3000 символов. При пустом ответе — разбить контекст на части
+- `llm_query_batched(prompts, context='')` — батч-запрос нескольких промптов с общим контекстом
 
 ## Ускорение индексом (SQLite)
 
@@ -62,6 +71,10 @@
 | `glob_files(pattern)` | `SELECT` из `file_paths` (поддерживаемые паттерны) | `pathlib.Path.glob()` |
 | `tree(path)` | `SELECT` из `file_paths` | Рекурсивный `iterdir()` |
 | `find_files(name)` | `SELECT` из `file_paths` с ранжированием | `os.walk()` |
+| `find_http_services(name)` | `SELECT` из `http_services` | Glob + XML-парсинг |
+| `find_web_services(name)` | `SELECT` из `web_services` | Glob + XML-парсинг |
+| `find_xdto_packages(name)` | `SELECT` из `xdto_packages` | Glob + XML-парсинг |
+| `find_exchange_plan_content(name)` | — (нет индексной таблицы) | Glob + XML-парсинг |
 | `search_methods(query)` | FTS5 (BM25) | Недоступен |
 
 Подробности: [docs/INDEXING.md](INDEXING.md)

@@ -64,6 +64,8 @@ METADATA_CATEGORIES: frozenset[str] = frozenset({
     "FilterCriteria",
     "SettingsStorages",
     "Subsystems",
+    "XDTOPackages",
+    "ExternalDataSources",
 })
 
 MODULE_TYPE_MAP: dict[str, str] = {
