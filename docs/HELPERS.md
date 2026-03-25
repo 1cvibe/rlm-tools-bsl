@@ -41,6 +41,8 @@
 - `extract_queries(path)` — извлечение встроенных запросов 1С из BSL-модуля: парсит `Запрос.Текст = "..."` и многострочные `|`-тексты, определяет таблицы (`ИЗ РегистрНакопления.X`, `СОЕДИНЕНИЕ Справочник.Y`) и процедуру-владельца запроса
 - `code_metrics(path)` — метрики BSL-модуля: общее число строк, строк кода/комментариев/пустых, число процедур и экспортных, средний размер процедуры, максимальная вложенность (`Если/Для/Пока`)
 - `search_methods(query, limit=30)` — полнотекстовый поиск методов по подстроке имени во всей конфигурации. Требует SQLite-индекс (FTS5, ранжирование BM25). Возвращает имя, тип, is_export, путь к модулю, имя объекта
+- `search_objects(query, limit=50)` — поиск объектов 1С по бизнес-имени (русскому синониму) или техническому имени. Требует SQLite-индекс v7+ с таблицей `object_synonyms`. Кириллический case-insensitive поиск через UDF `py_lower()`. 4-уровневое ранжирование: exact name > prefix > synonym substring > category. Возвращает object_name, category, synonym (с категорийным префиксом), file
+- `get_index_info()` — метаданные индекса: версия, конфигурация, доступные возможности (FTS, синонимы). Позволяет агенту понять, какие хелперы доступны в текущей сессии
 - `find_http_services(name='')` — HTTP-сервисы (REST API) конфигурации. Извлекает имя, корневой URL, шаблоны URL с HTTP-методами и обработчиками. CF и EDT форматы. Поддерживает фильтрацию по имени (LIKE)
 - `find_web_services(name='')` — веб-сервисы SOAP. Извлекает имя, namespace, операции с параметрами, типами возврата и процедурами-обработчиками. CF и EDT форматы
 - `find_xdto_packages(name='')` — XDTO-пакеты (контракты данных). Метаданные (имя, namespace) для обоих форматов. Типы (objectType/valueType с properties) — только для EDT (из `Package.xdto`). Для CF типы бинарные (`Package.bin`) — `types=[]`
@@ -76,6 +78,7 @@
 | `find_xdto_packages(name)` | `SELECT` из `xdto_packages` | Glob + XML-парсинг |
 | `find_exchange_plan_content(name)` | — (нет индексной таблицы) | Glob + XML-парсинг |
 | `search_methods(query)` | FTS5 (BM25) | Недоступен |
+| `search_objects(query)` | `SELECT` из `object_synonyms` с UDF `py_lower()` | Недоступен |
 
 Подробности: [docs/INDEXING.md](INDEXING.md)
 

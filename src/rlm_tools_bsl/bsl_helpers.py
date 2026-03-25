@@ -1731,6 +1731,40 @@ def make_bsl_helpers(
             return idx_reader.search_methods(query, limit)
         return []
 
+    def search_objects(query: str = "", limit: int = 50) -> list[dict]:
+        """Search 1C objects by business name (Russian synonym) or technical name.
+        Uses pre-built SQLite index with object synonyms.
+
+        Args:
+            query: Search string (e.g. 'себестоимость', 'Авансовый', 'общий модуль').
+            limit: Max results (default 50).
+
+        Returns: list of dicts {object_name, category, synonym, file}.
+                 Empty list if index not available or no synonyms built."""
+        if idx_reader is not None:
+            result = idx_reader.search_objects(query, limit)
+            if result is not None:
+                return result
+        return []
+
+    def get_index_info() -> dict:
+        """Return index metadata: version, capabilities, staleness."""
+        if idx_reader is None:
+            return {"status": "no_index"}
+        stats = idx_reader.get_statistics()
+        return {
+            "status": "ok",
+            "builder_version": int(stats.get("builder_version") or 0),
+            "config_name": stats.get("config_name", ""),
+            "config_version": stats.get("config_version", ""),
+            "modules": stats.get("modules", 0),
+            "methods": stats.get("methods", 0),
+            "has_fts": stats.get("has_fts", False),
+            "has_synonyms": bool(stats.get("object_synonyms", 0)),
+            "object_synonyms": stats.get("object_synonyms", 0),
+            "built_at": stats.get("built_at"),
+        }
+
     # ── Help (uses _registry for recipes) ──────────────────────
 
     def bsl_help(task: str = "") -> str:
@@ -2188,6 +2222,21 @@ def make_bsl_helpers(
          "  # Returns [] if index or FTS not available\n"
          "  # Combine with read_procedure() to read found methods:\n"
          "  #   body = read_procedure(r['module_path'], r['name'])")
+    _reg("search_objects", search_objects,
+         "search_objects(query) -> [{object_name, category, synonym, file}] — find by BUSINESS NAME",
+         "discovery",
+         ["synonym", "синоним", "бизнес", "search_objects", "объект", "business"],
+         "SEARCH BY BUSINESS NAME (requires index v7+):\n"
+         "  results = search_objects('себестоимость')\n"
+         "  for r in results:\n"
+         "      print(r['synonym'], r['category'], r['object_name'])")
+    _reg("get_index_info", get_index_info,
+         "get_index_info() -> {builder_version, config_name, has_fts, has_synonyms, ...}",
+         "discovery",
+         ["index", "version", "индекс", "версия", "info", "get_index_info"],
+         "CHECK INDEX:\n"
+         "  info = get_index_info()\n"
+         "  print(info['builder_version'], info['has_synonyms'])")
 
     _reg("find_http_services", find_http_services,
          "find_http_services(name='') -> [{name, root_url, templates}]",

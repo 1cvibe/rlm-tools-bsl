@@ -23,7 +23,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 6
+BUILDER_VERSION = 7
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -231,7 +231,59 @@ CREATE TABLE IF NOT EXISTS xdto_packages (
 );
 CREATE INDEX IF NOT EXISTS idx_xp_name ON xdto_packages(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_xp_ns ON xdto_packages(namespace);
+
+-- Level-6: object synonyms (business-name search)
+CREATE TABLE IF NOT EXISTS object_synonyms (
+    id INTEGER PRIMARY KEY,
+    object_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    synonym TEXT NOT NULL,
+    file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_synonyms_object ON object_synonyms(object_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_synonyms_synonym ON object_synonyms(synonym COLLATE NOCASE);
 """
+
+
+# ---------------------------------------------------------------------------
+# Category → Russian display name mapping for object synonyms
+# ---------------------------------------------------------------------------
+_CATEGORY_RU: dict[str, str] = {
+    "CommonModules": "Общий модуль",
+    "Documents": "Документ",
+    "Catalogs": "Справочник",
+    "InformationRegisters": "Регистр сведений",
+    "AccumulationRegisters": "Регистр накопления",
+    "AccountingRegisters": "Регистр бухгалтерии",
+    "CalculationRegisters": "Регистр расчёта",
+    "Reports": "Отчёт",
+    "DataProcessors": "Обработка",
+    "Constants": "Константа",
+    "Enums": "Перечисление",
+    "ChartsOfAccounts": "План счетов",
+    "ChartsOfCharacteristicTypes": "План видов характеристик",
+    "ChartsOfCalculationTypes": "План видов расчёта",
+    "CommonForms": "Общая форма",
+    "CommonCommands": "Общая команда",
+    "CommonTemplates": "Общий макет",
+    "BusinessProcesses": "Бизнес-процесс",
+    "Tasks": "Задача",
+    "ExchangePlans": "План обмена",
+    "Roles": "Роль",
+    "DocumentJournals": "Журнал документов",
+    "FilterCriteria": "Критерий отбора",
+    "SettingsStorages": "Хранилище настроек",
+    "Subsystems": "Подсистема",
+    "XDTOPackages": "XDTO-пакет",
+    "ExternalDataSources": "Внешний источник данных",
+    "HTTPServices": "HTTP-сервис",
+    "WebServices": "Веб-сервис",
+    "EventSubscriptions": "Подписка на событие",
+    "ScheduledJobs": "Регламентное задание",
+    "FunctionalOptions": "Функциональная опция",
+}
+
+_SYNONYM_CATEGORIES: frozenset[str] = frozenset(_CATEGORY_RU.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -1234,6 +1286,122 @@ def _collect_role_rights(base_path: str) -> list[tuple[str, str, str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Object synonym collection (business-name search)
+# ---------------------------------------------------------------------------
+
+def _collect_object_synonyms(base_path: str) -> list[tuple[str, str, str, str]]:
+    """Collect object synonyms from all metadata categories.
+
+    Iterates top-level object directories (NOT recursive rglob) to get
+    canonical root metadata files. Extracts synonym via parse_metadata_xml().
+
+    Returns list of (object_name, category, prefixed_synonym, rel_path).
+    """
+    from rlm_tools_bsl.bsl_xml_parsers import parse_metadata_xml
+
+    base = Path(base_path)
+    all_results: list[tuple[str, str, str, str]] = []
+
+    def _read_safe(fp: Path) -> str | None:
+        try:
+            return fp.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            return None
+
+    def _parse_and_append(
+        fp: Path, cat: str, obj_name: str,
+        results: list[tuple[str, str, str, str]],
+    ) -> None:
+        content = _read_safe(fp)
+        if not content:
+            return
+        parsed = parse_metadata_xml(content)
+        if not parsed:
+            return
+        raw_synonym = parsed.get("synonym") or ""
+        if not raw_synonym:
+            return
+        prefix = _CATEGORY_RU.get(cat, cat)
+        synonym = f"{prefix}: {raw_synonym}"
+        rel = fp.relative_to(base).as_posix()
+        results.append((obj_name, cat, synonym, rel))
+
+    def _collect_category(cat: str) -> list[tuple[str, str, str, str]]:
+        """Collect synonyms for a single category (thread-safe)."""
+        results: list[tuple[str, str, str, str]] = []
+        cat_dir = base / cat
+        if not cat_dir.is_dir():
+            return results
+
+        if cat == "Subsystems":
+            # Subsystems can be nested: Subsystems/Parent/Subsystems/Child/...
+            _collect_subsystems_recursive(cat_dir, cat, results)
+            return results
+
+        for obj_dir in cat_dir.iterdir():
+            if not obj_dir.is_dir():
+                continue
+            # EDT: ObjectName/ObjectName.mdo
+            mdo = obj_dir / f"{obj_dir.name}.mdo"
+            if mdo.is_file():
+                _parse_and_append(mdo, cat, obj_dir.name, results)
+                continue
+            # CF: Category/ObjectName.xml (sibling of object directory)
+            sibling_xml = cat_dir / f"{obj_dir.name}.xml"
+            if sibling_xml.is_file():
+                _parse_and_append(sibling_xml, cat, obj_dir.name, results)
+                continue
+            # CF fallback: ObjectName/Ext/*.xml (first canonical XML)
+            ext_dir = obj_dir / "Ext"
+            if ext_dir.is_dir():
+                for xml in ext_dir.iterdir():
+                    if xml.suffix.lower() == ".xml" and xml.is_file():
+                        _parse_and_append(xml, cat, obj_dir.name, results)
+                        break
+        return results
+
+    def _collect_subsystems_recursive(
+        parent_dir: Path, cat: str,
+        results: list[tuple[str, str, str, str]],
+    ) -> None:
+        """Recursively collect synonyms from nested Subsystems."""
+        for obj_dir in parent_dir.iterdir():
+            if not obj_dir.is_dir():
+                continue
+            mdo = obj_dir / f"{obj_dir.name}.mdo"
+            if mdo.is_file():
+                _parse_and_append(mdo, cat, obj_dir.name, results)
+            else:
+                # CF: sibling XML at parent level
+                sibling_xml = parent_dir / f"{obj_dir.name}.xml"
+                if sibling_xml.is_file():
+                    _parse_and_append(sibling_xml, cat, obj_dir.name, results)
+                else:
+                    ext_dir = obj_dir / "Ext"
+                    if ext_dir.is_dir():
+                        for xml in ext_dir.iterdir():
+                            if xml.suffix.lower() == ".xml" and xml.is_file():
+                                _parse_and_append(xml, cat, obj_dir.name, results)
+                                break
+            # Recurse into nested Subsystems
+            nested = obj_dir / "Subsystems"
+            if nested.is_dir():
+                _collect_subsystems_recursive(nested, cat, results)
+
+    # Parallel collection by category (I/O bound)
+    categories = [c for c in _SYNONYM_CATEGORIES if (base / c).is_dir()]
+    if not categories:
+        return all_results
+
+    workers = min(os.cpu_count() or 4, 8)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for batch in pool.map(_collect_category, categories):
+            all_results.extend(batch)
+
+    return all_results
+
+
+# ---------------------------------------------------------------------------
 # Prefix detection from index
 # ---------------------------------------------------------------------------
 _PREFIX_RE = re.compile(r'^([a-z\u0430-\u044f\u0451]+_?)')
@@ -1280,6 +1448,7 @@ class IndexBuilder:
         build_calls: bool = True,
         build_metadata: bool = True,
         build_fts: bool = True,
+        build_synonyms: bool = True,
     ) -> Path:
         """Full build of the method index.
 
@@ -1291,6 +1460,7 @@ class IndexBuilder:
             build_calls: Whether to build the call graph.
             build_metadata: Whether to parse Level-2 metadata (ES/SJ/FO).
             build_fts: Whether to build FTS5 full-text search index.
+            build_synonyms: Whether to build object synonyms table.
 
         Returns:
             Path to the created database file.
@@ -1318,7 +1488,8 @@ class IndexBuilder:
             fp_rows = _collect_file_paths(base_path)
             _insert_file_paths(conn, fp_rows)
             self._write_meta(conn, base_path, 0, "", build_calls, build_metadata,
-                             build_fts=build_fts, file_paths_count=len(fp_rows))
+                             build_fts=build_fts, file_paths_count=len(fp_rows),
+                             build_synonyms=build_synonyms)
             conn.close()
             return db_path
 
@@ -1412,6 +1583,18 @@ class IndexBuilder:
                 "FROM methods m JOIN modules mod ON mod.id = m.module_id"
             )
 
+        # Level-6: object synonyms (business-name search)
+        if build_synonyms:
+            synonyms = _collect_object_synonyms(base_path)
+            if synonyms:
+                conn.executemany(
+                    "INSERT INTO object_synonyms (object_name, category, synonym, file) "
+                    "VALUES (?, ?, ?, ?)",
+                    synonyms,
+                )
+                conn.commit()
+                logger.info("Object synonyms: %d entries", len(synonyms))
+
         # Detect custom prefixes from object names in index
         detected_prefixes = _detect_prefixes(conn)
 
@@ -1420,6 +1603,7 @@ class IndexBuilder:
             build_calls, build_metadata, config_meta, build_fts,
             detected_prefixes=detected_prefixes,
             file_paths_count=len(file_paths_rows),
+            build_synonyms=build_synonyms,
         )
 
         conn.execute("ANALYZE")
@@ -1477,6 +1661,12 @@ class IndexBuilder:
             "SELECT value FROM index_meta WHERE key = 'has_fts'"
         ).fetchone()
         has_fts = meta_row is not None and meta_row["value"] == "1"
+
+        # has_synonyms: default=True when key missing (v6→v7 migration)
+        meta_row = conn.execute(
+            "SELECT value FROM index_meta WHERE key = 'has_synonyms'"
+        ).fetchone()
+        has_synonyms = meta_row is None or meta_row["value"] == "1"
 
         # Existing modules in DB
         db_modules: dict[str, dict] = {}
@@ -1674,6 +1864,31 @@ class IndexBuilder:
             md_tables = _collect_metadata_tables(base_path)
             _insert_metadata_tables(conn, md_tables)
 
+        # Level-6: object synonyms (schema upgrade v6→v7, full refresh)
+        if has_synonyms:
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS object_synonyms ("
+                "id INTEGER PRIMARY KEY, object_name TEXT NOT NULL, "
+                "category TEXT NOT NULL, synonym TEXT NOT NULL, "
+                "file TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_synonyms_object "
+                "ON object_synonyms(object_name COLLATE NOCASE);\n"
+                "CREATE INDEX IF NOT EXISTS idx_synonyms_synonym "
+                "ON object_synonyms(synonym COLLATE NOCASE);\n"
+            )
+            conn.execute("DELETE FROM object_synonyms")
+            synonyms = _collect_object_synonyms(base_path)
+            if synonyms:
+                conn.executemany(
+                    "INSERT INTO object_synonyms (object_name, category, synonym, file) "
+                    "VALUES (?, ?, ?, ?)",
+                    synonyms,
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                ("has_synonyms", "1"),
+            )
+
         # Refresh role_rights (full rebuild — cheap, ~346K entries in ~2s)
         conn.executescript(
             "CREATE TABLE IF NOT EXISTS role_rights ("
@@ -1715,6 +1930,16 @@ class IndexBuilder:
         conn.execute(
             "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
             ("detected_prefixes", json.dumps(detected_prefixes, ensure_ascii=False)),
+        )
+
+        # Bump builder_version to current (schema upgrade v6→v7 etc.)
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("builder_version", str(BUILDER_VERSION)),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("version", str(BUILDER_VERSION)),
         )
 
         conn.commit()
@@ -1846,6 +2071,7 @@ class IndexBuilder:
         build_fts: bool = False,
         detected_prefixes: list[str] | None = None,
         file_paths_count: int = 0,
+        build_synonyms: bool = False,
     ) -> None:
         """Write index metadata."""
         meta_entries = [
@@ -1858,6 +2084,7 @@ class IndexBuilder:
             ("has_calls", "1" if build_calls else "0"),
             ("has_metadata", "1" if build_metadata else "0"),
             ("has_fts", "1" if build_fts else "0"),
+            ("has_synonyms", "1" if build_synonyms else "0"),
             ("file_paths_count", str(file_paths_count)),
         ]
         # Level-1: Configuration metadata
@@ -1972,6 +2199,8 @@ class IndexReader:
             check_same_thread=False,
         )
         self._conn.row_factory = sqlite3.Row
+        # UDF for Cyrillic case-insensitive search
+        self._conn.create_function("py_lower", 1, str.lower)
 
     @property
     def has_calls(self) -> bool:
@@ -2631,6 +2860,13 @@ class IndexReader:
             except sqlite3.Error:
                 stats["file_paths"] = 0
 
+            # Level-6: object synonyms
+            try:
+                row = self._conn.execute("SELECT COUNT(*) AS cnt FROM object_synonyms").fetchone()
+                stats["object_synonyms"] = row["cnt"] if row else 0
+            except sqlite3.Error:
+                stats["object_synonyms"] = 0
+
             return stats
 
     @property
@@ -2693,6 +2929,75 @@ class IndexReader:
                 ]
             except sqlite3.OperationalError:
                 return []
+
+    def search_objects(self, query: str, limit: int = 50) -> list[dict] | None:
+        """Search objects by business name (synonym) or technical name.
+
+        Uses py_lower() UDF for Cyrillic case-insensitive LIKE.
+        Python-side 4-level ranking: exact name > prefix > synonym substring > category.
+
+        Args:
+            query: Search query (case-insensitive substring).
+            limit: Max results (default 50).
+
+        Returns:
+            Ranked list of dicts, or None if table missing.
+        """
+        with self._lock:
+            try:
+                if not query or not query.strip():
+                    # Empty query: alphabetical listing
+                    rows = self._conn.execute(
+                        "SELECT object_name, category, synonym, file "
+                        "FROM object_synonyms "
+                        "ORDER BY category, object_name LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                else:
+                    q = query.strip()
+                    like_q = f"%{q}%"
+                    # No SQL LIMIT — full scan is <15ms on 15K rows,
+                    # Python ranking needs ALL matches to guarantee
+                    # exact name (rank 0) is never lost.
+                    rows = self._conn.execute(
+                        "SELECT object_name, category, synonym, file "
+                        "FROM object_synonyms "
+                        "WHERE py_lower(synonym) LIKE py_lower(?) "
+                        "   OR py_lower(object_name) LIKE py_lower(?)",
+                        (like_q, like_q),
+                    ).fetchall()
+
+                if not query or not query.strip():
+                    return [
+                        {"object_name": r["object_name"], "category": r["category"],
+                         "synonym": r["synonym"], "file": r["file"]}
+                        for r in rows
+                    ]
+
+                # Python-side ranking
+                q_lower = query.strip().lower()
+                ranked: list[tuple[int, str, str, dict]] = []
+                for r in rows:
+                    d = {"object_name": r["object_name"], "category": r["category"],
+                         "synonym": r["synonym"], "file": r["file"]}
+                    name_lower = r["object_name"].lower()
+                    synonym_lower = r["synonym"].lower()
+
+                    if name_lower == q_lower:
+                        rank = 0  # exact object_name
+                    elif name_lower.startswith(q_lower):
+                        rank = 1  # prefix object_name
+                    elif q_lower in synonym_lower.split(": ", 1)[-1] if ": " in synonym_lower else q_lower in synonym_lower:
+                        rank = 2  # substring in raw synonym (after prefix)
+                    else:
+                        rank = 3  # substring in category prefix
+                    ranked.append((rank, r["category"], r["object_name"], d))
+
+                ranked.sort(key=lambda x: (x[0], x[1], x[2]))
+                return [item[3] for item in ranked[:limit]]
+
+            except sqlite3.OperationalError:
+                return None
 
     def get_event_subscriptions(
         self, object_name: str = "", custom_only: bool = False,

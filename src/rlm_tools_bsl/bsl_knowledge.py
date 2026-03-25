@@ -51,7 +51,9 @@ Step 0 — UNDERSTAND: decode the business question
 
 Step 1 — DISCOVER: find what you need
   find_module('name') or find_by_type('Documents', 'name') → get file paths
-  search_methods('substring') → find methods across all modules by name (needs index)
+  search_objects('бизнес-имя') → find 1C OBJECTS by Russian synonym (needs index v7+)
+  search_methods('substring') → find METHODS by code name (needs index with FTS)
+  NOTE: search_objects = WHAT object? search_methods = WHAT code?
   parse_object_xml(path) → attributes, tabular sections, dimensions, resources
 
 Step 2 — READ: understand the code
@@ -98,11 +100,13 @@ _CATEGORY_ORDER = [
 _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
     "себестоимость": {
         "compact": [
+            "search_objects('себестоимость') → объекты по синониму",
             "find_by_type('AccumulationRegisters', 'Себестоимость') → регистры",
             "find_register_writers('РегистрИмя') → документы-писатели",
             "analyze_document_flow('ДокИмя') → проводки + подписки",
         ],
         "full": [
+            "search_objects('себестоимость') → документы, регистры, модули по синониму",
             "find_by_type('AccumulationRegisters', 'Себестоимость') → регистры себестоимости",
             "find_register_writers('РегистрИмя') → какие документы пишут в регистр",
             "analyze_document_flow('ДокИмя') → проводки + подписки + задания",
@@ -114,12 +118,12 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
     },
     "проведение": {
         "compact": [
-            "find_by_type('Documents', 'ДокИмя') → найти документ",
+            "search_objects('ДокИмя') → найти документ по бизнес-имени",
             "find_register_movements('ДокИмя') → какие регистры пишет",
             "analyze_document_flow('ДокИмя') → подписки + движения + задания",
         ],
         "full": [
-            "find_by_type('Documents', 'ДокИмя') → найти документ",
+            "search_objects('ДокИмя') → найти документ по бизнес-имени",
             "find_register_movements('ДокИмя') → регистры, в которые пишет документ",
             "analyze_document_flow('ДокИмя') → проводки + подписки + рег.задания",
             "find_event_subscriptions('ДокИмя') → подписки на события документа",
@@ -130,11 +134,12 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
     },
     "распределение": {
         "compact": [
+            "search_objects('распределение') → объекты по синониму",
             "search_methods('Распредел') → методы распределения",
-            "find_by_type('AccumulationRegisters', 'Распредел') → регистры",
             "find_register_writers('РегистрИмя') → документы-источники",
         ],
         "full": [
+            "search_objects('распределение') → объекты по синониму",
             "search_methods('Распредел') → все методы распределения",
             "find_by_type('AccumulationRegisters', 'Распредел') → регистры распределения",
             "find_register_writers('РегистрИмя') → какие документы пишут в регистр",
@@ -146,11 +151,12 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
     },
     "печать": {
         "compact": [
+            "search_objects('печат') → объекты печати по синониму",
             "find_print_forms('ОбъектИмя') → печатные формы объекта",
-            "find_module('Печать') → общие модули печати",
             "search_methods('Печат') → методы формирования печати",
         ],
         "full": [
+            "search_objects('печат') → объекты печати по синониму",
             "find_print_forms('ОбъектИмя') → все печатные формы объекта",
             "find_module('Печать') → модули подсистемы печати",
             "search_methods('Печат') → методы формирования печатных форм",
@@ -162,11 +168,12 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
     },
     "права": {
         "compact": [
+            "search_objects('ОбъектИмя') → найти объект по бизнес-имени",
             "find_roles('ОбъектИмя') → роли с доступом к объекту",
-            "find_by_type('Roles') → список всех ролей",
             "find_functional_options('ОбъектИмя') → функциональные опции",
         ],
         "full": [
+            "search_objects('ОбъектИмя') → найти объект по бизнес-имени",
             "find_roles('ОбъектИмя') → роли с правами на объект (чтение, запись, и т.д.)",
             "find_by_type('Roles') → полный список ролей конфигурации",
             "find_functional_options('ОбъектИмя') → функциональные опции объекта",
@@ -178,11 +185,12 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
     },
     "интеграция": {
         "compact": [
+            "search_objects('обмен') или search_objects('сервис') → объекты интеграции по синониму",
             "find_http_services() → HTTP endpoints (REST API)",
             "find_web_services() → SOAP операции",
-            "find_by_type('ExchangePlans') → планы обмена",
         ],
         "full": [
+            "search_objects('обмен') или search_objects('сервис') → объекты интеграции по синониму",
             "find_http_services() → HTTP endpoints (REST API)",
             "find_web_services() → SOAP операции",
             "find_xdto_packages() → XDTO контракты данных",
@@ -310,8 +318,13 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
         config_version = idx_stats.get("config_version") or ""
         has_fts = bool(idx_stats.get("has_fts"))
 
+        builder_version = idx_stats.get("builder_version") or "?"
+        synonyms_count = idx_stats.get("object_synonyms", 0)
+
         idx_lines = ["\n== INDEX =="]
-        label = f"Pre-built method index loaded ({methods_count} methods, {calls_count} call edges"
+        label = f"Index v{builder_version} ({methods_count} methods, {calls_count} call edges"
+        if synonyms_count:
+            label += f", {synonyms_count} synonyms"
         if config_name:
             label += f", config: {config_name}"
             if config_version:
@@ -335,13 +348,20 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
         file_paths_count = idx_stats.get("file_paths", 0)
         if file_paths_count:
             instant_helpers.extend(["glob_files(indexed)", "tree(indexed)", "find_files(indexed)"])
+        if synonyms_count:
+            instant_helpers.append("search_objects()")
         idx_lines.append(f"INSTANT from index: {', '.join(instant_helpers)}.")
 
-        # FTS discovery
+        # FTS/synonym discovery
         if has_fts:
             idx_lines.append(
                 "search_methods(query) — full-text search by method name substring. "
                 "Use in Step 1 DISCOVER to find methods across the entire codebase without knowing the module name."
+            )
+        if synonyms_count:
+            idx_lines.append(
+                f"search_objects(query) — {synonyms_count} object synonyms indexed. "
+                "Find 1C objects by Russian business name. Use in Step 1 DISCOVER."
             )
 
         # Workflow hints

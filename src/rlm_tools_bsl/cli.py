@@ -56,17 +56,20 @@ def _cmd_build(args: argparse.Namespace) -> None:
     build_calls = not args.no_calls
     build_metadata = not args.no_metadata
     build_fts = not args.no_fts
+    build_synonyms = not args.no_synonyms
 
     print(f"Building index for: {base_path}")
     print(f"Call graph:  {'yes' if build_calls else 'no'}")
     print(f"Metadata:    {'yes' if build_metadata else 'no'}")
     print(f"FTS search:  {'yes' if build_fts else 'no'}")
+    print(f"Synonyms:    {'yes' if build_synonyms else 'no'}")
 
     t0 = time.time()
     builder = IndexBuilder()
     db_path = builder.build(
         base_path, build_calls=build_calls,
         build_metadata=build_metadata, build_fts=build_fts,
+        build_synonyms=build_synonyms,
     )
     elapsed = time.time() - t0
 
@@ -90,6 +93,8 @@ def _cmd_build(args: argparse.Namespace) -> None:
         print(f"  EventSubs:  {stats.get('event_subscriptions', 0)}")
         print(f"  SchedJobs:  {stats.get('scheduled_jobs', 0)}")
         print(f"  FuncOpts:   {stats.get('functional_options', 0)}")
+    if stats.get("object_synonyms"):
+        print(f"  Synonyms:   {stats['object_synonyms']}")
     if stats.get("file_paths"):
         print(f"  FilePaths:  {stats['file_paths']}")
     print(f"  DB size:  {_fmt_size(db_size)}")
@@ -246,6 +251,7 @@ def main() -> None:
     build_p.add_argument("--no-calls", action="store_true", help="Skip call graph")
     build_p.add_argument("--no-metadata", action="store_true", help="Skip metadata tables (ES/SJ/FO)")
     build_p.add_argument("--no-fts", action="store_true", help="Skip FTS5 full-text search index")
+    build_p.add_argument("--no-synonyms", action="store_true", help="Skip object synonyms table")
 
     # update
     update_p = idx_sub.add_parser("update", help="Incremental update by mtime+size")
