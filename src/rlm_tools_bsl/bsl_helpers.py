@@ -608,8 +608,9 @@ def make_bsl_helpers(
         return {
             "callers": callers,
             "_meta": {
-                "total_files": total_files,
-                "scanned_files": scanned_files,
+                "total_callers": len(callers),
+                "returned": len(callers),
+                "offset": offset,
                 "has_more": (offset + limit) < total_files,
             },
         }
@@ -1176,7 +1177,10 @@ def make_bsl_helpers(
                 # For EDT: check sibling Package.xdto
                 if fp.endswith(".mdo"):
                     xdto_path = os.path.join(os.path.dirname(fp), "Package.xdto")
-                    xdto_content = read_file_fn(xdto_path)
+                    try:
+                        xdto_content = read_file_fn(xdto_path)
+                    except Exception:
+                        xdto_content = None
                     if xdto_content:
                         parsed["types"] = parse_xdto_types(xdto_content)
                 parsed["file"] = fp if not os.path.isabs(fp) else os.path.relpath(fp, base_path).replace("\\", "/")
@@ -1700,6 +1704,7 @@ def make_bsl_helpers(
             if key not in grouped:
                 grouped[key] = {
                     "role_name": key,
+                    "object": object_name,
                     "rights": [],
                     "file": r["file"],
                 }
@@ -1967,7 +1972,7 @@ def make_bsl_helpers(
          "  content = read_file('path/to/Module.bsl')\n"
          "  print(content[:2000])")
     _reg("find_callers_context", find_callers_context,
-         "find_callers_context(proc, hint, 0, 50) -> {callers: [{file, caller_name, line, ...}], _meta: {total_files, has_more}}",
+         "find_callers_context(proc, hint, 0, 50) -> {callers: [{file, caller_name, line, ...}], _meta: {total_callers, returned, offset, has_more}}",
          "code",
          ["caller", "call graph", "граф", "вызов", "вызыва",
           "кто вызывает", "find_callers"],

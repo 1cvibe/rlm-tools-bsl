@@ -1652,6 +1652,25 @@ class IndexBuilder:
                 "CREATE INDEX IF NOT EXISTS idx_sc_object ON subsystem_content(object_ref COLLATE NOCASE);\n"
                 "CREATE INDEX IF NOT EXISTS idx_sc_subsystem ON subsystem_content(subsystem_name COLLATE NOCASE);\n"
             )
+            # Level-5 integration tables (schema upgrade v5→v6)
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS http_services ("
+                "id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+                "root_url TEXT NOT NULL, templates_json TEXT NOT NULL, "
+                "file TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_hs_name ON http_services(name COLLATE NOCASE);\n"
+                "CREATE TABLE IF NOT EXISTS web_services ("
+                "id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+                "namespace TEXT NOT NULL, operations_json TEXT NOT NULL, "
+                "file TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_ws_name ON web_services(name COLLATE NOCASE);\n"
+                "CREATE TABLE IF NOT EXISTS xdto_packages ("
+                "id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+                "namespace TEXT NOT NULL, types_json TEXT NOT NULL, "
+                "file TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_xp_name ON xdto_packages(name COLLATE NOCASE);\n"
+                "CREATE INDEX IF NOT EXISTS idx_xp_ns ON xdto_packages(namespace);\n"
+            )
             md_tables = _collect_metadata_tables(base_path)
             _insert_metadata_tables(conn, md_tables)
 
@@ -1689,6 +1708,13 @@ class IndexBuilder:
         conn.execute(
             "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
             ("file_paths_count", str(len(file_paths_rows))),
+        )
+
+        # Recalculate detected_prefixes (may change after objects added/removed)
+        detected_prefixes = _detect_prefixes(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("detected_prefixes", json.dumps(detected_prefixes, ensure_ascii=False)),
         )
 
         conn.commit()

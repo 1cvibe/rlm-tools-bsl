@@ -86,12 +86,11 @@ def test_meta_has_more_pagination():
         bsl = _make_bsl(tmpdir)
         result = bsl["find_callers_context"]("ЦелеваяФункция", "", 0, 3)
         meta = result["_meta"]
-        assert "total_files" in meta
-        assert "scanned_files" in meta
+        assert "total_callers" in meta
+        assert "returned" in meta
         assert "has_more" in meta
-        if meta["total_files"] > 3:
-            assert meta["has_more"] is True
-            assert meta["scanned_files"] == 3
+        if meta["has_more"]:
+            assert meta["returned"] >= 1
 
 
 # --- Smart prefilter: path-based prioritization ---

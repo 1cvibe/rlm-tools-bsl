@@ -32,6 +32,12 @@
 ## [Unreleased]
 
 ### Исправлено
+- **`index update` — миграция интеграционных таблиц** — при обновлении индекса, собранного до v1.4.0, таблицы `http_services`, `web_services`, `xdto_packages` и их индексы создаются автоматически (`CREATE TABLE IF NOT EXISTS`). Ранее `_insert_metadata_tables()` падала с `OperationalError` на старом индексе без этих таблиц
+- **`find_xdto_packages()` fallback — защита от отсутствия `Package.xdto`** — для EDT-пакетов `.mdo` может существовать без рядом лежащего `Package.xdto`. Ранее `read_file_fn()` выбрасывал `FileNotFoundError`, теперь пакет возвращается с пустым `types`
+- **`save_config()` / `install()` / `uninstall()` — консистентный путь конфига** — `save_config()` писал в хардкод `CONFIG_FILE`, игнорируя `RLM_CONFIG_FILE`. Windows install прошивал в реестр тот же хардкод, `uninstall()` удалял его. Теперь все пути используют `_config_path()`, который учитывает override через `RLM_CONFIG_FILE`
+- **`find_callers_context()` — унификация `_meta`** — fallback возвращал `{total_files, scanned_files, has_more}`, indexed путь — `{total_callers, returned, offset, has_more}`. Теперь оба пути возвращают единый контракт `{total_callers, returned, offset, has_more}`
+- **`find_roles()` fallback — поле `object` в результате** — indexed путь включал `"object"` в каждый role-item, fallback при группировке терял это поле. Добавлено `"object": object_name` в grouped dict
+- **`index update` — пересчёт `detected_prefixes`** — при полном `build()` кастомные префиксы пересчитывались и записывались в `index_meta`. В `update()` этот шаг отсутствовал — после инкрементального обновления префиксы оставались устаревшими. Добавлен `_detect_prefixes()` + запись в `index_meta` в конце `update()`
 - **Утечка MCP transport-сессий** — включён `stateless_http=True` в FastMCP. Ранее каждый HTTP-запрос без заголовка `Mcp-Session-Id` создавал transport-сессию, которая оставалась в памяти навсегда (клиенты не шлют DELETE при отключении). Накопление сессий приводило к `WinError 10055` (исчерпание сокетов Windows) и падению службы
 - **Health check создавал MCP-сессии** — watchdog делал `POST /mcp` с JSON-RPC телом каждые 30 сек, что создавало лишнюю transport-сессию при каждой проверке. Добавлен лёгкий `GET /health` endpoint (`{"status": "ok"}`), watchdog и `reinstall-service.ps1` переведены на него
 - **Предупреждение PowerShell при Invoke-WebRequest** — добавлен `-UseBasicParsing` в verify-шаге `reinstall-service.ps1`
@@ -44,6 +50,14 @@
 ### Документация
 - Актуализирован подсчёт хелперов: 28 BSL + 8 I/O + 2 LLM = **38** (было указано 29)
 - Добавлены `grep_read` и `search_methods` в docs/HELPERS.md
+- Описание `index update` в INDEXING.md дополнено: schema upgrade и пересчёт `detected_prefixes`
+
+### Тесты
+- 5 новых тестов стабилизации: миграция integration tables, пересчёт prefixes, XDTO без Package.xdto, save_config override (2 теста)
+- Обновлены 3 теста `find_callers_context`: `_meta` → новый контракт `{total_callers, returned, offset, has_more}`
+- Расширен тест `find_roles`: проверка наличия поля `object` в каждом role-item
+- E2E верификация: EDT+index (ЕРП 2.5), CF+index (ЕРП 2.5.14) — 0 регрессий, метрики совпадают с baseline v1.4.0
+- Было: 471 (v1.4.0), стало: **476**
 
 ## [1.3.5] — 2026-03-23
 

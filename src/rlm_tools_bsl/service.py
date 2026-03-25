@@ -22,8 +22,9 @@ def _config_path() -> pathlib.Path:
 
 
 def save_config(host: str, port: int, env_file: str | None, exe_path: str | None = None) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(
+    cfg = _config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
         json.dumps({"host": host, "port": port, "env_file": env_file, "exe_path": exe_path}, indent=2),
         encoding="utf-8",
     )

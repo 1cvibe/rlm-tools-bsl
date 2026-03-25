@@ -848,3 +848,113 @@ def test_update_refreshes_role_rights(tmp_path, monkeypatch):
     assert any(r["role_name"] == "РольА" for r in roles_cat)
 
     reader.close()
+
+
+# ---------------------------------------------------------------------------
+# Stabilization: migration of integration tables in update()
+# ---------------------------------------------------------------------------
+
+HTTP_SERVICE_CF_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+<HTTPService>
+<Properties><Name>TestAPI</Name><RootURL>api/v1</RootURL></Properties>
+<ChildObjects>
+<URLTemplate>
+<Properties><Name>users</Name><Template>/users</Template></Properties>
+<ChildObjects>
+<Method><Properties><Name>GET</Name><HTTPMethod>GET</HTTPMethod>
+<Handler>МодульСервиса.ОбработатьGET</Handler></Properties></Method>
+</ChildObjects>
+</URLTemplate>
+</ChildObjects>
+</HTTPService>
+</MetaDataObject>
+"""
+
+
+def test_update_creates_integration_tables_for_old_index(tmp_path, monkeypatch):
+    """update() creates http_services/web_services/xdto_packages for pre-v6 indexes."""
+    cm_dir = tmp_path / "CommonModules" / "Модуль" / "Ext"
+    cm_dir.mkdir(parents=True)
+    (cm_dir / "Module.bsl").write_text(
+        "Процедура Тест()\nКонецПроцедуры\n", encoding="utf-8-sig"
+    )
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path), build_metadata=True)
+
+    # Simulate old index: drop integration tables
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("DROP TABLE IF EXISTS http_services")
+    conn.execute("DROP TABLE IF EXISTS web_services")
+    conn.execute("DROP TABLE IF EXISTS xdto_packages")
+    conn.commit()
+    conn.close()
+
+    # Add HTTP service fixture
+    hs_dir = tmp_path / "HTTPServices" / "TestAPI"
+    hs_dir.mkdir(parents=True)
+    (hs_dir / "TestAPI.xml").write_text(HTTP_SERVICE_CF_XML, encoding="utf-8")
+
+    # Run update — should NOT crash, should create tables
+    builder.update(str(tmp_path))
+
+    # Verify tables exist
+    conn = sqlite3.connect(str(db_path))
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    conn.close()
+    assert "http_services" in tables
+    assert "web_services" in tables
+    assert "xdto_packages" in tables
+
+
+def test_update_refreshes_detected_prefixes(tmp_path, monkeypatch):
+    """index update recalculates detected_prefixes when objects change."""
+    # Build with 3 objects sharing prefix "тст_"
+    for name in ["тст_Справочник1", "тст_Справочник2", "тст_Справочник3"]:
+        cat_dir = tmp_path / "Catalogs" / name / "Ext"
+        cat_dir.mkdir(parents=True)
+        (cat_dir / "ObjectModule.bsl").write_text(
+            "Процедура Тест()\nКонецПроцедуры\n", encoding="utf-8-sig"
+        )
+    (tmp_path / "Configuration.xml").write_text("<Configuration/>", encoding="utf-8")
+    monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path / ".index"))
+
+    builder = IndexBuilder()
+    db_path = builder.build(str(tmp_path))
+
+    # Verify initial prefix detected
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT value FROM index_meta WHERE key = 'detected_prefixes'"
+    ).fetchone()
+    conn.close()
+    initial_prefixes = json.loads(row[0]) if row else []
+    assert any("тст" in p for p in initial_prefixes)
+
+    # Add 3 objects with new prefix "абв_"
+    for name in ["абв_Документ1", "абв_Документ2", "абв_Документ3"]:
+        doc_dir = tmp_path / "Documents" / name / "Ext"
+        doc_dir.mkdir(parents=True)
+        (doc_dir / "ObjectModule.bsl").write_text(
+            "Процедура Тест2()\nКонецПроцедуры\n", encoding="utf-8-sig"
+        )
+
+    builder.update(str(tmp_path))
+
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT value FROM index_meta WHERE key = 'detected_prefixes'"
+    ).fetchone()
+    conn.close()
+    updated_prefixes = json.loads(row[0])
+    assert any("тст" in p for p in updated_prefixes)
+    assert any("абв" in p for p in updated_prefixes)

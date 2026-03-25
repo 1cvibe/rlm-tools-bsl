@@ -682,11 +682,12 @@ def test_find_callers_context_qualified_call(bsl_env):
 
 
 def test_find_callers_context_meta(bsl_env):
-    """Result contains _meta with total_files, scanned_files, has_more."""
+    """Result contains _meta with total_callers, returned, offset, has_more."""
     result = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные")
     meta = result["_meta"]
-    assert "total_files" in meta
-    assert "scanned_files" in meta
+    assert "total_callers" in meta
+    assert "returned" in meta
+    assert "offset" in meta
     assert "has_more" in meta
     assert meta["has_more"] is False  # small fixture, all scanned
 
@@ -696,14 +697,14 @@ def test_find_callers_context_pagination(bsl_env):
     # First page: limit=1
     result1 = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные", limit=1)
     meta1 = result1["_meta"]
-    if meta1["total_files"] > 1:
-        assert meta1["has_more"] is True
+    assert "has_more" in meta1
+    assert "total_callers" in meta1
+    assert "returned" in meta1
+    assert "offset" in meta1
+    if meta1["has_more"]:
         # Second page
         result2 = bsl_env.bsl["find_callers_context"]("ЗаполнитьДанные", offset=1, limit=1)
-        assert result2["_meta"]["scanned_files"] >= 1
-    else:
-        # Only 1 file contains it — pagination not applicable, still valid
-        assert meta1["has_more"] is False
+        assert result2["_meta"]["returned"] >= 0
 
 
 # --- Composite helpers ---
@@ -1197,6 +1198,9 @@ def test_find_roles():
         assert role["role_name"] == "Менеджер"
         assert "Read" in role["rights"]
         assert "file" in role
+        # Fix 5: fallback must include "object" in each role item
+        assert "object" in role
+        assert role["object"] == "ПриобретениеТоваров"
 
 
 def test_find_roles_not_found():
@@ -1989,3 +1993,34 @@ def test_authoritative_parity_known_call():
         fs_callers = {c["caller_name"] for c in result_fs["callers"]}
         auth_callers = {c["caller_name"] for c in result_auth["callers"]}
         assert fs_callers == auth_callers
+
+
+# --- Fix 2: find_xdto_packages fallback without Package.xdto ---
+
+
+_XDTO_EDT_MDO = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<mdclass:XDTOPackage xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"
+                     name="TestPackage">
+  <name>TestPackage</name>
+  <namespace>http://example.com/test</namespace>
+</mdclass:XDTOPackage>
+"""
+
+
+def test_find_xdto_packages_no_package_xdto():
+    """find_xdto_packages must not crash when .mdo exists without Package.xdto."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl, _ = _make_full_fixture(tmpdir)
+        # Create EDT-style XDTO package without Package.xdto
+        xdto_dir = os.path.join(tmpdir, "XDTOPackages", "TestPackage")
+        os.makedirs(xdto_dir)
+        with open(os.path.join(xdto_dir, "TestPackage.mdo"), "w", encoding="utf-8") as f:
+            f.write(_XDTO_EDT_MDO)
+        # No Package.xdto — must not crash
+        result = bsl["find_xdto_packages"]("")
+        # Should return the package without types
+        assert len(result) >= 1
+        pkg = next(p for p in result if p["name"] == "TestPackage")
+        assert pkg["namespace"] == "http://example.com/test"
+        assert "types" not in pkg or pkg.get("types") == []

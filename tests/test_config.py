@@ -120,3 +120,34 @@ class TestLoadProjectEnv:
 
         result = cfg_mod.load_project_env()
         assert result is None
+
+
+class TestSaveConfigOverride:
+    """save_config must respect RLM_CONFIG_FILE override."""
+
+    def test_save_config_respects_override(self, monkeypatch, tmp_path):
+        """save_config writes to RLM_CONFIG_FILE path when set."""
+        override_path = tmp_path / "custom" / "service.json"
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(override_path))
+
+        import rlm_tools_bsl.service as svc_mod
+        svc_mod.save_config("0.0.0.0", 8080, None)
+
+        assert override_path.exists()
+        cfg = svc_mod.load_config()
+        assert cfg["host"] == "0.0.0.0"
+        assert cfg["port"] == 8080
+
+    def test_save_config_default_path(self, monkeypatch, tmp_path):
+        """save_config uses default CONFIG_FILE when no override set."""
+        default_cfg = tmp_path / "default" / "service.json"
+        monkeypatch.delenv("RLM_CONFIG_FILE", raising=False)
+
+        import rlm_tools_bsl.service as svc_mod
+        monkeypatch.setattr(svc_mod, "CONFIG_FILE", default_cfg)
+
+        svc_mod.save_config("127.0.0.1", 9000, None)
+
+        assert default_cfg.exists()
+        cfg = json.loads(default_cfg.read_text(encoding="utf-8"))
+        assert cfg["host"] == "127.0.0.1"

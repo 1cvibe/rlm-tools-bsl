@@ -263,7 +263,7 @@ def install(host: str, port: int, env_file: str | None) -> None:
         )
         # Allow pythonservice.exe (system Python) to find rlm_tools_bsl at runtime
         # and locate the config file (LocalSystem has a different home dir)
-        _set_service_environment(SERVICE_NAME, site_packages, str(CONFIG_FILE))
+        _set_service_environment(SERVICE_NAME, site_packages, str(_config_path()))
         print(f"Service '{SERVICE_NAME}' installed.")
         print("Start with: rlm-tools-bsl service start")
     except Exception as exc:
@@ -279,7 +279,7 @@ def uninstall() -> None:
         pass
     try:
         win32serviceutil.RemoveService(SERVICE_NAME)
-        CONFIG_FILE.unlink(missing_ok=True)
+        _config_path().unlink(missing_ok=True)
         print(f"Service '{SERVICE_NAME}' removed.")
     except Exception as exc:
         print(f"Error: {exc}")
