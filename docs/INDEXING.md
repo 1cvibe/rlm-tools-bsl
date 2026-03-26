@@ -66,7 +66,7 @@ Call graph:  yes
 Metadata:    yes
 FTS search:  yes
 
-Index built in 390.9s
+Index built in 630.2s
   Config:   УправлениеПредприятием 2.5.14.59
   Format:   cf
   Modules:  23461
@@ -76,11 +76,9 @@ Index built in 390.9s
   EventSubs:  536
   SchedJobs:  238
   FuncOpts:   929
-  HTTPSvcs:   5
-  WebSvcs:    34
-  XDTOPkgs:   382
+  Synonyms:   13661
   FilePaths:  103128
-  DB size:  1117.8 MB
+  DB size:  1137.6 MB
   DB path:  C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
 ```
 
@@ -127,12 +125,10 @@ Index: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
   EventSubs:  536
   SchedJobs:  238
   FuncOpts:   929
-  HTTPSvcs:   5
-  WebSvcs:    34
-  XDTOPkgs:   382
+  Synonyms:   13661
   FilePaths:  103128
   FTS:      yes
-  DB size:  1117.8 MB
+  DB size:  1137.6 MB
   Built:    10s ago
   BSL files on disk: 23461
 ```
@@ -156,7 +152,7 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 ## 4. Структура индекса
 
-Индекс хранится в SQLite-базе `method_index.db` и содержит 16 таблиц (4 основные + 11 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
+Индекс хранится в SQLite-базе `method_index.db` и содержит 18 таблиц (4 основные + 13 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
 
 ### index_meta
 
@@ -164,8 +160,8 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 | key | Описание | Пример |
 |-----|----------|--------|
-| `version` | Версия схемы | `7` |
-| `builder_version` | Версия построителя | `7` |
+| `version` | Версия схемы | `8` |
+| `builder_version` | Версия построителя | `8` |
 | `bsl_count` | Количество .bsl файлов | `23461` |
 | `paths_hash` | MD5-хеш отсортированных путей | `6c4e5a0f0d506f67...` |
 | `built_at` | Unix-timestamp построения | `1773740509.56` |

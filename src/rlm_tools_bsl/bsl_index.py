@@ -23,7 +23,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 7
+BUILDER_VERSION = 8
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -242,6 +242,22 @@ CREATE TABLE IF NOT EXISTS object_synonyms (
 );
 CREATE INDEX IF NOT EXISTS idx_synonyms_object ON object_synonyms(object_name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_synonyms_synonym ON object_synonyms(synonym COLLATE NOCASE);
+
+-- Level-7: regions and module headers (semantic context)
+CREATE TABLE IF NOT EXISTS regions (
+    id INTEGER PRIMARY KEY,
+    module_id INTEGER REFERENCES modules(id),
+    name TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    end_line INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_regions_module ON regions(module_id);
+CREATE INDEX IF NOT EXISTS idx_regions_name ON regions(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS module_headers (
+    module_id INTEGER PRIMARY KEY REFERENCES modules(id),
+    header_comment TEXT NOT NULL
+);
 """
 
 
@@ -1137,6 +1153,78 @@ _ADAPTED_REG_RE = re.compile(
     re.IGNORECASE,
 )  # ИмяРегистра = "RegName"
 
+# ---------------------------------------------------------------------------
+# Region parser (stack-based #Область/#КонецОбласти)
+# ---------------------------------------------------------------------------
+_REGION_OPEN_RE = re.compile(r"^\s*#(?:Область|Region)\s+(\S.*)$", re.IGNORECASE)
+_REGION_CLOSE_RE = re.compile(r"^\s*#(?:КонецОбласти|EndRegion)\b", re.IGNORECASE)
+
+
+def _parse_regions(lines: list[str]) -> list[dict]:
+    """Parse #Область/#КонецОбласти directives, return regions with line ranges."""
+    regions: list[dict] = []
+    stack: list[dict] = []
+    for lineno, raw in enumerate(lines, 1):
+        stripped = raw.strip()
+        # Skip comment lines (// #Область is a commented-out directive)
+        if stripped.startswith("//"):
+            continue
+        m = _REGION_OPEN_RE.match(raw)
+        if m:
+            name = m.group(1).strip()
+            if not name:
+                continue
+            entry = {"name": name, "line": lineno, "end_line": None}
+            stack.append(entry)
+            regions.append(entry)
+            continue
+        if _REGION_CLOSE_RE.match(raw):
+            if stack:
+                stack[-1]["end_line"] = lineno
+                stack.pop()
+            # else: extra #КонецОбласти — ignore
+    return regions
+
+
+# ---------------------------------------------------------------------------
+# Module header comment extractor
+# ---------------------------------------------------------------------------
+_HEADER_STOP_WORDS = frozenset((
+    "процедура", "функция", "procedure", "function",
+    "#область", "#region", "перем", "var",
+))
+
+
+def _extract_header_comment(lines: list[str], max_chars: int = 500) -> str:
+    """Extract leading // comment block from BSL module."""
+    collected: list[str] = []
+    found_comment = False
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            if found_comment:
+                break  # empty line after comment block ends it
+            continue  # skip leading empty lines
+        lower = stripped.lower()
+        if any(lower.startswith(sw) for sw in _HEADER_STOP_WORDS):
+            break
+        if stripped.startswith("//"):
+            found_comment = True
+            # Strip // prefix and optional space
+            text = stripped[2:]
+            if text.startswith(" "):
+                text = text[1:]
+            collected.append(text)
+        else:
+            break
+    result = "\n".join(collected)
+    # Skip BSP copyright blocks — noise, present in ~60-70% of modules
+    if "Copyright" in result:
+        return ""
+    if len(result) > max_chars:
+        result = result[:max_chars]
+    return result
+
 
 class FileResult(NamedTuple):
     """Result of processing a single .bsl file."""
@@ -1146,6 +1234,8 @@ class FileResult(NamedTuple):
     methods: list[dict]
     raw_calls: list[tuple[int, str, int]]
     movements: list[tuple[str, str, str]]  # (register_name, source, rel_path)
+    regions: list[dict] = []
+    header_comment: str = ""
 
 
 def _extract_movements(
@@ -1215,7 +1305,11 @@ def _process_single_file(
     rel_path = info.relative_path
     movements = _extract_movements(content, info, rel_path)
 
-    return FileResult(info, mtime, size, methods, raw_calls, movements)
+    # In-band: parse regions and header comment (zero extra I/O)
+    regions = _parse_regions(lines)
+    header_comment = _extract_header_comment(lines)
+
+    return FileResult(info, mtime, size, methods, raw_calls, movements, regions, header_comment)
 
 
 # ---------------------------------------------------------------------------
@@ -1668,6 +1762,31 @@ class IndexBuilder:
         ).fetchone()
         has_synonyms = meta_row is None or meta_row["value"] == "1"
 
+        # Schema upgrade v7→v8: regions/module_headers require full rebuild
+        meta_row = conn.execute(
+            "SELECT value FROM index_meta WHERE key = 'builder_version'"
+        ).fetchone()
+        old_version = int(meta_row["value"]) if meta_row else 0
+        if old_version < 8:
+            logger.info(
+                "Upgrading index v%d → v%d: full rebuild required for regions/module_headers",
+                old_version, BUILDER_VERSION,
+            )
+            conn.close()
+            db_path = self.build(
+                base_path,
+                build_calls=build_calls,
+                build_metadata=has_metadata,
+                build_fts=has_fts,
+                build_synonyms=has_synonyms,
+            )
+            # Return in update-format: full rebuild = all modules added
+            return {
+                "added": len(disk_files),
+                "changed": 0,
+                "removed": 0,
+            }
+
         # Existing modules in DB
         db_modules: dict[str, dict] = {}
         for row in conn.execute("SELECT id, rel_path, mtime, size FROM modules"):
@@ -1750,6 +1869,15 @@ class IndexBuilder:
                                     method_ids,
                                 )
                         conn.execute("DELETE FROM methods WHERE module_id = ?", (mod_id,))
+                        # Clean up regions and module_headers (no FK cascade)
+                        try:
+                            conn.execute("DELETE FROM regions WHERE module_id = ?", (mod_id,))
+                        except sqlite3.OperationalError:
+                            pass  # table may not exist in v7 index
+                        try:
+                            conn.execute("DELETE FROM module_headers WHERE module_id = ?", (mod_id,))
+                        except sqlite3.OperationalError:
+                            pass  # table may not exist in v7 index
                         conn.execute("DELETE FROM modules WHERE id = ?", (mod_id,))
 
                 # Insert new data
@@ -2058,6 +2186,31 @@ class IndexBuilder:
                     "INSERT INTO calls (caller_id, callee_name, line) VALUES (?, ?, ?)",
                     call_rows,
                 )
+
+        # Insert regions and module_headers
+        region_rows: list[tuple] = []
+        header_rows: list[tuple] = []
+        for r in results:
+            mod_id = path_to_id.get(r.info.relative_path)
+            if mod_id is None:
+                continue
+            for reg in r.regions:
+                region_rows.append((mod_id, reg["name"], reg["line"], reg["end_line"]))
+            if r.header_comment:
+                header_rows.append((mod_id, r.header_comment))
+
+        if region_rows:
+            conn.executemany(
+                "INSERT INTO regions (module_id, name, line, end_line) "
+                "VALUES (?, ?, ?, ?)",
+                region_rows,
+            )
+        if header_rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO module_headers (module_id, header_comment) "
+                "VALUES (?, ?)",
+                header_rows,
+            )
 
     @staticmethod
     def _write_meta(
@@ -2867,6 +3020,14 @@ class IndexReader:
             except sqlite3.Error:
                 stats["object_synonyms"] = 0
 
+            # Level-7: regions and module headers
+            for table in ("regions", "module_headers"):
+                try:
+                    row = self._conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()  # noqa: S608
+                    stats[table] = row["cnt"] if row else 0
+                except sqlite3.Error:
+                    stats[table] = 0
+
             return stats
 
     @property
@@ -2996,6 +3157,86 @@ class IndexReader:
                 ranked.sort(key=lambda x: (x[0], x[1], x[2]))
                 return [item[3] for item in ranked[:limit]]
 
+            except sqlite3.OperationalError:
+                return None
+
+    def search_regions(self, query: str, limit: int = 200) -> list[dict] | None:
+        """Search code regions (#Область) by name substring.
+
+        Returns:
+            List of dicts, or None if table missing.
+        """
+        with self._lock:
+            try:
+                if not query or not query.strip():
+                    rows = self._conn.execute(
+                        "SELECT r.name, r.line, r.end_line, "
+                        "m.rel_path AS module_path, m.object_name, m.category "
+                        "FROM regions r "
+                        "JOIN modules m ON m.id = r.module_id "
+                        "ORDER BY r.name LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        "SELECT r.name, r.line, r.end_line, "
+                        "m.rel_path AS module_path, m.object_name, m.category "
+                        "FROM regions r "
+                        "JOIN modules m ON m.id = r.module_id "
+                        "WHERE py_lower(r.name) LIKE '%' || py_lower(?) || '%' "
+                        "LIMIT ?",
+                        (query.strip(), limit),
+                    ).fetchall()
+                return [
+                    {
+                        "name": r["name"],
+                        "line": r["line"],
+                        "end_line": r["end_line"],
+                        "module_path": r["module_path"],
+                        "object_name": r["object_name"],
+                        "category": r["category"],
+                    }
+                    for r in rows
+                ]
+            except sqlite3.OperationalError:
+                return None
+
+    def search_module_headers(self, query: str, limit: int = 200) -> list[dict] | None:
+        """Search module header comments by substring.
+
+        Returns:
+            List of dicts, or None if table missing.
+        """
+        with self._lock:
+            try:
+                if not query or not query.strip():
+                    rows = self._conn.execute(
+                        "SELECT m.rel_path AS module_path, m.object_name, "
+                        "m.category, mh.header_comment "
+                        "FROM module_headers mh "
+                        "JOIN modules m ON m.id = mh.module_id "
+                        "LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        "SELECT m.rel_path AS module_path, m.object_name, "
+                        "m.category, mh.header_comment "
+                        "FROM module_headers mh "
+                        "JOIN modules m ON m.id = mh.module_id "
+                        "WHERE py_lower(mh.header_comment) LIKE '%' || py_lower(?) || '%' "
+                        "LIMIT ?",
+                        (query.strip(), limit),
+                    ).fetchall()
+                return [
+                    {
+                        "module_path": r["module_path"],
+                        "object_name": r["object_name"],
+                        "category": r["category"],
+                        "header_comment": r["header_comment"],
+                    }
+                    for r in rows
+                ]
             except sqlite3.OperationalError:
                 return None
 

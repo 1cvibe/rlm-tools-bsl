@@ -347,14 +347,14 @@ class TestBuildSynonyms:
         assert count == 0
         assert meta[0] == "0"
 
-    def test_builder_version_7(self, built_cf_index):
+    def test_builder_version_8(self, built_cf_index):
         db_path, _ = built_cf_index
         conn = sqlite3.connect(str(db_path))
         row = conn.execute(
             "SELECT value FROM index_meta WHERE key='builder_version'"
         ).fetchone()
         conn.close()
-        assert row[0] == "7"
+        assert row[0] == "8"
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +528,7 @@ class TestHelpers:
         info = bsl["get_index_info"]()
         reader.close()
         assert info["status"] == "ok"
-        assert info["builder_version"] == 7
+        assert info["builder_version"] == 8
         assert info["has_synonyms"] is True
 
     def test_get_index_info_no_index(self):
@@ -695,7 +695,81 @@ class TestIncrementalUpdate:
             "SELECT value FROM index_meta WHERE key='builder_version'"
         ).fetchone()[0]
         conn.close()
-        assert ver == "7"
+        assert ver == "8"
+
+
+# ---------------------------------------------------------------------------
+# v7 → v8 migration: regions & module_headers
+# ---------------------------------------------------------------------------
+
+
+class TestV7toV8Migration:
+
+    def test_update_v7_index_creates_regions_and_headers(self, cf_project, monkeypatch):
+        """update() on v7 index must trigger full rebuild with regions/module_headers."""
+        monkeypatch.setenv("RLM_INDEX_DIR", str(cf_project / ".idx_v7to8"))
+        builder = IndexBuilder()
+        db_path = builder.build(
+            str(cf_project), build_calls=False, build_fts=False,
+            build_synonyms=True,
+        )
+        # Simulate v7 index: set version=7, drop regions/module_headers tables
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("DROP TABLE IF EXISTS regions")
+        conn.execute("DROP TABLE IF EXISTS module_headers")
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('builder_version', '7')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('version', '7')"
+        )
+        conn.commit()
+        conn.close()
+
+        result = builder.update(str(cf_project))
+
+        # Should have done a full rebuild
+        assert result["added"] > 0
+
+        conn = sqlite3.connect(str(db_path))
+        ver = conn.execute(
+            "SELECT value FROM index_meta WHERE key='builder_version'"
+        ).fetchone()[0]
+        assert ver == "8"
+        # regions and module_headers tables must exist (no OperationalError)
+        regions_count = conn.execute("SELECT COUNT(*) FROM regions").fetchone()[0]
+        headers_count = conn.execute("SELECT COUNT(*) FROM module_headers").fetchone()[0]
+        conn.close()
+        # cf_project fixture has no #Область and no header comments,
+        # so counts are 0 — but tables must exist after migration
+        assert isinstance(regions_count, int)
+        assert isinstance(headers_count, int)
+
+    def test_update_v7_preserves_build_flags(self, cf_project, monkeypatch):
+        """v7→v8 migration must preserve build flags (no FTS → still no FTS)."""
+        monkeypatch.setenv("RLM_INDEX_DIR", str(cf_project / ".idx_v7flags"))
+        builder = IndexBuilder()
+        db_path = builder.build(
+            str(cf_project), build_calls=False, build_fts=False,
+            build_synonyms=False,
+        )
+        # Simulate v7 index
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('builder_version', '7')"
+        )
+        conn.commit()
+        conn.close()
+
+        builder.update(str(cf_project))
+
+        conn = sqlite3.connect(str(db_path))
+        # FTS should still be disabled
+        has_fts = conn.execute(
+            "SELECT value FROM index_meta WHERE key='has_fts'"
+        ).fetchone()
+        assert has_fts is None or has_fts[0] != "1"
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

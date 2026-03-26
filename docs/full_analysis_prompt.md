@@ -48,7 +48,7 @@ Replace `РеализацияТоваровУслуг` with your target object n
 
 ## What it covers
 
-This prompt exercises all 34 BSL helpers without explicitly naming them. The AI agent discovers the toolset via `help()` and decides which helpers to use. Business questions in the prompt trigger `_BUSINESS_RECIPES` injection via `get_strategy()` (v1.3.5+).
+This prompt exercises all 36 BSL helpers without explicitly naming them. The AI agent discovers the toolset via `help()` and decides which helpers to use. Business questions in the prompt trigger `_BUSINESS_RECIPES` injection via `get_strategy()` (v1.3.5+).
 
 | Area | Expected helpers |
 |------|-----------------|
@@ -197,7 +197,7 @@ Replace `<path>` with the actual path to your 1C source code (EDT or CF format).
 
 1. **Диагностика индекса**:
    - Вызови get_index_info() и выведи: версию индекса, имя конфигурации, наличие FTS и синонимов
-   - Если builder_version < 7 или has_synonyms = False — сообщи, что нужно перестроить индекс
+   - Если builder_version < 8 или has_synonyms = False — сообщи, что нужно перестроить индекс
 
 2. **Поиск по бизнес-именам (кириллица)**:
    - search_objects('себестоимость') → какие документы, регистры, модули связаны с себестоимостью
@@ -246,7 +246,7 @@ This prompt verifies the 2 new helpers from v1.4.1 (`search_objects`, `get_index
 
 | Area | Expected helpers | What to verify |
 |------|-----------------|----------------|
-| Index diagnostics | `get_index_info()` | builder_version=7, has_synonyms=True |
+| Index diagnostics | `get_index_info()` | builder_version=8, has_synonyms=True |
 | Synonym search | `search_objects(query)` | Finds objects by Russian business name |
 | Cyrillic case | `search_objects('расчет')` | Finds "Расчет..." despite case mismatch |
 | Category search | `search_objects('общий модуль')` | Returns only CommonModules |
@@ -273,6 +273,107 @@ Verified on EDT (ЕРП 2.5.7, 20K modules, 17 218 synonyms) and CF (ЕРП 2.5.
 | AccumulationRegisters | 221 | 217 | 200–500 |
 | Categories covered | 32 | 29 | 29–32 |
 | search_objects('себестоимость') hits | 10–30 | 10–30 | 10–30 (across categories) |
-| get_index_info().builder_version | 7 | 7 | 7 |
-| DB size | 954 MB | 1,124 MB | 950–1,150 MB |
-| Build time (full) | ~420s | ~402s | 400–450s |
+| get_index_info().builder_version | 8 | 8 | 8 |
+| DB size | 966.5 MB | 1,137.6 MB | 950–1,150 MB |
+| Build time (full) | ~466s | ~630s | 400–650s |
+
+---
+
+# Regions & Module Headers Prompt — E2E Test for v1.4.2 Helpers
+
+Use this prompt to verify the code regions search and module header search helpers added in v1.4.2.
+Replace `<path>` with the actual path to your 1C source code (EDT or CF format). Requires index v8+ (`rlm-bsl-index index build <path>`).
+
+---
+
+## Prompt
+
+```
+Мне нужно исследовать структуру кодовой базы конфигурации ERP через области кода и заголовки модулей.
+Путь: <путь к каталогу исходников 1С>
+
+Используй ТОЛЬКО MCP-сервер rlm-tools-bsl (rlm_start / rlm_execute / rlm_end).
+Не используй встроенные инструменты чтения файлов — всё делай через песочницу.
+
+Мне нужно проверить:
+
+1. **Диагностика индекса**:
+   - Вызови get_index_info() и выведи: версию индекса, has_regions, has_module_headers
+   - Если builder_version < 8 — сообщи, что нужно перестроить индекс
+
+2. **Поиск областей кода по бизнес-теме**:
+   - search_regions('Проведение') → найти все области, связанные с проведением документов
+   - Сгруппируй результаты по category: сколько в Documents, сколько в CommonModules
+   - Выбери 3 документа с областью "Проведение" и покажи диапазоны строк (line-end_line)
+   - search_regions('Себестоимость') → области расчёта себестоимости, в каких объектах
+
+3. **Анализ нетиповых доработок через заголовки модулей**:
+   - search_module_headers('++') → найти модули с маркерами кастомизации
+   - Для каждого найденного: покажи category, object_name и текст маркера
+   - Сколько всего модулей помечены маркером "++"?
+
+4. **Обнаружение аннотаций и метаданных модулей**:
+   - search_module_headers('@strict-types') → модули с EDT-аннотациями
+   - search_module_headers('подсистема') → модули с описанием принадлежности подсистеме
+   - Сколько модулей имеют описательные заголовки (не аннотации)?
+
+5. **Комбинация с другими хелперами**:
+   - Найди через search_regions('Проведение') документ с большой областью проведения (end_line - line > 200)
+   - Затем extract_procedures() на этом модуле — покажи процедуры внутри области проведения
+   - Используй find_register_movements() для этого документа — покажи регистры
+   - Цепочка: область кода → процедуры → движения по регистрам
+
+6. **Статистика**:
+   - Общее количество областей в индексе (search_regions('') с limit=1, но get_index_info покажет)
+   - Топ-10 самых частых имён областей (search_regions('') с большим limit, группировка по name)
+   - Сколько модулей имеют заголовочные комментарии
+
+Начни с get_index_info() для проверки доступности, затем help('search_regions') для рецепта.
+
+Дай итоговую сводку со всеми цифрами. Сохрани файл с анализом в текущий рабочий каталог своими инструментами (НЕ через rlm_execute).
+
+## ВАЖНЫЕ ПРАВИЛА
+
+1. Каждый rlm_execute должен батчить несколько связанных операций. Плохо: один вызов на один хелпер. Хорошо: несколько хелперов + print() в одном вызове.
+2. Переменные сохраняются между вызовами rlm_execute.
+3. Используй print() для вывода результатов.
+4. В конце ОБЯЗАТЕЛЬНО вызови rlm_end для освобождения ресурсов.
+```
+
+---
+
+## What it covers
+
+This prompt verifies the 2 new helpers from v1.4.2 (`search_regions`, `search_module_headers`), the `category` field in results, Copyright filtering in headers, and the workflow of combining region discovery with code analysis helpers.
+
+| Area | Expected helpers | What to verify |
+|------|-----------------|----------------|
+| Index diagnostics | `get_index_info()` | builder_version=8, has_regions=True, has_module_headers=True |
+| Region search | `search_regions(query)` | Finds #Область by name substring, returns category |
+| Header search | `search_module_headers(query)` | Finds modules by header comment, no Copyright noise |
+| Cyrillic case | `search_regions('проведение')` | Finds "Проведение" despite case mismatch |
+| Empty query | `search_regions('')` | Returns all regions (with limit) |
+| Customization markers | `search_module_headers('++')` | Finds modules with `++` modification markers |
+| EDT annotations | `search_module_headers('@strict-types')` | Finds annotated modules |
+| Chaining | `search_regions` → `extract_procedures` → `find_register_movements` | Region → code → business flow |
+| Help recipe | `help('search_regions')` | Recipe displayed correctly |
+| Category in results | `search_regions('Проведение')` | Each result has `category` (Documents, CommonModules, etc.) |
+
+## Expected results on ERP 2.5
+
+Verified on EDT (ЕРП 2.5.7, 20K modules) and CF (ЕРП 2.5.14, 23K modules).
+
+| Metric | EDT (actual) | CF (actual) | Expected range |
+|--------|-------------|------------|---------------|
+| Total regions | 88,756 | 100,873 | 85,000–105,000 |
+| Total module_headers | 1,299 | 1,402 | 1,000–1,500 |
+| search_regions('Проведение') hits | 1,228 | 1,298 | 1,200–1,400 |
+| search_regions('Себестоимость') hits | 89 | 87 | 80–100 |
+| search_module_headers('++') hits | 178 | 217 | 150–250 |
+| search_module_headers('@strict-types') hits | 47 | 156 | 40–160 |
+| search_module_headers('подсистема') hits | 206 | 240 | 200–250 |
+| Copyright headers in table | 0 | 0 | 0 (filtered) |
+| get_index_info().has_regions | True | True | True |
+| get_index_info().has_module_headers | True | True | True |
+| DB size | 966.5 MB | 1,137.6 MB | 950–1,150 MB |
+| Build time (full) | ~466s | ~630s | 400–650s |

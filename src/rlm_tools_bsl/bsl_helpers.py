@@ -1747,6 +1747,34 @@ def make_bsl_helpers(
                 return result
         return []
 
+    def search_regions(query: str = "") -> list[dict]:
+        """Search code regions (#Область/#Region) by name substring.
+
+        Args:
+            query: Search string (e.g. 'Себестоимость', 'Инициализация').
+
+        Returns: list of dicts {name, line, end_line, module_path, object_name}.
+                 Empty list if index not available or no regions built."""
+        if idx_reader is not None:
+            result = idx_reader.search_regions(query)
+            if result is not None:
+                return result
+        return []
+
+    def search_module_headers(query: str = "") -> list[dict]:
+        """Search module header comments by substring.
+
+        Args:
+            query: Search string (e.g. 'себестоимость', 'доработка').
+
+        Returns: list of dicts {module_path, header_comment}.
+                 Empty list if index not available or no headers built."""
+        if idx_reader is not None:
+            result = idx_reader.search_module_headers(query)
+            if result is not None:
+                return result
+        return []
+
     def get_index_info() -> dict:
         """Return index metadata: version, capabilities, staleness."""
         if idx_reader is None:
@@ -1762,6 +1790,8 @@ def make_bsl_helpers(
             "has_fts": stats.get("has_fts", False),
             "has_synonyms": bool(stats.get("object_synonyms", 0)),
             "object_synonyms": stats.get("object_synonyms", 0),
+            "has_regions": int(stats.get("builder_version") or 0) >= 8,
+            "has_module_headers": int(stats.get("builder_version") or 0) >= 8,
             "built_at": stats.get("built_at"),
         }
 
@@ -2230,6 +2260,22 @@ def make_bsl_helpers(
          "  results = search_objects('себестоимость')\n"
          "  for r in results:\n"
          "      print(r['synonym'], r['category'], r['object_name'])")
+    _reg("search_regions", search_regions,
+         "search_regions(query) -> [{name, line, end_line, module_path, object_name, category}]",
+         "discovery",
+         ["область", "region", "search_regions", "#Область"],
+         "FIND CODE REGIONS:\n"
+         "  regions = search_regions('Себестоимость')\n"
+         "  for r in regions:\n"
+         "      print(r['category'], r['object_name'], r['name'], f'L{r[\"line\"]}-{r[\"end_line\"]}')")
+    _reg("search_module_headers", search_module_headers,
+         "search_module_headers(query) -> [{module_path, object_name, category, header_comment}]",
+         "discovery",
+         ["заголовок", "header", "комментарий", "search_module_headers"],
+         "FIND MODULES BY HEADER COMMENT:\n"
+         "  headers = search_module_headers('себестоимость')\n"
+         "  for h in headers:\n"
+         "      print(h['category'], h['object_name'], h['header_comment'][:80])")
     _reg("get_index_info", get_index_info,
          "get_index_info() -> {builder_version, config_name, has_fts, has_synonyms, ...}",
          "discovery",

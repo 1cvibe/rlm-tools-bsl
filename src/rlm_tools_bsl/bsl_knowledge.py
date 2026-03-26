@@ -350,6 +350,10 @@ def get_strategy(effort: str, format_info, detected_prefixes: list[str] | None =
             instant_helpers.extend(["glob_files(indexed)", "tree(indexed)", "find_files(indexed)"])
         if synonyms_count:
             instant_helpers.append("search_objects()")
+        bver = int(idx_stats.get("builder_version") or 0)
+        if bver >= 8:
+            instant_helpers.append("search_regions()")
+            instant_helpers.append("search_module_headers()")
         idx_lines.append(f"INSTANT from index: {', '.join(instant_helpers)}.")
 
         # FTS/synonym discovery
