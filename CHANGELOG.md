@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.3] — 2026-03-27
+
+### Добавлено
+- **Публикация в PyPI** — `pip install rlm-tools-bsl` теперь основной способ установки
+- **Автоматическая публикация** — при пуше тега `v*` CI собирает wheel и публикует в PyPI через OIDC Trusted Publisher (без токенов)
+- **TestPyPI workflow** — ручной запуск для проверки публикации перед релизом (`publish-testpypi.yml`)
+- **PyPI-бейдж** в README
+
+### Изменено
+- **README.md** — секция «Установка из PyPI» добавлена как основной способ, установка из исходников вынесена в подсекцию
+- **docs/INSTALL.md** — PyPI (pip/uv) как Вариант A, установка из исходников — Вариант B
+- **pyproject.toml** — добавлены classifiers (`License`, `Operating System`), URL на Changelog
+- **release.yml** — добавлен job `publish` с `pypa/gh-action-pypi-publish` и OIDC
+
+### Инфраструктура (из коммитов после v1.4.2)
+- CI: `PYTHONIOENCODING=utf-8` для бенчмарка на Windows
+- Зрелость OSS-репо: гигиена, coverage-бейдж, benchmark, фикс `limit` в `search_regions`/`search_module_headers`
+- CI: автоматическое создание GitHub Release при пуше тега `v*`
+- Ruff линтер + форматтер, SECURITY.md, фикс сигнатуры `find_custom_modifications`
+- Рефакторинг документации: README упрощён, docs разнесены по темам, CONTRIBUTING + бейджи
+
 ## [1.4.2] — 2026-03-26
 
 ### Добавлено

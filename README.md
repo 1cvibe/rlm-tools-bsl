@@ -1,6 +1,7 @@
 # rlm-tools-bsl
 
 [![CI](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml/badge.svg)](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/rlm-tools-bsl.svg)](https://pypi.org/project/rlm-tools-bsl/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Coverage](https://img.shields.io/badge/coverage-78%25-yellow.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -9,11 +10,27 @@ MCP-сервер для токен-эффективного анализа ко�
 
 Адаптация open-source проекта [rlm-tools](https://github.com/stefanoshea/rlm-tools) под специфику платформы 1С:Предприятие — большие кодовые базы, форматы исходников (CF/EDT), структура метаданных, кириллический код, XML-описания объектов.
 
-## Быстрый старт
+## Установка
+
+### Из PyPI (рекомендуется)
+
+```bash
+pip install rlm-tools-bsl
+```
+
+Или через [uv](https://github.com/astral-sh/uv):
+
+```bash
+uv tool install rlm-tools-bsl
+```
+
+Обновление: `pip install --upgrade rlm-tools-bsl` или `uv tool upgrade rlm-tools-bsl`
+
+### Из исходников (для разработки)
 
 **Требования:** Python 3.10+, [uv](https://github.com/astral-sh/uv) (пакетный менеджер). LLM-ключи опциональны — без них работает базовый функционал.
 
-### Windows (PowerShell от имени администратора)
+#### Windows (PowerShell от имени администратора)
 
 ```powershell
 git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
@@ -23,7 +40,7 @@ PowerShell -ExecutionPolicy Bypass -File .\simple-install.ps1
 
 Обновление: `git pull` → `PowerShell -ExecutionPolicy Bypass -File .\reinstall-service.ps1`
 
-### Linux
+#### Linux
 
 ```bash
 git clone https://github.com/Dach-Coin/rlm-tools-bsl.git

@@ -47,16 +47,30 @@ uv --version
 > native-tls = true
 > ```
 
-## 1. Клонировать репозиторий
+## 1. Установить пакет
+
+### Вариант A: Из PyPI (рекомендуется)
+
+```bash
+# Через pip
+pip install rlm-tools-bsl
+
+# Через uv (как глобальный инструмент)
+uv tool install rlm-tools-bsl
+```
+
+Обновление:
+```bash
+pip install --upgrade rlm-tools-bsl
+# или
+uv tool upgrade rlm-tools-bsl
+```
+
+### Вариант B: Из исходников (для разработки)
 
 ```bash
 git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
 cd rlm-tools-bsl
-```
-
-## 2. Установить глобально
-
-```bash
 uv tool install . --force
 ```
 
@@ -67,15 +81,6 @@ uv tool install . --force
 > uv tool update-shell
 > ```
 > Затем **перезапустите терминал** (или откройте новый). Команда `uv tool update-shell` один раз добавляет каталог `~/.local/bin` в системный PATH — повторно запускать не нужно.
-
-<details>
-<summary>Вариант через pip</summary>
-
-```bash
-pip install .
-```
-
-</details>
 
 ## 3. (Опционально) Настройка llm_query
 

@@ -1,6 +1,6 @@
 [project]
 name = "rlm-tools-bsl"
-version = "1.4.2"
+version = "1.4.3"
 description = "MCP server for token-efficient 1C BSL codebase analysis"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -12,6 +12,8 @@ keywords = ["1c", "bsl", "mcp", "code-analysis", "ai-tools"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.12",
@@ -88,3 +90,4 @@ exclude_lines = [
 Homepage = "https://github.com/Dach-Coin/rlm-tools-bsl"
 Repository = "https://github.com/Dach-Coin/rlm-tools-bsl"
 Issues = "https://github.com/Dach-Coin/rlm-tools-bsl/issues"
+Changelog = "https://github.com/Dach-Coin/rlm-tools-bsl/blob/master/CHANGELOG.md"
