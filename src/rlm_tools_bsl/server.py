@@ -216,7 +216,7 @@ def _install_session_llm_tools(session, sandbox: Sandbox) -> bool:
 
 
 def _rlm_start(
-    path: str,
+    path: str | None,
     query: str,
     effort: str = "medium",
     max_output_chars: int = 15_000,
@@ -224,10 +224,74 @@ def _rlm_start(
     max_execute_calls: int | None = None,
     execution_timeout_seconds: int = 45,
     include_metadata: bool = False,
+    project: str | None = None,
 ) -> str:
     t0 = time.monotonic()
-    logger.info("rlm_start: path=%s effort=%s include_metadata=%s", path, effort, include_metadata)
     _cleanup_expired_resources()
+
+    # --- Resolve project name to path ---
+    project_hint: str | None = None
+
+    if path is None and project is None:
+        return json.dumps(
+            {"error": "Either 'path' or 'project' must be provided"},
+            ensure_ascii=False,
+        )
+
+    if path is None:
+        from rlm_tools_bsl.projects import RegistryCorruptedError, get_registry
+
+        try:
+            reg = get_registry()
+            matches, method = reg.resolve(project)  # type: ignore[arg-type]
+        except RegistryCorruptedError as exc:
+            return json.dumps(
+                {"error": f"Registry file is corrupted: {exc}. Run rlm_projects(action='list') after fixing the file."},
+                ensure_ascii=False,
+            )
+        if not matches:
+            all_projects = reg.list_projects()
+            available = [{"name": p["name"], "description": p.get("description", "")} for p in all_projects]
+            return json.dumps(
+                {
+                    "error": f"Project not found: {project}",
+                    "available_projects": available,
+                },
+                ensure_ascii=False,
+            )
+        if len(matches) > 1:
+            ambiguous = [{"name": p["name"], "description": p.get("description", "")} for p in matches]
+            return json.dumps(
+                {
+                    "error": f"Ambiguous project name: {project}",
+                    "matches": ambiguous,
+                },
+                ensure_ascii=False,
+            )
+        # Single match
+        if method == "fuzzy":
+            return json.dumps(
+                {"error": f"Did you mean '{matches[0]['name']}'?"},
+                ensure_ascii=False,
+            )
+        # exact or substring -- OK
+        path = matches[0]["path"]
+    else:
+        # path is provided -- check if registered, hint if not
+        from rlm_tools_bsl.projects import get_registry
+
+        try:
+            reg = get_registry()
+            if not reg.is_path_registered(path):
+                project_hint = (
+                    "This path is not in the project registry. "
+                    "Register it with rlm_projects(action='add', name='...', path='...') "
+                    "to use rlm_start(project='name') next time."
+                )
+        except Exception:
+            pass  # non-critical
+
+    logger.info("rlm_start: path=%s effort=%s include_metadata=%s", path, effort, include_metadata)
 
     resolved = str(pathlib.Path(path).resolve())
     if not os.path.isdir(resolved):
@@ -545,6 +609,8 @@ def _rlm_start(
         "available_functions": available_functions,
         "strategy": strategy,
     }
+    if project_hint:
+        response["project_hint"] = project_hint
     logger.info(
         "rlm_start: session=%s timings: format=%.1fs ext=%.1fs overrides=%.1fs index=%.1fs sandbox=%.1fs prefixes=%.1fs strategy=%.1fs",
         session_id,
@@ -716,8 +782,9 @@ def _rlm_end(session_id: str) -> str:
 
 @mcp.tool()
 async def rlm_start(
-    path: Annotated[str, Field(description="Absolute path to the 1C BSL codebase directory")],
     query: Annotated[str, Field(description="What you want to find or analyze in the BSL codebase")],
+    path: Annotated[str | None, Field(description="Absolute path to the 1C BSL codebase directory")] = None,
+    project: Annotated[str | None, Field(description="Project name from the registry (alternative to path)")] = None,
     effort: Annotated[
         str,
         Field(
@@ -743,7 +810,14 @@ async def rlm_start(
         ),
     ] = False,
 ) -> str:
-    """Start a BSL code exploration session on a 1C codebase. Returns JSON with session_id. Then call rlm_execute(session_id, code) where code is Python that calls helper functions and uses print() to output results. IMPORTANT: For large 1C configs (23K+ files), NEVER grep on broad paths -- use find_module() first."""
+    """Start a BSL code exploration session on a 1C codebase. Returns JSON with session_id.
+    You can specify either 'path' (absolute filesystem path) or 'project' (name from the project registry).
+    If you don't know the path, call rlm_projects(action='list') first to see registered projects,
+    then use rlm_start(project='name', query='...').
+    If the user mentions a project by name -- always try project parameter first.
+    If the path is not registered, the response will include a project_hint suggesting to register it.
+    Then call rlm_execute(session_id, code) where code is Python that calls helper functions and uses print() to output results.
+    IMPORTANT: For large 1C configs (23K+ files), NEVER grep on broad paths -- use find_module() first."""
     return await anyio.to_thread.run_sync(
         lambda: _rlm_start(
             path=path,
@@ -754,6 +828,7 @@ async def rlm_start(
             max_execute_calls=max_execute_calls,
             execution_timeout_seconds=execution_timeout_seconds,
             include_metadata=include_metadata,
+            project=project,
         )
     )
 
@@ -796,6 +871,87 @@ async def rlm_end(
 ) -> str:
     """End an RLM exploration session and free resources."""
     return await anyio.to_thread.run_sync(lambda: _rlm_end(session_id))
+
+
+@mcp.tool()
+async def rlm_projects(
+    action: Annotated[
+        Literal["list", "add", "remove", "rename", "update"],
+        Field(description="Action to perform on the project registry"),
+    ],
+    name: Annotated[str | None, Field(description="Project name (required for add/remove/rename/update)")] = None,
+    path: Annotated[str | None, Field(description="Absolute filesystem path to 1C sources (required for add)")] = None,
+    description: Annotated[str | None, Field(description="Optional project description")] = None,
+    new_name: Annotated[str | None, Field(description="New name for rename action")] = None,
+) -> str:
+    """Manage the server-side project registry -- a mapping of human-readable project names to filesystem paths.
+    Use 'list' to see all registered 1C projects, 'add' to register a new project (name + path + optional description),
+    'remove' to unregister, 'rename' to change a project's display name, 'update' to change path or description.
+    After registering a project, you can open sessions via rlm_start(project='name') instead of specifying the full path.
+    When the user mentions a project by name, call list first to find available projects."""
+    return await anyio.to_thread.run_sync(
+        lambda: _rlm_projects(action=action, name=name, path=path, description=description, new_name=new_name)
+    )
+
+
+def _rlm_projects(
+    action: str,
+    name: str | None = None,
+    path: str | None = None,
+    description: str | None = None,
+    new_name: str | None = None,
+) -> str:
+    from rlm_tools_bsl.projects import RegistryCorruptedError, get_registry
+
+    try:
+        reg = get_registry()
+
+        # Resolve mapped drives (Windows service in Session 0)
+        if path and not os.path.isdir(path):
+            unc = _resolve_mapped_drive(path)
+            if unc:
+                path = str(pathlib.Path(unc).resolve())
+
+        if action == "list":
+            return json.dumps({"projects": reg.list_projects()}, ensure_ascii=False)
+
+        if action == "add":
+            if not name:
+                return json.dumps({"error": "name is required for 'add'"}, ensure_ascii=False)
+            if not path:
+                return json.dumps({"error": "path is required for 'add'"}, ensure_ascii=False)
+            entry = reg.add(name, path, description or "")
+            return json.dumps({"added": entry}, ensure_ascii=False)
+
+        if action == "remove":
+            if not name:
+                return json.dumps({"error": "name is required for 'remove'"}, ensure_ascii=False)
+            entry = reg.remove(name)
+            return json.dumps({"removed": entry}, ensure_ascii=False)
+
+        if action == "rename":
+            if not name:
+                return json.dumps({"error": "name is required for 'rename'"}, ensure_ascii=False)
+            if not new_name:
+                return json.dumps({"error": "new_name is required for 'rename'"}, ensure_ascii=False)
+            entry = reg.rename(name, new_name)
+            return json.dumps({"renamed": entry}, ensure_ascii=False)
+
+        if action == "update":
+            if not name:
+                return json.dumps({"error": "name is required for 'update'"}, ensure_ascii=False)
+            entry = reg.update(name, path=path, description=description)
+            return json.dumps({"updated": entry}, ensure_ascii=False)
+
+        return json.dumps({"error": f"Unknown action: {action}"}, ensure_ascii=False)
+
+    except RegistryCorruptedError as exc:
+        return json.dumps(
+            {"error": f"Registry file is corrupted: {exc}. Run rlm_projects(action='list') after fixing the file."},
+            ensure_ascii=False,
+        )
+    except (ValueError, KeyError) as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
 class _HealthLogFilter(logging.Filter):

@@ -10,6 +10,14 @@ CONFIG_DIR = Path.home() / ".config" / "rlm-tools-bsl"
 SERVICE_JSON = CONFIG_DIR / "service.json"
 
 
+def get_projects_path() -> Path:
+    """Return path to projects.json, co-located with the active service.json."""
+    cfg_path = os.environ.get("RLM_CONFIG_FILE")
+    if cfg_path:
+        return Path(cfg_path).parent / "projects.json"
+    return SERVICE_JSON.parent / "projects.json"
+
+
 def load_project_env() -> str | None:
     """Load .env file and return path to the loaded file (or *None*).
 

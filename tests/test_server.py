@@ -4,7 +4,7 @@ import sys
 import tempfile
 from unittest.mock import patch, MagicMock
 
-from rlm_tools_bsl.server import _rlm_start, _rlm_execute, _rlm_end, _format_helper_summary
+from rlm_tools_bsl.server import _rlm_start, _rlm_execute, _rlm_end, _format_helper_summary, _rlm_projects
 from rlm_tools_bsl.sandbox import HelperCall
 
 
@@ -606,6 +606,189 @@ def test_sandboxes_concurrent_access():
             t.join(timeout=30)
 
         assert not errors, f"Concurrent access errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# Project registry integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_rlm_projects_list_empty():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            result = json.loads(_rlm_projects(action="list"))
+            assert result["projects"] == []
+
+
+def test_rlm_projects_add_remove_rename_update():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        src = os.path.join(tmpdir, "src")
+        os.makedirs(src)
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            # add
+            r = json.loads(_rlm_projects(action="add", name="Test", path=src, description="Desc"))
+            assert "added" in r
+            assert r["added"]["name"] == "Test"
+            # list
+            r = json.loads(_rlm_projects(action="list"))
+            assert len(r["projects"]) == 1
+            # rename
+            r = json.loads(_rlm_projects(action="rename", name="Test", new_name="Test2"))
+            assert r["renamed"]["name"] == "Test2"
+            # update
+            r = json.loads(_rlm_projects(action="update", name="Test2", description="Updated"))
+            assert r["updated"]["description"] == "Updated"
+            # remove
+            r = json.loads(_rlm_projects(action="remove", name="Test2"))
+            assert r["removed"]["name"] == "Test2"
+            r = json.loads(_rlm_projects(action="list"))
+            assert r["projects"] == []
+
+
+def test_rlm_projects_validation_errors():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            # add without name
+            r = json.loads(_rlm_projects(action="add", path="/tmp"))
+            assert "error" in r
+            # add without path
+            r = json.loads(_rlm_projects(action="add", name="X"))
+            assert "error" in r
+            # remove nonexistent
+            r = json.loads(_rlm_projects(action="remove", name="Ghost"))
+            assert "error" in r
+
+
+def test_rlm_start_with_project():
+    """rlm_start resolves project name from the registry."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        src = os.path.join(tmpdir, "src")
+        os.makedirs(src)
+        open(os.path.join(src, "a.py"), "w").close()
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            _rlm_projects(action="add", name="MyProject", path=src)
+            result = json.loads(_rlm_start(path=None, query="test", project="MyProject"))
+            assert "session_id" in result
+            assert "error" not in result
+            _rlm_end(result["session_id"])
+
+
+def test_rlm_start_project_not_found():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            result = json.loads(_rlm_start(path=None, query="test", project="NoSuch"))
+            assert "error" in result
+            assert "not found" in result["error"].lower()
+            assert "available_projects" in result
+
+
+def test_rlm_start_project_ambiguous():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        s1 = os.path.join(tmpdir, "s1")
+        s2 = os.path.join(tmpdir, "s2")
+        os.makedirs(s1)
+        os.makedirs(s2)
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            _rlm_projects(action="add", name="Config Alpha", path=s1)
+            _rlm_projects(action="add", name="Config Beta", path=s2)
+            result = json.loads(_rlm_start(path=None, query="test", project="Config"))
+            assert "error" in result
+            assert "ambiguous" in result["error"].lower()
+            assert "matches" in result
+
+
+def test_rlm_start_project_fuzzy():
+    """Fuzzy match returns 'Did you mean?' error, not a session."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        src = os.path.join(tmpdir, "src")
+        os.makedirs(src)
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            _rlm_projects(action="add", name="Main Config", path=src)
+            result = json.loads(_rlm_start(path=None, query="test", project="Main Confgi"))
+            assert "error" in result
+            assert "did you mean" in result["error"].lower()
+
+
+def test_rlm_start_project_corrupted_registry():
+    """rlm_start with project= and corrupted registry returns clear error."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        # Write invalid JSON to projects.json
+        proj_file = os.path.join(tmpdir, "projects.json")
+        with open(proj_file, "w", encoding="utf-8") as f:
+            f.write("{bad json")
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            result = json.loads(_rlm_start(path=None, query="test", project="Any"))
+            assert "error" in result
+            assert "corrupted" in result["error"].lower()
+
+
+def test_rlm_start_project_invalid_structure():
+    """rlm_start with project= and structurally invalid registry."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        proj_file = os.path.join(tmpdir, "projects.json")
+        with open(proj_file, "w", encoding="utf-8") as f:
+            f.write("[]")
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            result = json.loads(_rlm_start(path=None, query="test", project="Any"))
+            assert "error" in result
+            assert "corrupted" in result["error"].lower()
+
+
+def test_rlm_start_neither_path_nor_project():
+    result = json.loads(_rlm_start(path=None, query="test", project=None))
+    assert "error" in result
+    assert "either" in result["error"].lower()
+
+
+def test_rlm_start_path_project_hint():
+    """Unregistered path returns project_hint in the response."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        open(os.path.join(tmpdir, "a.py"), "w").close()
+        _reset_registry()
+        with patch.dict(os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json")}):
+            _reset_registry()
+            result = json.loads(_rlm_start(path=tmpdir, query="test"))
+            assert "session_id" in result
+            assert "project_hint" in result
+            _rlm_end(result["session_id"])
 
 
 def test_streamable_http_server_starts():

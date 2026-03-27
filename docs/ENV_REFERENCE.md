@@ -63,7 +63,7 @@ RLM_LOG_HELPERS=all
 | `RLM_TRANSPORT`       | `stdio`      | Транспорт MCP-сервера: `stdio` или `streamable-http`. Можно также задать через аргумент `--transport` при запуске                      |
 | `RLM_HOST`            | `127.0.0.1`  | Адрес для HTTP-транспорта. Можно также задать через `--host`                                                                           |
 | `RLM_PORT`            | `9000`       | Порт для HTTP-транспорта. Можно также задать через `--port`                                                                            |
-| `RLM_CONFIG_FILE`     | —            | Путь к файлу конфигурации сервиса (`service.json`). Если не задан — ищется в стандартном месте: `~/.config/rlm-tools-bsl/service.json` |
+| `RLM_CONFIG_FILE`     | —            | Путь к `service.json`. Каталог этого файла определяет расположение `projects.json`, `.env` и `logs/`. Если не задан — `~/.config/rlm-tools-bsl/service.json` |
 
 ---
 
@@ -78,6 +78,17 @@ RLM_LOG_HELPERS=all
 | `RLM_INDEX_SAMPLE_SIZE`       | `5`                       | Количество файлов для выборочной проверки свежести. `0` — отключить проверку                                                                |
 | `RLM_INDEX_SAMPLE_THRESHOLD`  | `30`                      | Минимальное число модулей в индексе, при котором выполняется выборочная проверка                                                            |
 | `RLM_INDEX_SKIP_SAMPLE_HOURS` | `24`                      | Если индекс моложе этого порога (часы), выборочная проверка пропускается — сразу `FRESH`                                                    |
+
+---
+
+## Реестр проектов
+
+Файл `projects.json` хранит соответствие человекочитаемых имен проектов путям к каталогам исходников. Располагается **рядом с активным `service.json`**:
+
+- Если задан `RLM_CONFIG_FILE=/etc/rlm-tools-bsl/service.json` -- реестр будет `/etc/rlm-tools-bsl/projects.json`
+- Иначе -- `~/.config/rlm-tools-bsl/projects.json`
+
+Управление реестром -- через MCP-тул `rlm_projects` (list/add/remove/rename/update). После регистрации проекта можно открывать сессии по имени: `rlm_start(project='My Config', query='...')`.
 
 ---
 
