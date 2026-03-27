@@ -1805,30 +1805,32 @@ def make_bsl_helpers(
                 return result
         return []
 
-    def search_regions(query: str = "") -> list[dict]:
+    def search_regions(query: str = "", limit: int = 200) -> list[dict]:
         """Search code regions (#Область/#Region) by name substring.
 
         Args:
             query: Search string (e.g. 'Себестоимость', 'Инициализация').
+            limit: Max results (default 200).
 
-        Returns: list of dicts {name, line, end_line, module_path, object_name}.
+        Returns: list of dicts {name, line, end_line, module_path, object_name, category}.
                  Empty list if index not available or no regions built."""
         if idx_reader is not None:
-            result = idx_reader.search_regions(query)
+            result = idx_reader.search_regions(query, limit)
             if result is not None:
                 return result
         return []
 
-    def search_module_headers(query: str = "") -> list[dict]:
+    def search_module_headers(query: str = "", limit: int = 200) -> list[dict]:
         """Search module header comments by substring.
 
         Args:
             query: Search string (e.g. 'себестоимость', 'доработка').
+            limit: Max results (default 200).
 
-        Returns: list of dicts {module_path, header_comment}.
+        Returns: list of dicts {module_path, object_name, category, header_comment}.
                  Empty list if index not available or no headers built."""
         if idx_reader is not None:
-            result = idx_reader.search_module_headers(query)
+            result = idx_reader.search_module_headers(query, limit)
             if result is not None:
                 return result
         return []
@@ -2390,7 +2392,7 @@ def make_bsl_helpers(
     _reg(
         "search_regions",
         search_regions,
-        "search_regions(query) -> [{name, line, end_line, module_path, object_name, category}]",
+        "search_regions(query, limit=200) -> [{name, line, end_line, module_path, object_name, category}]",
         "discovery",
         ["область", "region", "search_regions", "#Область"],
         "FIND CODE REGIONS:\n"
@@ -2401,7 +2403,7 @@ def make_bsl_helpers(
     _reg(
         "search_module_headers",
         search_module_headers,
-        "search_module_headers(query) -> [{module_path, object_name, category, header_comment}]",
+        "search_module_headers(query, limit=200) -> [{module_path, object_name, category, header_comment}]",
         "discovery",
         ["заголовок", "header", "комментарий", "search_module_headers"],
         "FIND MODULES BY HEADER COMMENT:\n"

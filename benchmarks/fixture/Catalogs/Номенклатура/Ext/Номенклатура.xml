@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core"
+    xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">
+<Catalog>
+  <Properties>
+    <Name>Номенклатура</Name>
+    <Synonym>
+      <v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item>
+    </Synonym>
+  </Properties>
+  <Attribute>
+    <Properties>
+      <Name>Артикул</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Артикул</v8:content></v8:item>
+      </Synonym>
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Properties>
+  </Attribute>
+  <Attribute>
+    <Properties>
+      <Name>ШтрихКод</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Штрих-код</v8:content></v8:item>
+      </Synonym>
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Properties>
+  </Attribute>
+  <Attribute>
+    <Properties>
+      <Name>ЕдиницаИзмерения</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Единица измерения</v8:content></v8:item>
+      </Synonym>
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Properties>
+  </Attribute>
+</Catalog>
+</MetaDataObject>

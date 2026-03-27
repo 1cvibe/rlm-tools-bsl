@@ -28,5 +28,16 @@ jobs:
           uv run ruff check src/ tests/
           uv run ruff format --check src/ tests/
 
-      - name: Run tests
-        run: uv run pytest tests/ -v
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
+
+      - name: Run benchmark
+        run: uv run python benchmarks/run_benchmark.py

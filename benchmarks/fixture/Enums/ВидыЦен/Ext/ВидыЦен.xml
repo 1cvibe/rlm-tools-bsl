@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core"
+    xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">
+<Enum>
+  <Properties>
+    <Name>ВидыЦен</Name>
+    <Synonym>
+      <v8:item><v8:lang>ru</v8:lang><v8:content>Виды цен</v8:content></v8:item>
+    </Synonym>
+  </Properties>
+  <EnumValue>
+    <Properties>
+      <Name>Закупочная</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Закупочная</v8:content></v8:item>
+      </Synonym>
+    </Properties>
+  </EnumValue>
+  <EnumValue>
+    <Properties>
+      <Name>Розничная</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Розничная</v8:content></v8:item>
+      </Synonym>
+    </Properties>
+  </EnumValue>
+  <EnumValue>
+    <Properties>
+      <Name>Оптовая</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Оптовая</v8:content></v8:item>
+      </Synonym>
+    </Properties>
+  </EnumValue>
+</Enum>
+</MetaDataObject>

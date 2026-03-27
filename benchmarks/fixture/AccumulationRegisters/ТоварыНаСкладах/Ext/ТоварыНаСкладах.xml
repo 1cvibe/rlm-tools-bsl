@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+    xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<AccumulationRegister>
+  <Properties>
+    <Name>ТоварыНаСкладах</Name>
+    <Synonym>
+      <v8:item><v8:lang>ru</v8:lang><v8:content>Товары на складах</v8:content></v8:item>
+    </Synonym>
+  </Properties>
+  <Dimension>
+    <Properties>
+      <Name>Номенклатура</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item>
+      </Synonym>
+      <Type>
+        <v8:Type>CatalogRef.Номенклатура</v8:Type>
+      </Type>
+    </Properties>
+  </Dimension>
+  <Dimension>
+    <Properties>
+      <Name>Склад</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Склад</v8:content></v8:item>
+      </Synonym>
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Properties>
+  </Dimension>
+  <Resource>
+    <Properties>
+      <Name>Количество</Name>
+      <Synonym>
+        <v8:item><v8:lang>ru</v8:lang><v8:content>Количество</v8:content></v8:item>
+      </Synonym>
+      <Type>
+        <v8:Type>xs:decimal</v8:Type>
+      </Type>
+    </Properties>
+  </Resource>
+</AccumulationRegister>
+</MetaDataObject>

@@ -35,6 +35,13 @@ uv run ruff format src/ tests/
 
 Конфигурация — в `pyproject.toml` (секция `[tool.ruff]`).
 
+### Pre-commit хуки (опционально)
+
+Для автоматической проверки перед коммитом:
+```bash
+uv run pre-commit install
+```
+
 ## Code style
 
 - Python 3.10+, без type annotations в существующем коде (не добавляйте в чужой код)

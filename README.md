@@ -2,11 +2,57 @@
 
 [![CI](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml/badge.svg)](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Coverage](https://img.shields.io/badge/coverage-78%25-yellow.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 MCP-сервер для токен-эффективного анализа кодовых баз 1С (BSL).
 
-Адаптация open-source проекта [rlm-tools](https://github.com/stefanoshea/rlm-tools) под специфику платформы 1С:Предприятие — форматы исходников (CF/EDT), структура метаданных, кириллический код, XML-описания объектов.
+Адаптация open-source проекта [rlm-tools](https://github.com/stefanoshea/rlm-tools) под специфику платформы 1С:Предприятие — большие кодовые базы, форматы исходников (CF/EDT), структура метаданных, кириллический код, XML-описания объектов.
+
+## Быстрый старт
+
+**Требования:** Python 3.10+, [uv](https://github.com/astral-sh/uv) (пакетный менеджер). LLM-ключи опциональны — без них работает базовый функционал.
+
+### Windows (PowerShell от имени администратора)
+
+```powershell
+git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
+cd rlm-tools-bsl
+PowerShell -ExecutionPolicy Bypass -File .\simple-install.ps1
+```
+
+Обновление: `git pull` → `PowerShell -ExecutionPolicy Bypass -File .\reinstall-service.ps1`
+
+### Linux
+
+```bash
+git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
+cd rlm-tools-bsl
+chmod +x simple-install.sh && ./simple-install.sh
+```
+
+Скрипты установят пакет, зарегистрируют службу, запустят сервер и проверят доступность endpoint'а.
+
+### Конфиг для AI-клиента
+
+После установки добавьте в `.claude.json` / `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "rlm-tools-bsl": {
+      "type": "http",
+      "url": "http://127.0.0.1:9000/mcp"
+    }
+  }
+}
+```
+
+> `"type": "http"` обязателен для большинства клиентов (Claude Code, Kilo Code, Roo Code, Cursor). Подключение по stdio тоже работает, но HTTP рекомендуется.
+
+Подробная инструкция (конфигурация сервиса, .env, stdio, разработка): **[docs/INSTALL.md](docs/INSTALL.md)**
+
+---
 
 ## Основная философия и предназначение продукта
 Получить для AI-ассистента поиск по кодовой базе BSL, сопоставимый по качеству с RAG, но при этом без самого RAG и при масштабной экономии токенов и контекста на анализ
@@ -69,12 +115,12 @@ RLM не конкурирует с RAG. Это разные инструмент
 - Раньше ты собирал и готовил контекст (модули, граф/стек вызовов, требования) руками и хочешь хотя бы немного облегчить себе жизнь
 - Ты планируешь искать по кодовой базе с детерминированными вопросами ("расскажи как работает проведение документа АвансовыйОтчет", "найди http-сервис ОбменСКорпоративнымиСегментами, опиши его методы" и т.д.)
 
-### Не подходит, если:
+## Когда НЕ использовать
 
-- Нужен **полный** граф зависимостей всех объектов конфигурации (кто кого вызывает с максимальной глубиной, типы реквизитов по ссылкам) — для этого нужен RAG/графовый MCP с предварительной индексацией. Для точечного анализа конкретного объекта встроенный хелпер `find_callers_context` строит граф вызовов на лету
+- Нужен **полный** граф зависимостей всех объектов конфигурации — для этого нужен RAG/графовый MCP с предварительной индексацией. Для точечного анализа конкретного объекта встроенный хелпер `find_callers_context` строит граф вызовов на лету
 - Нужен семантический поиск по описаниям объектов — rlm-tools-bsl ищет по файлам и именам, не по эмбеддингам
 - Нужна работа с формами (элементы, привязки, события) — в BSL-файлах этого нет, нужен парсинг XML форм, в rlm-tools-bsl поддержан только парсинг XML метаданных
-- Ты планируешь искать по кодовой базе с нечеткими недетерминированными вопросами ("расскажи как работает бюджетирование в ЕРП", "как работают ячеистые склады в УТ" и т.д.) - для этого нужен полноценный RAG
+- Нечёткие недетерминированные вопросы («как работает бюджетирование в ЕРП», «как работают ячеистые склады в УТ») — для этого нужен полноценный RAG
 
 ## Сравнение с RAG/графовым подходом
 
@@ -114,49 +160,6 @@ RLM не конкурирует с RAG. Это разные инструмент
 Поддерживаются OpenAI-совместимые endpoint'ы (OpenRouter, Ollama, vLLM) и Anthropic API. Без настройки LLM все остальные хелперы работают нормально.
 
 Подробная настройка, механика, квоты и примеры — **[docs/LLM_QUERY.md](docs/LLM_QUERY.md)** | Все переменные окружения — **[docs/ENV_REFERENCE.md](docs/ENV_REFERENCE.md)**
-
-## Установка и быстрый старт
-
-**Требования:** Python 3.10+, [uv](https://github.com/astral-sh/uv) (пакетный менеджер). LLM-ключи опциональны — без них работает базовый функционал.
-
-### Windows (PowerShell от имени администратора)
-
-```powershell
-git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
-cd rlm-tools-bsl
-PowerShell -ExecutionPolicy Bypass -File .\simple-install.ps1
-```
-
-Обновление: `git pull` → `PowerShell -ExecutionPolicy Bypass -File .\reinstall-service.ps1`
-
-### Linux
-
-```bash
-git clone https://github.com/Dach-Coin/rlm-tools-bsl.git
-cd rlm-tools-bsl
-chmod +x simple-install.sh && ./simple-install.sh
-```
-
-Скрипты установят пакет, зарегистрируют службу, запустят сервер и проверят доступность endpoint'а.
-
-### Конфиг для AI-клиента
-
-После установки добавьте в `.claude.json` / `mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "rlm-tools-bsl": {
-      "type": "http",
-      "url": "http://127.0.0.1:9000/mcp"
-    }
-  }
-}
-```
-
-> `"type": "http"` обязателен для большинства клиентов (Claude Code, Kilo Code, Roo Code, Cursor). Подключение по stdio тоже работает, но HTTP рекомендуется.
-
-Подробная инструкция (конфигурация сервиса, .env, stdio, разработка): **[docs/INSTALL.md](docs/INSTALL.md)**
 
 ## Тестирование на реальных данных
 Выполнено на BSL-кодовой базе доработанной ERP 2.5 (формат выгрузки - конфигуратор)

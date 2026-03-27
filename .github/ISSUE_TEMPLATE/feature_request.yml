@@ -1,0 +1,44 @@
+name: "Запрос на доработку"
+description: "Предложить новую функциональность или улучшение"
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Описание предложения
+      description: Что хотите добавить или изменить и зачем?
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Текущее поведение
+      description: Как работает сейчас и что неудобно?
+
+  - type: textarea
+    id: desired
+    attributes:
+      label: Желаемое поведение
+      description: Как должно работать?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативы
+      description: Рассматривали ли другие варианты решения?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Область
+      options:
+        - Хелперы
+        - Индексирование
+        - "Сервер / MCP"
+        - Песочница
+        - CLI
+        - Документация
+        - Другое

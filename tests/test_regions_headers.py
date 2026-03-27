@@ -461,9 +461,14 @@ class TestRegionsHelpers:
             idx_reader=reader,
         )
         result = bsl["search_regions"]("Обработчики")
-        reader.close()
         assert len(result) == 1
         assert result[0]["name"] == "ОбработчикиСобытий"
+
+        # limit parameter works through sandbox
+        result_limited = bsl["search_regions"]("", limit=1)
+        assert len(result_limited) == 1
+
+        reader.close()
 
     def test_search_module_headers_helper(self, built_regions_index):
         db_path, project = built_regions_index
@@ -479,8 +484,13 @@ class TestRegionsHelpers:
             idx_reader=reader,
         )
         result = bsl["search_module_headers"]("себестоимости")
-        reader.close()
         assert len(result) == 1
+
+        # limit parameter works through sandbox
+        result_limited = bsl["search_module_headers"]("", limit=1)
+        assert len(result_limited) == 1
+
+        reader.close()
 
     def test_search_regions_no_index(self):
         from rlm_tools_bsl.bsl_helpers import make_bsl_helpers
