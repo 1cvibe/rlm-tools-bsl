@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.5] — 2026-03-27
+
+### Добавлено
+- **Реестр проектов** — серверный реестр `имя → путь к исходникам 1С`, новый модуль `projects.py` с `ProjectRegistry`: CRUD, трёхуровневый resolve (exact → substring → Levenshtein), атомарная запись, `.bak`, валидация путей
+- **MCP-тул `rlm_projects`** — list/add/remove/rename/update проектов в реестре
+- **Параметр `project` в `rlm_start`** — альтернатива `path`, резолв имени проекта через реестр; `project_hint` для незарегистрированных путей; обработка `RegistryCorruptedError`
+- **Резолв mapped drives** в `rlm_projects` для Windows-сервиса (Session 0)
+- **Документация** — `docs/PROJECT_REGISTRY.md`, обновлены README, ENV_REFERENCE, `.env.example`
+
+### Тесты
+- 49 новых тестов (38 юнит + 11 интеграционных), **611 всего**, 78% покрытие
+
 ## [1.4.4] — 2026-03-27
 
 ### Исправлено
