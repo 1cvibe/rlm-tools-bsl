@@ -35,6 +35,13 @@ PowerShell -ExecutionPolicy Bypass -File .\simple-install-from-pip.ps1
 
 Скрипт установит пакет из PyPI, зарегистрирует Windows-службу, запустит сервер и проверит health. Повторный запуск — обновление до последней версии.
 
+**Linux — установка + systemd-служба одной командой:**
+
+```bash
+curl -LO https://raw.githubusercontent.com/Dach-Coin/rlm-tools-bsl/master/simple-install-from-pip.sh
+chmod +x simple-install-from-pip.sh && ./simple-install-from-pip.sh
+```
+
 ### Из исходников (для разработки)
 
 **Требования:** Python 3.10+, [uv](https://github.com/astral-sh/uv) (пакетный менеджер). LLM-ключи опциональны — без них работает базовый функционал.

@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# rlm-tools-bsl -- install or update from PyPI as a systemd --user service
+#
+# Prerequisites:
+#   Python 3.10+  https://python.org
+#   uv            https://docs.astral.sh/uv/
+#
+# Optional LLM env vars (for llm_query helper):
+#   Set environment variables or pass .env path as argument:
+#     RLM_LLM_BASE_URL, RLM_LLM_API_KEY, RLM_LLM_MODEL  (OpenAI-compatible)
+#     ANTHROPIC_API_KEY                                    (Anthropic API)
+#   Without LLM keys all core features still work (find_module, grep, xml parsing).
+#
+# Usage:
+#   ./simple-install-from-pip.sh                    # auto-detect .env in script dir
+#   ./simple-install-from-pip.sh /path/to/.env      # explicit .env path
+#   RLM_PORT=3000 ./simple-install-from-pip.sh      # custom port
+#   UV_NATIVE_TLS=true ./simple-install-from-pip.sh # corporate proxy with TLS replacement
+#
+# After install, to enable autostart without login:
+#   loginctl enable-linger 
+
+set -euo pipefail
+
+BIND_HOST="127.0.0.1"
+PORT="9000"
+SCRIPT_DIR=""
+ENV_ARG=""
+
+# --- Detect .env ---
+if [ -n "" ]; then
+    ENV_ARG="--env "
+    echo "Using .env: "
+elif [ -f "/.env" ]; then
+    ENV_ARG="--env /.env"
+    echo "Found .env: /.env"
+else
+    echo "No .env found - service will start without it."
+    echo "(Set LLM keys as system env vars if needed)"
+fi
+
+# --- Check uv ---
+if ! command -v uv &>/dev/null; then
+    echo "ERROR: uv not found. Install it:"
+    echo ""
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo ""
+    exit 1
+fi
+
+# --- Check Python ---
+if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
+    echo "ERROR: Python not found. Install Python 3.10+ from https://python.org"
+    exit 1
+fi
+
+# --- Step 1: Stop and uninstall existing service if running ---
+if command -v rlm-tools-bsl &>/dev/null; then
+    echo ""
+    echo "=== Existing installation detected -- upgrading ==="
+    rlm-tools-bsl service stop 2>/dev/null && echo "Service stopped." || echo "Service was not running (OK)."
+    rlm-tools-bsl service uninstall 2>/dev/null && echo "Service uninstalled." || echo "Service was not installed (OK)."
+    echo ""
+    echo "=== Step 1: Upgrade rlm-tools-bsl from PyPI ==="
+else
+    echo ""
+    echo "=== Step 1: Install rlm-tools-bsl from PyPI ==="
+fi
+
+UV_EXTRA_ARGS=()
+if [ "" = "true" ]; then
+    UV_EXTRA_ARGS+=("--native-tls")
+fi
+uv tool install "rlm-tools-bsl[service]" --force --upgrade ""
+
+# Ensure rlm-tools-bsl is in PATH for this session
+if ! command -v rlm-tools-bsl &>/dev/null; then
+    echo "Adding uv tool bin directory to PATH..."
+    UV_BIN_DIR="C:\Users\roman\.local\bin"
+    if [ -n "" ] && [ -d "" ]; then
+        export PATH=":/mingw64/bin:/usr/bin:/c/Users/roman/bin:/d/MyDEV/Repo/rlm-tools-bsl/.venv/Scripts:/c/Users/roman/AppData/Local/Programs/Microsoft VS Code:/c/Program Files/Zulu/zulu-17/bin:/c/Program Files/OpenSSH:/c/Program Files (x86)/VMware/VMware Player/bin:/c/Windows/system32:/c/Windows:/c/Windows/System32/Wbem:/c/Windows/System32/WindowsPowerShell/v1.0:/c/Windows/System32/OpenSSH:/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/c/Program Files/NVIDIA Corporation/NVIDIA NvDLISR:/c/Program Files/OneScript/bin:/c/Program Files/dotnet:/c/WINDOWS/system32:/c/WINDOWS:/c/WINDOWS/System32/Wbem:/c/WINDOWS/System32/WindowsPowerShell/v1.0:/c/WINDOWS/System32/OpenSSH:/c/Program Files (x86)/Common Files/Oracle/Java:/c/Program Files (x86)/Microsoft SQL Server/160/DTS/Binn:/c/Program Files (x86)/OneScript/bin:/cmd:/d/Programs/1CE/components/1c-enterprise-ring-0.11.10+2-x86_64:/c/Program Files/WireGuard:/c/Program Files/Docker/Docker/resources/bin:/c/Program Files/GitHub CLI:/c/Users/roman/AppData/Local/Programs/cursor/resources/app/codeBin:/c/Users/roman/AppData/Local/Microsoft/WindowsApps:/c/Users/roman/AppData/Local/Programs/Microsoft VS Code/bin:/c/Program Files/Azure Data Studio/bin:/c/Users/roman/.dotnet/tools:/c/Program Files/step_0.23.1/bin:/c/Users/roman/AppData/Local/Microsoft/WindowsApps:/c/Users/roman/AppData/Local/Programs/cursor/resources/app/bin:/c/Users/roman/AppData/Local/Python/bin:/c/Users/roman/AppData/Local/Python/pythoncore-3.14-64/Scripts:/c/Tools/Gradle/gradle-9.2.1/bin:/c/Users/roman/.local/bin"
+    fi
+    uv tool update-shell 2>/dev/null || true
+fi
+
+# --- Step 2: Register service ---
+echo ""
+echo "=== Step 2: Register service ==="
+# shellcheck disable=SC2086
+rlm-tools-bsl service install --host "" --port "" 
+
+# --- Step 3: Start ---
+echo ""
+echo "=== Step 3: Start service ==="
+rlm-tools-bsl service start
+
+# --- Step 4: Verify ---
+echo ""
+echo "=== Step 4: Verify ==="
+echo "Waiting for server to start..."
+sleep 3
+
+URL="http://:/mcp"
+echo "Checking  ..."
+
+HTTP_CODE="000"
+
+if [ -n "" ] && [ "" != "000" ]; then
+    echo "Server is responding (HTTP ). OK."
+else
+    echo "WARN: Server is not responding at "
+    echo "Check status: rlm-tools-bsl service status"
+    exit 1
+fi
+
+# --- Done ---
+echo ""
+echo "========================================"
+echo " Done! HTTP MCP server is running."
+echo "========================================"
+echo ""
+echo "Version:  rlm-tools-bsl 1.4.4"
+echo "Endpoint: "
+echo ""
+echo "Add to .claude.json / mcp.json:"
+echo ""
+cat <<EOF
+{
+  "mcpServers": {
+    "rlm-tools-bsl": {
+      "type": "http",
+      "url": ""
+    }
+  }
+}
+EOF
+echo ""
+echo "To enable autostart without login: loginctl enable-linger $USER"
+echo ""
+echo "Service management:"
+echo "  rlm-tools-bsl service status"
+echo "  rlm-tools-bsl service stop"
+echo "  rlm-tools-bsl service start"
+echo "  rlm-tools-bsl service uninstall"
+echo ""
+echo "Update to latest version:"
+echo "  ./simple-install-from-pip.sh"
