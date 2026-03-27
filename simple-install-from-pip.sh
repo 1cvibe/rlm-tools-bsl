@@ -18,22 +18,22 @@
 #   UV_NATIVE_TLS=true ./simple-install-from-pip.sh # corporate proxy with TLS replacement
 #
 # After install, to enable autostart without login:
-#   loginctl enable-linger 
+#   loginctl enable-linger $USER
 
 set -euo pipefail
 
-BIND_HOST="127.0.0.1"
-PORT="9000"
-SCRIPT_DIR=""
+BIND_HOST="${RLM_HOST:-127.0.0.1}"
+PORT="${RLM_PORT:-9000}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_ARG=""
 
 # --- Detect .env ---
-if [ -n "" ]; then
-    ENV_ARG="--env "
-    echo "Using .env: "
-elif [ -f "/.env" ]; then
-    ENV_ARG="--env /.env"
-    echo "Found .env: /.env"
+if [ -n "${1:-}" ]; then
+    ENV_ARG="--env $1"
+    echo "Using .env: $1"
+elif [ -f "$SCRIPT_DIR/.env" ]; then
+    ENV_ARG="--env $SCRIPT_DIR/.env"
+    echo "Found .env: $SCRIPT_DIR/.env"
 else
     echo "No .env found - service will start without it."
     echo "(Set LLM keys as system env vars if needed)"
@@ -68,17 +68,17 @@ else
 fi
 
 UV_EXTRA_ARGS=()
-if [ "" = "true" ]; then
+if [ "${UV_NATIVE_TLS:-}" = "true" ]; then
     UV_EXTRA_ARGS+=("--native-tls")
 fi
-uv tool install "rlm-tools-bsl[service]" --force --upgrade ""
+uv tool install "rlm-tools-bsl[service]" --force --upgrade "${UV_EXTRA_ARGS[@]}"
 
 # Ensure rlm-tools-bsl is in PATH for this session
 if ! command -v rlm-tools-bsl &>/dev/null; then
     echo "Adding uv tool bin directory to PATH..."
-    UV_BIN_DIR="C:\Users\roman\.local\bin"
-    if [ -n "" ] && [ -d "" ]; then
-        export PATH=":/mingw64/bin:/usr/bin:/c/Users/roman/bin:/d/MyDEV/Repo/rlm-tools-bsl/.venv/Scripts:/c/Users/roman/AppData/Local/Programs/Microsoft VS Code:/c/Program Files/Zulu/zulu-17/bin:/c/Program Files/OpenSSH:/c/Program Files (x86)/VMware/VMware Player/bin:/c/Windows/system32:/c/Windows:/c/Windows/System32/Wbem:/c/Windows/System32/WindowsPowerShell/v1.0:/c/Windows/System32/OpenSSH:/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/c/Program Files/NVIDIA Corporation/NVIDIA NvDLISR:/c/Program Files/OneScript/bin:/c/Program Files/dotnet:/c/WINDOWS/system32:/c/WINDOWS:/c/WINDOWS/System32/Wbem:/c/WINDOWS/System32/WindowsPowerShell/v1.0:/c/WINDOWS/System32/OpenSSH:/c/Program Files (x86)/Common Files/Oracle/Java:/c/Program Files (x86)/Microsoft SQL Server/160/DTS/Binn:/c/Program Files (x86)/OneScript/bin:/cmd:/d/Programs/1CE/components/1c-enterprise-ring-0.11.10+2-x86_64:/c/Program Files/WireGuard:/c/Program Files/Docker/Docker/resources/bin:/c/Program Files/GitHub CLI:/c/Users/roman/AppData/Local/Programs/cursor/resources/app/codeBin:/c/Users/roman/AppData/Local/Microsoft/WindowsApps:/c/Users/roman/AppData/Local/Programs/Microsoft VS Code/bin:/c/Program Files/Azure Data Studio/bin:/c/Users/roman/.dotnet/tools:/c/Program Files/step_0.23.1/bin:/c/Users/roman/AppData/Local/Microsoft/WindowsApps:/c/Users/roman/AppData/Local/Programs/cursor/resources/app/bin:/c/Users/roman/AppData/Local/Python/bin:/c/Users/roman/AppData/Local/Python/pythoncore-3.14-64/Scripts:/c/Tools/Gradle/gradle-9.2.1/bin:/c/Users/roman/.local/bin"
+    UV_BIN_DIR="$(uv tool dir --bin 2>/dev/null || true)"
+    if [ -n "$UV_BIN_DIR" ] && [ -d "$UV_BIN_DIR" ]; then
+        export PATH="$UV_BIN_DIR:$PATH"
     fi
     uv tool update-shell 2>/dev/null || true
 fi
@@ -87,7 +87,7 @@ fi
 echo ""
 echo "=== Step 2: Register service ==="
 # shellcheck disable=SC2086
-rlm-tools-bsl service install --host "" --port "" 
+rlm-tools-bsl service install --host "$BIND_HOST" --port "$PORT" $ENV_ARG
 
 # --- Step 3: Start ---
 echo ""
@@ -100,15 +100,15 @@ echo "=== Step 4: Verify ==="
 echo "Waiting for server to start..."
 sleep 3
 
-URL="http://:/mcp"
-echo "Checking  ..."
+URL="http://${BIND_HOST}:${PORT}/mcp"
+echo "Checking $URL ..."
 
-HTTP_CODE="000"
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL" 2>/dev/null || true)
 
-if [ -n "" ] && [ "" != "000" ]; then
-    echo "Server is responding (HTTP ). OK."
+if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then
+    echo "Server is responding (HTTP $HTTP_CODE). OK."
 else
-    echo "WARN: Server is not responding at "
+    echo "WARN: Server is not responding at $URL"
     echo "Check status: rlm-tools-bsl service status"
     exit 1
 fi
@@ -119,23 +119,23 @@ echo "========================================"
 echo " Done! HTTP MCP server is running."
 echo "========================================"
 echo ""
-echo "Version:  rlm-tools-bsl 1.4.4"
-echo "Endpoint: "
+echo "Version:  $(rlm-tools-bsl --version 2>&1)"
+echo "Endpoint: $URL"
 echo ""
 echo "Add to .claude.json / mcp.json:"
 echo ""
-cat <<EOF
+cat <<EOFCFG
 {
   "mcpServers": {
     "rlm-tools-bsl": {
       "type": "http",
-      "url": ""
+      "url": "$URL"
     }
   }
 }
-EOF
+EOFCFG
 echo ""
-echo "To enable autostart without login: loginctl enable-linger $USER"
+echo "To enable autostart without login: loginctl enable-linger \$USER"
 echo ""
 echo "Service management:"
 echo "  rlm-tools-bsl service status"
