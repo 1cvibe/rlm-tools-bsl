@@ -24,7 +24,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 8
+BUILDER_VERSION = 9
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -303,6 +303,30 @@ CREATE TABLE IF NOT EXISTS module_headers (
     module_id INTEGER PRIMARY KEY REFERENCES modules(id),
     header_comment TEXT NOT NULL
 );
+
+-- Level-8: extension overrides (связь исходный объект ↔ расширенный метод)
+CREATE TABLE IF NOT EXISTS extension_overrides (
+    id INTEGER PRIMARY KEY,
+    -- Исходный объект (ЧТО перехвачено)
+    object_name TEXT NOT NULL,
+    source_path TEXT NOT NULL DEFAULT '',
+    source_module_id INTEGER,
+    target_method TEXT NOT NULL,
+    target_method_line INTEGER,
+    -- Тип перехвата
+    annotation TEXT NOT NULL,
+    -- Расширение (КТО перехватил)
+    extension_name TEXT NOT NULL,
+    extension_purpose TEXT,
+    extension_method TEXT,
+    extension_root TEXT NOT NULL,
+    ext_module_path TEXT NOT NULL,
+    ext_line INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_eo_object ON extension_overrides(object_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_eo_method ON extension_overrides(target_method COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_eo_source ON extension_overrides(source_module_id);
+CREATE INDEX IF NOT EXISTS idx_eo_ext ON extension_overrides(extension_name COLLATE NOCASE);
 """
 
 
@@ -1607,6 +1631,137 @@ def _detect_prefixes(conn: sqlite3.Connection) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Level-8: extension overrides collector
+# ---------------------------------------------------------------------------
+
+
+def _collect_extension_overrides(
+    base_path: str,
+    conn: sqlite3.Connection,
+) -> list[tuple]:
+    """Collect extension override data for indexing.
+
+    For MAIN configs: scans nearby extensions, links overrides to source modules.
+    For EXTENSION configs: records overrides without source linking.
+    Returns list of tuples ready for INSERT into extension_overrides.
+    """
+    from rlm_tools_bsl.extension_detector import (
+        ConfigRole,
+        detect_extension_context,
+        find_extension_overrides,
+    )
+
+    try:
+        ext_context = detect_extension_context(base_path)
+    except Exception as exc:
+        logger.warning("Extension detection failed for %s, overrides skipped: %s", base_path, exc)
+        return []
+
+    rows: list[tuple] = []
+
+    def _lookup_source(override: dict) -> tuple[str, int | None, int | None]:
+        """Resolve source module and method line from base config index."""
+        module_path = override.get("module_path", "")
+        object_name = override.get("object_name", "")
+        module_type = override.get("module_type", "")
+        target_method = override.get("target_method", "")
+
+        source_path = ""
+        source_module_id = None
+        target_method_line = None
+
+        # Primary lookup by rel_path
+        if module_path:
+            row = conn.execute(
+                "SELECT id, rel_path FROM modules WHERE rel_path = ?",
+                (module_path,),
+            ).fetchone()
+            if row:
+                source_module_id = row[0]
+                source_path = row[1]
+
+        # Fallback by object_name + module_type
+        if source_module_id is None and object_name and module_type:
+            row = conn.execute(
+                "SELECT id, rel_path FROM modules WHERE object_name = ? AND module_type = ? ORDER BY rel_path LIMIT 1",
+                (object_name, module_type),
+            ).fetchone()
+            if row:
+                source_module_id = row[0]
+                source_path = row[1]
+
+        # Lookup method line (Python-side case-insensitive for Cyrillic)
+        if source_module_id is not None and target_method:
+            rows = conn.execute(
+                "SELECT name, line FROM methods WHERE module_id = ?",
+                (source_module_id,),
+            ).fetchall()
+            target_lower = target_method.lower()
+            for r in rows:
+                if r[0].lower() == target_lower:
+                    target_method_line = r[1]
+                    break
+
+        return source_path, source_module_id, target_method_line
+
+    current = ext_context.current
+
+    if current.role == ConfigRole.MAIN and ext_context.nearby_extensions:
+        # Main config: scan each nearby extension
+        for ext in ext_context.nearby_extensions:
+            try:
+                overrides = find_extension_overrides(ext.path)
+            except Exception as exc:
+                logger.warning("Override scan failed for extension %s: %s", ext.path, exc)
+                continue
+            for ov in overrides:
+                source_path, source_module_id, target_method_line = _lookup_source(ov)
+                rows.append(
+                    (
+                        ov.get("object_name", ""),
+                        source_path,
+                        source_module_id,
+                        ov.get("target_method", ""),
+                        target_method_line,
+                        ov.get("annotation", ""),
+                        ext.name,
+                        ext.purpose or None,
+                        ov.get("extension_method", ""),
+                        ext.path,
+                        ov.get("module_path", ""),
+                        ov.get("line"),
+                    )
+                )
+
+    elif current.role == ConfigRole.EXTENSION:
+        # Extension config: record overrides without source linking
+        try:
+            overrides = find_extension_overrides(base_path)
+        except Exception as exc:
+            logger.warning("Override scan failed for extension %s: %s", base_path, exc)
+            return []
+        for ov in overrides:
+            rows.append(
+                (
+                    ov.get("object_name", ""),
+                    "",  # source_path
+                    None,  # source_module_id
+                    ov.get("target_method", ""),
+                    None,  # target_method_line
+                    ov.get("annotation", ""),
+                    current.name,
+                    current.purpose or None,
+                    ov.get("extension_method", ""),
+                    current.path,
+                    ov.get("module_path", ""),
+                    ov.get("line"),
+                )
+            )
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # IndexBuilder
 # ---------------------------------------------------------------------------
 class IndexBuilder:
@@ -1668,6 +1823,15 @@ class IndexBuilder:
                 file_paths_count=len(fp_rows),
                 build_synonyms=build_synonyms,
             )
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                ("has_extension_overrides", "0"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                ("extension_overrides_count", "0"),
+            )
+            conn.commit()
             conn.close()
             return db_path
 
@@ -1762,6 +1926,28 @@ class IndexBuilder:
                 )
                 conn.commit()
                 logger.info("Object synonyms: %d entries", len(synonyms))
+
+        # Level-8: extension overrides
+        override_rows = _collect_extension_overrides(base_path, conn)
+        if override_rows:
+            conn.executemany(
+                "INSERT INTO extension_overrides "
+                "(object_name, source_path, source_module_id, target_method, "
+                "target_method_line, annotation, extension_name, extension_purpose, "
+                "extension_method, extension_root, ext_module_path, ext_line) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                override_rows,
+            )
+            conn.commit()
+            logger.info("Extension overrides: %d entries", len(override_rows))
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("has_extension_overrides", "1" if override_rows else "0"),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("extension_overrides_count", str(len(override_rows))),
+        )
 
         # Detect custom prefixes from object names in index
         detected_prefixes = _detect_prefixes(conn)
@@ -2134,7 +2320,49 @@ class IndexBuilder:
             ("detected_prefixes", json.dumps(detected_prefixes, ensure_ascii=False)),
         )
 
-        # Bump builder_version to current (schema upgrade v6→v7 etc.)
+        # Level-8: extension overrides (schema upgrade v8→v9, full refresh)
+        conn.executescript(
+            "CREATE TABLE IF NOT EXISTS extension_overrides ("
+            "id INTEGER PRIMARY KEY, "
+            "object_name TEXT NOT NULL, "
+            "source_path TEXT NOT NULL DEFAULT '', "
+            "source_module_id INTEGER, "
+            "target_method TEXT NOT NULL, "
+            "target_method_line INTEGER, "
+            "annotation TEXT NOT NULL, "
+            "extension_name TEXT NOT NULL, "
+            "extension_purpose TEXT, "
+            "extension_method TEXT, "
+            "extension_root TEXT NOT NULL, "
+            "ext_module_path TEXT NOT NULL, "
+            "ext_line INTEGER);\n"
+            "CREATE INDEX IF NOT EXISTS idx_eo_object ON extension_overrides(object_name COLLATE NOCASE);\n"
+            "CREATE INDEX IF NOT EXISTS idx_eo_method ON extension_overrides(target_method COLLATE NOCASE);\n"
+            "CREATE INDEX IF NOT EXISTS idx_eo_source ON extension_overrides(source_module_id);\n"
+            "CREATE INDEX IF NOT EXISTS idx_eo_ext ON extension_overrides(extension_name COLLATE NOCASE);\n"
+        )
+        conn.execute("DELETE FROM extension_overrides")
+        override_rows = _collect_extension_overrides(base_path, conn)
+        if override_rows:
+            conn.executemany(
+                "INSERT INTO extension_overrides "
+                "(object_name, source_path, source_module_id, target_method, "
+                "target_method_line, annotation, extension_name, extension_purpose, "
+                "extension_method, extension_root, ext_module_path, ext_line) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                override_rows,
+            )
+            logger.info("Extension overrides: %d entries", len(override_rows))
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("has_extension_overrides", "1" if override_rows else "0"),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("extension_overrides_count", str(len(override_rows))),
+        )
+
+        # Bump builder_version to current (schema upgrade v8→v9 etc.)
         conn.execute(
             "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
             ("builder_version", str(BUILDER_VERSION)),
@@ -3074,6 +3302,13 @@ class IndexReader:
                 except sqlite3.Error:
                     stats[table] = 0
 
+            # Level-8: extension overrides
+            try:
+                row = self._conn.execute("SELECT COUNT(*) AS cnt FROM extension_overrides").fetchone()
+                stats["extension_overrides"] = row["cnt"] if row else 0
+            except sqlite3.Error:
+                stats["extension_overrides"] = 0
+
             return stats
 
     @property
@@ -3570,6 +3805,87 @@ class IndexReader:
                 }
                 for r in rows
             ]
+
+    # --- Level-8: extension overrides ---
+
+    def get_extension_overrides(
+        self,
+        object_name: str = "",
+        method_name: str = "",
+    ) -> list[dict] | None:
+        """Query extension overrides with optional filters.
+
+        Returns None if the table doesn't exist (pre-v9 index).
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute("SELECT * FROM extension_overrides").fetchall()
+                result = [dict(r) for r in rows]
+                # Python-side case-insensitive filter (COLLATE NOCASE doesn't work for Cyrillic)
+                if object_name:
+                    obj_lower = object_name.lower()
+                    result = [r for r in result if r.get("object_name", "").lower() == obj_lower]
+                if method_name:
+                    meth_lower = method_name.lower()
+                    result = [r for r in result if r.get("target_method", "").lower() == meth_lower]
+                return result
+            except sqlite3.OperationalError:
+                return None
+
+    def get_overrides_for_path(self, rel_path: str) -> dict[str, list[dict]]:
+        """Get all overrides for a module by source_path, grouped by target_method.
+
+        Returns empty dict if table doesn't exist or no overrides found.
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM extension_overrides WHERE source_path = ?",
+                    (rel_path,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+            result: dict[str, list[dict]] = {}
+            for r in rows:
+                d = dict(r)
+                method = d.get("target_method", "")
+                result.setdefault(method, []).append(d)
+            return result
+
+    def get_extension_overrides_grouped(
+        self,
+        base_path: str = "",
+    ) -> dict[str, list[dict]] | None:
+        """Get all overrides grouped by extension_root.
+
+        For extension configs: if extension_root == base_path, key is "self".
+        Returns None if table doesn't exist.
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute("SELECT * FROM extension_overrides").fetchall()
+            except sqlite3.OperationalError:
+                return None
+
+            # Determine config role
+            config_role = ""
+            try:
+                meta_row = self._conn.execute("SELECT value FROM index_meta WHERE key = 'config_role'").fetchone()
+                if meta_row:
+                    config_role = meta_row["value"]
+            except sqlite3.Error:
+                pass
+
+            result: dict[str, list[dict]] = {}
+            for r in rows:
+                d = dict(r)
+                ext_root = d.get("extension_root", "")
+                if config_role == "extension" and base_path and ext_root == base_path:
+                    key = "self"
+                else:
+                    key = ext_root
+                result.setdefault(key, []).append(d)
+            return result
 
     def close(self) -> None:
         """Close the database connection."""

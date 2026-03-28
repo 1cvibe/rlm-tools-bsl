@@ -89,8 +89,11 @@ Step 4 — ANALYZE: get the full picture
   they may be slow (>60s). Prefer calling individual helpers separately if timeout occurs.
 
 Step 5 — EXTENSIONS: check if behavior is modified
-  If extensions detected (see warnings): find_ext_overrides(ext_path, 'ObjectName')
-  In your response: ALWAYS mention overridden methods if any were found
+  get_overrides('ObjectName') → indexed overrides (instant)
+  read_procedure(path, name, include_overrides=True) → original + extension body
+  extract_procedures includes overridden_by field
+  NOTE: extension files are OUTSIDE the sandbox. Do NOT read them via read_file/glob_files.
+  Use ONLY the helpers above — they read extension code internally.
 
 == BATCHING & OUTPUT ==
 Batch 3-5 related helpers per rlm_execute call — this is more efficient than one-at-a-time.
@@ -461,7 +464,9 @@ def _extension_strategy(ext_context, ext_overrides: dict) -> str:
             f"\nCRITICAL — EXTENSIONS DETECTED: {ext_names}\n"
             "Extensions OVERRIDE methods in this config via annotations:\n"
             "  &Перед (Before), &После (After), &Вместо (Instead), &ИзменениеИКонтроль (ChangeAndValidate)\n"
-            "YOU MUST mention overridden methods in your response."
+            "YOU MUST mention overridden methods in your response.\n"
+            "Extension files are OUTSIDE sandbox — do NOT use read_file/glob_files on extension paths.\n"
+            "Use: get_overrides(), read_procedure(include_overrides=True), extract_procedures().overridden_by"
         )
         # Include auto-scanned overrides per extension
         for e in ext_context.nearby_extensions:

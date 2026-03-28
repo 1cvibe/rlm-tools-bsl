@@ -347,12 +347,34 @@ def make_bsl_helpers(
         Results are memoized per file path within the session.
         Uses SQLite index when available (instant), falls back to regex parsing.
 
-        Returns: list of dicts {name, type, line, end_line, is_export, params}."""
+        Returns: list of dicts {name, type, line, end_line, is_export, params, overridden_by?}."""
 
         def _extract_with_index():
             if idx_reader is not None:
                 result = idx_reader.get_methods_by_path(path)
                 if result is not None:
+                    # Enrich with override data from index
+                    try:
+                        overrides_map = idx_reader.get_overrides_for_path(path)
+                        if overrides_map:
+                            # Build case-insensitive lookup (Cyrillic)
+                            ov_lower = {k.lower(): v for k, v in overrides_map.items()}
+                            for proc in result:
+                                method_overrides = ov_lower.get(proc["name"].lower())
+                                if method_overrides:
+                                    proc["overridden_by"] = [
+                                        {
+                                            "annotation": ov.get("annotation", ""),
+                                            "extension_name": ov.get("extension_name", ""),
+                                            "extension_method": ov.get("extension_method", ""),
+                                            "extension_root": ov.get("extension_root", ""),
+                                            "ext_module_path": ov.get("ext_module_path", ""),
+                                            "ext_line": ov.get("ext_line"),
+                                        }
+                                        for ov in method_overrides
+                                    ]
+                    except Exception:
+                        pass  # opportunistic enrichment
                     return result
             return _parse_procedures(path)
 
@@ -395,8 +417,9 @@ def make_bsl_helpers(
         results.sort(key=lambda m: (m.get("file", ""), m.get("line", 0)))
         return results
 
-    def read_procedure(path: str, proc_name: str) -> str | None:
-        """Extract a single procedure body from a BSL file by name."""
+    def read_procedure(path: str, proc_name: str, include_overrides: bool = False) -> str | None:
+        """Extract a single procedure body from a BSL file by name.
+        With include_overrides=True, appends extension override bodies if available."""
         procedures = extract_procedures(path)
         target = None
         for p in procedures:
@@ -413,7 +436,86 @@ def make_bsl_helpers(
         end = target["end_line"] if target["end_line"] is not None else len(lines)
         # end_line is 1-based and inclusive
         extracted = lines[start:end]
-        return "\n".join(extracted)
+        body = "\n".join(extracted)
+
+        if not include_overrides:
+            return body
+
+        # Enrich with extension override bodies
+        override_list = target.get("overridden_by")
+        if not override_list and idx_reader is not None:
+            try:
+                overrides_map = idx_reader.get_overrides_for_path(path)
+                # Case-insensitive lookup (Cyrillic)
+                ov_lower = {k.lower(): v for k, v in overrides_map.items()}
+                override_list = ov_lower.get(target["name"].lower())
+            except Exception:
+                override_list = None
+
+        if not override_list:
+            return body
+
+        from rlm_tools_bsl.extension_detector import detect_extension_context as _det_ctx
+
+        try:
+            ext_context = _det_ctx(base_path)
+        except Exception:
+            return body
+
+        trusted_roots: set[Path] = set()
+        for e in ext_context.nearby_extensions:
+            trusted_roots.add(Path(e.path).resolve())
+        trusted_roots.add(Path(ext_context.current.path).resolve())
+
+        parts = [body]
+        for ov in override_list:
+            ext_root = ov.get("extension_root", "")
+            ext_mod = ov.get("ext_module_path", "")
+            annotation = ov.get("annotation", "")
+            ext_name = ov.get("extension_name", "")
+            ext_method = ov.get("extension_method", "")
+            ext_line = ov.get("ext_line")
+
+            header = f'\n// === Перехвачен &{annotation} в расширении "{ext_name}" ==='
+            file_ref = f"// Файл: {ext_name}/{ext_mod}"
+            if ext_line:
+                file_ref += f":{ext_line}"
+
+            # Try to read extension method body
+            ext_body = None
+            if ext_root and ext_mod:
+                candidate = Path(ext_root, ext_mod).resolve()
+                if any(candidate.is_relative_to(root) for root in trusted_roots):
+                    try:
+                        ext_content = candidate.read_text(encoding="utf-8-sig", errors="replace")
+                        ext_lines = ext_content.splitlines()
+                        # Find method by name in extension file
+                        proc_def_re = re.compile(BSL_PATTERNS["procedure_def"], re.IGNORECASE)
+                        proc_end_re = re.compile(BSL_PATTERNS["procedure_end"], re.IGNORECASE)
+                        search_name = (ext_method or "").lower()
+                        in_target = False
+                        start_idx = None
+                        for i, ln in enumerate(ext_lines):
+                            if not in_target:
+                                m = proc_def_re.search(ln)
+                                if m and m.group(2).lower() == search_name:
+                                    in_target = True
+                                    start_idx = i
+                            else:
+                                if proc_end_re.search(ln):
+                                    ext_body = "\n".join(ext_lines[start_idx : i + 1])
+                                    break
+                        if in_target and ext_body is None and start_idx is not None:
+                            ext_body = "\n".join(ext_lines[start_idx:])
+                    except OSError:
+                        pass
+
+            parts.append(header)
+            parts.append(file_ref)
+            if ext_body:
+                parts.append(ext_body)
+
+        return "\n".join(parts)
 
     def find_callers(proc_name: str, module_hint: str = "", max_files: int = 20) -> list[dict]:
         """Find all callers of a procedure by name across BSL files.
@@ -1852,6 +1954,8 @@ def make_bsl_helpers(
             "object_synonyms": stats.get("object_synonyms", 0),
             "has_regions": int(stats.get("builder_version") or 0) >= 8,
             "has_module_headers": int(stats.get("builder_version") or 0) >= 8,
+            "has_extension_overrides": int(stats.get("builder_version") or 0) >= 9,
+            "extension_overrides": stats.get("extension_overrides", 0),
             "built_at": stats.get("built_at"),
         }
 
@@ -2056,6 +2160,55 @@ def make_bsl_helpers(
             "total": len(overrides),
         }
 
+    def get_overrides(object_name: str = "", method_name: str = "") -> dict:
+        """Перехваченные методы из индекса (мгновенно).
+        object_name/method_name — фильтры ('' = все).
+        Возвращает: {overrides: [...], total: N, source: "index"|"live"|"unavailable"}"""
+        # Try index first
+        if idx_reader is not None:
+            result = idx_reader.get_extension_overrides(object_name, method_name)
+            if result is not None:
+                return {
+                    "overrides": result[:200],
+                    "total": len(result),
+                    "source": "index",
+                }
+        # Live fallback
+        from rlm_tools_bsl.extension_detector import (
+            detect_extension_context as _det,
+            find_extension_overrides as _feo,
+        )
+
+        try:
+            ctx = _det(base_path)
+        except Exception:
+            return {"overrides": [], "total": 0, "source": "unavailable"}
+
+        from rlm_tools_bsl.extension_detector import ConfigRole
+
+        all_overrides: list[dict] = []
+        if ctx.current.role == ConfigRole.EXTENSION:
+            all_overrides = _feo(base_path, object_name or None)
+        elif ctx.current.role == ConfigRole.MAIN and ctx.nearby_extensions:
+            for ext in ctx.nearby_extensions:
+                try:
+                    ovs = _feo(ext.path, object_name or None)
+                    for ov in ovs:
+                        ov["extension_name"] = ext.name
+                        ov["extension_root"] = ext.path
+                    all_overrides.extend(ovs)
+                except Exception:
+                    pass
+
+        if method_name:
+            all_overrides = [ov for ov in all_overrides if ov.get("target_method", "").lower() == method_name.lower()]
+
+        return {
+            "overrides": all_overrides[:200],
+            "total": len(all_overrides),
+            "source": "live",
+        }
+
     # ── Register all helpers ─────────────────────────────────────
     # Each _reg() call: name, function, signature (for strategy table),
     # category (for grouping), keywords (for help search), recipe (code example).
@@ -2091,7 +2244,7 @@ def make_bsl_helpers(
     _reg(
         "read_procedure",
         read_procedure,
-        "read_procedure(path, proc_name) -> str | None",
+        "read_procedure(path, proc_name, include_overrides=False) -> str | None",
         "code",
         ["read", "чтени", "читать", "содержим", "content", "тело", "body"],
         "READ PROCEDURE BODY:\n"
@@ -2480,6 +2633,20 @@ def make_bsl_helpers(
         find_ext_overrides,
         "find_ext_overrides(ext_path, obj='') -> {overrides: [{annotation, target_method, extension_method, ...}]}",
         "extension",
+    )
+    _reg(
+        "get_overrides",
+        get_overrides,
+        "get_overrides(object_name='', method_name='') -> {overrides: [...], total, source}",
+        "extension",
+        ["перехват", "override", "расширен", "extension", "вместо", "после", "перед"],
+        "GET OVERRIDES:\n"
+        "  result = get_overrides('Номенклатура')\n"
+        "  for ov in result['overrides']:\n"
+        "      print(f\"  {ov['target_method']} <- {ov['annotation']} {ov.get('extension_name', '')}\")\n"
+        "  # To read extension method body:\n"
+        "  body = read_procedure(path, 'MethodName', include_overrides=True)\n"
+        "  # NOTE: extension files are outside sandbox — do NOT read them via read_file/glob_files",
     )
 
     _reg(

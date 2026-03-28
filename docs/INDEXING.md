@@ -484,6 +484,35 @@ LIMIT 30;
 
 **Размер:** +232 MB на ERP (~569K методов с длинными русскими CamelCase-именами). **Время построения:** +5 секунд к общему build. Отключение: `--no-fts`.
 
+### extension_overrides (Level-8, v9+)
+
+Связь «исходный объект ↔ расширенный метод». Строится автоматически при наличии соседних расширений (`src/cfe/` рядом с `src/cf/`). Перехваты связываются с исходными модулями через `rel_path` lookup.
+
+| Колонка             | Тип        | Описание                                        | Пример                                              |
+| ------------------- | ---------- | ----------------------------------------------- | --------------------------------------------------- |
+| `id`                | INTEGER PK | Идентификатор                                   | `1`                                                 |
+| `object_name`       | TEXT       | Имя исходного объекта                           | `Номенклатура`                                      |
+| `source_path`       | TEXT       | Относительный путь исходного модуля             | `Catalogs/Номенклатура/Ext/ObjectModule.bsl`        |
+| `source_module_id`  | INTEGER    | FK → modules(id), NULL для extension-only build | `42`                                                |
+| `target_method`     | TEXT       | Перехваченный метод                             | `ОбработкаЗаполнения`                              |
+| `target_method_line`| INTEGER    | Строка метода в исходном модуле                 | `15`                                                |
+| `annotation`        | TEXT       | Тип перехвата                                   | `После` / `Перед` / `Вместо` / `ИзменениеИКонтроль`|
+| `extension_name`    | TEXT       | Имя расширения                                  | `КП_Доработки`                                      |
+| `extension_purpose` | TEXT       | Назначение расширения                           | `Customization` / `AddOn` / `Fix`                   |
+| `extension_method`  | TEXT       | Метод расширения                                | `КП_ОбработкаЗаполнения`                           |
+| `extension_root`    | TEXT       | Абсолютный путь к корню расширения              | `D:\src\cfe\КП_Доработки`                           |
+| `ext_module_path`   | TEXT       | Относительный путь BSL внутри расширения        | `Catalogs/Номенклатура/Ext/ObjectModule.bsl`        |
+| `ext_line`          | INTEGER    | Строка аннотации в файле расширения             | `5`                                                 |
+
+Индексы: `idx_eo_object` (object_name NOCASE), `idx_eo_method` (target_method NOCASE), `idx_eo_source` (source_module_id), `idx_eo_ext` (extension_name NOCASE).
+
+**IndexReader API:**
+- `get_extension_overrides(object_name, method_name)` — фильтрованный запрос
+- `get_overrides_for_path(rel_path)` — перехваты по модулю, сгруппированные по target_method
+- `get_extension_overrides_grouped(base_path)` — все, сгруппированные по extension_root (ключ `"self"` для extension-конфы)
+
+**Обратная совместимость:** на v8 индексе все методы возвращают `None` / `{}` через `try/except OperationalError`. `update()` создаёт таблицу через `CREATE TABLE IF NOT EXISTS`.
+
 ## 5. Инкрементальное обновление
 
 Команда `index update` работает по следующему алгоритму:

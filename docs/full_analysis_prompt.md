@@ -377,3 +377,106 @@ Verified on EDT (ЕРП 2.5.7, 20K modules) and CF (ЕРП 2.5.14, 23K modules).
 | get_index_info().has_module_headers | True | True | True |
 | DB size | 966.5 MB | 1,137.6 MB | 950–1,150 MB |
 | Build time (full) | ~466s | ~630s | 400–650s |
+
+---
+
+# Extension Overrides Prompt — E2E Test for v1.5.0 Helpers
+
+Use this prompt to verify the extension overrides indexing and enrichment helpers added in v1.5.0.
+Replace `<path>` with the actual path to your 1C source code that has nearby extensions (e.g. `src/cf/` with `src/cfe/` siblings). Requires index v9+ (`rlm-bsl-index index build <path>`).
+
+---
+
+## Prompt
+
+```
+Мне нужно провести полный анализ перехватов расширений в конфигурации.
+Путь: <путь к каталогу исходников 1С, рядом с которым есть расширения>
+
+Используй ТОЛЬКО MCP-сервер rlm-tools-bsl (rlm_start / rlm_execute / rlm_end).
+Не используй встроенные инструменты чтения файлов — всё делай через песочницу.
+
+Мне нужно проверить:
+
+1. **Диагностика индекса и расширений**:
+   - Вызови get_index_info() и выведи: builder_version, has_extension_overrides, extension_overrides (количество)
+   - Если builder_version < 9 — сообщи, что нужно перестроить индекс для поддержки перехватов
+   - Проверь extension_context из ответа rlm_start — какая роль конфигурации, есть ли расширения рядом
+
+2. **Обзор всех перехватов из индекса**:
+   - get_overrides() без фильтров → сколько всего перехватов, из каких расширений, source="index" или "live"
+   - Сгруппируй по расширениям: для каждого расширения — количество перехватов и назначение (purpose)
+   - Сгруппируй по типам аннотаций: сколько &Перед, &После, &Вместо, &ИзменениеИКонтроль
+
+3. **Прицельный поиск перехватов**:
+   - Выбери объект с наибольшим количеством перехватов
+   - get_overrides('ИмяОбъекта') → все перехваты этого объекта
+   - Для каждого перехвата: метод, тип аннотации, метод расширения, файл расширения
+
+4. **Обогащение extract_procedures**:
+   - Найди модуль перехваченного объекта через find_module()
+   - extract_procedures(path) → проверь, что у перехваченных методов есть поле overridden_by
+   - Выведи: имя метода, тип, строка, и для перехваченных — данные из overridden_by (расширение, аннотация, метод расширения)
+
+5. **Чтение тела метода с перехватом**:
+   - Выбери перехваченный метод из п.4
+   - read_procedure(path, method_name) → только оригинальное тело (регрессия: без include_overrides по умолчанию)
+   - read_procedure(path, method_name, include_overrides=True) → оригинал + тело расширенного метода с аннотацией
+   - Сравни два вызова: второй должен содержать секцию "=== Перехвачен &Аннотация в расширении..."
+
+6. **Сравнение index vs live**:
+   - get_overrides('ИмяОбъекта') → source должен быть "index" (мгновенно, из SQLite)
+   - detect_extensions() + find_ext_overrides(ext_path, 'ИмяОбъекта') → live-данные (с диска)
+   - Результаты должны совпадать по количеству перехватов
+
+7. **Статистика**:
+   - Количество перехваченных объектов (уникальные object_name)
+   - Количество перехваченных методов (уникальные target_method)
+   - Количество расширений
+   - Процент методов с source_module_id (привязанных к исходному модулю)
+
+Начни с get_index_info() и help('override') для рецепта.
+
+Дай итоговую сводку со всеми цифрами. Сохрани файл с анализом в текущий рабочий каталог своими инструментами (НЕ через rlm_execute).
+
+## ВАЖНЫЕ ПРАВИЛА
+
+1. Каждый rlm_execute должен батчить несколько связанных операций. Плохо: один вызов на один хелпер. Хорошо: несколько хелперов + print() в одном вызове.
+2. Переменные сохраняются между вызовами rlm_execute.
+3. Используй print() для вывода результатов.
+4. В конце ОБЯЗАТЕЛЬНО вызови rlm_end для освобождения ресурсов.
+```
+
+---
+
+## What it covers
+
+This prompt verifies the extension overrides indexing pipeline from v1.5.0: the `get_overrides()` helper with index/live fallback, `extract_procedures` enrichment with `overridden_by`, `read_procedure(include_overrides=True)` for reading extension method bodies, and the live scan in `rlm_start` fast-path.
+
+| Area | Expected helpers | What to verify |
+|------|-----------------|----------------|
+| Index diagnostics | `get_index_info()` | builder_version=9, has_extension_overrides=True, count>0 |
+| Extension context | `rlm_start` response | extension_context with nearby extensions, live overrides |
+| Indexed overrides | `get_overrides()` | source="index", instant response, all overrides |
+| Filtered overrides | `get_overrides(object_name)` | Correct filtering by object |
+| Procedure enrichment | `extract_procedures(path)` | overridden_by field on intercepted methods |
+| Read original | `read_procedure(path, name)` | Clean body without override data (regression) |
+| Read with overrides | `read_procedure(path, name, include_overrides=True)` | Original + extension body with annotation header |
+| Live fallback | `detect_extensions()` + `find_ext_overrides()` | Live data matches index data |
+| Help recipe | `help('override')` | Recipe displayed correctly |
+| WORKFLOW Step 5 | Strategy | get_overrides, read_procedure(include_overrides), overridden_by |
+
+## Expected results on ciam_bgu (CF, 14K modules, 1 extension)
+
+| Metric | Actual | Expected range |
+|--------|--------|---------------|
+| builder_version | 9 | 9 |
+| extension_overrides (total) | 16 | 10–200 |
+| Extensions detected | 1 | 1+ |
+| source_module_id linked | 16/16 (100%) | >90% |
+| target_method_line populated | 15/16 (94%) | >80% |
+| Annotation types | После (majority) | Перед/После/Вместо/ИзменениеИКонтроль |
+| get_overrides() source | "index" | "index" (with v9 index) |
+| read_procedure(include_overrides=True) | Original + extension body | Must contain "=== Перехвачен" section |
+| read_procedure() default | Original only | No override data (regression check) |
+| Overhead on build time | <0.5s | <1s for 1 extension |

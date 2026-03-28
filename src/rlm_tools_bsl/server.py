@@ -20,8 +20,6 @@ from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched, w
 from rlm_tools_bsl.format_detector import FormatInfo, SourceFormat, detect_format
 from rlm_tools_bsl.extension_detector import (
     ConfigRole,
-    ExtensionContext,
-    ExtensionInfo,
     detect_extension_context,
     find_extension_overrides,
 )
@@ -72,7 +70,6 @@ def _auto_scan_overrides(ext_context) -> dict[str, list[dict]]:
     If current path is an extension, scans itself under key "self".
     If main config with nearby extensions, scans each extension.
     """
-    from rlm_tools_bsl.extension_detector import ConfigRole
 
     result: dict[str, list[dict]] = {}
     current = ext_context.current
@@ -397,35 +394,17 @@ def _rlm_start(
             )
             t_format = time.monotonic() - t_step
 
+            # Live extension scan (always fresh, <0.5s)
             t_step = time.monotonic()
-            role_str = startup_meta.get("config_role", "unknown")
-            if role_str == "base":
-                role = ConfigRole.MAIN
-            elif role_str == "extension":
-                role = ConfigRole.EXTENSION
-            else:
-                role = ConfigRole.UNKNOWN
-            ext_context = ExtensionContext(
-                current=ExtensionInfo(
-                    path=resolved,
-                    role=role,
-                    name=startup_meta.get("config_name") or "",
-                    purpose=startup_meta.get("extension_purpose") or "",
-                    name_prefix=startup_meta.get("extension_prefix") or "",
-                    source_format=startup_meta.get("source_format") or "",
-                ),
-                nearby_extensions=[],
-                nearby_main=None,
-                warnings=[],
-            )
+            ext_context = detect_extension_context(resolved)
             t_ext = time.monotonic() - t_step
 
             t_step = time.monotonic()
-            ext_overrides: dict[str, list[dict]] = {}
+            ext_overrides: dict[str, list[dict]] = _auto_scan_overrides(ext_context)
             t_overrides = time.monotonic() - t_step
 
             src_format = "index"
-            src_ext = "index"
+            src_ext = "live"
         else:
             # Disk path: full detection
             t_step = time.monotonic()

@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.5.0] — 2026-03-28
+
+### Добавлено
+- **Индексирование перехватов расширений** — таблица `extension_overrides` в SQLite-индексе (Level-8, index v9)
+  - При индексировании основной конфигурации автоматически сканируются соседние расширения, перехваты связываются с исходными модулями/методами
+  - `_collect_extension_overrides()` — коллектор с lookup исходного модуля по `rel_path` + fallback по `object_name`+`module_type`
+  - Мягкий апгрейд: v8 индекс обновляется до v9 через `CREATE TABLE IF NOT EXISTS` при `update()`
+- **IndexReader**: `get_extension_overrides()`, `get_overrides_for_path()`, `get_extension_overrides_grouped()`
+- **Хелпер `get_overrides()`** — мгновенный запрос перехватов из индекса с live fallback на v8/без индекса
+- **Обогащение `extract_procedures`** — поле `overridden_by` у перехваченных методов (из индекса)
+- **`read_procedure(include_overrides=True)`** — дописывает тело расширенного метода с аннотацией и файловой ссылкой
+
+### Изменено
+- **Fast-path `rlm_start`** — live `detect_extension_context()` + `_auto_scan_overrides()` всегда, даже при кэшированном индексе. Перехваты в ответе `rlm_start` всегда актуальны
+- **WORKFLOW Step 5** — упрощён: `get_overrides()`, `read_procedure(include_overrides=True)`, `extract_procedures.overridden_by`
+- **BUILDER_VERSION** = 9
+
+### Тесты
+- 20 новых тестов extension_overrides, **631 всего**
+
 ## [1.4.5] — 2026-03-27
 
 ### Добавлено
