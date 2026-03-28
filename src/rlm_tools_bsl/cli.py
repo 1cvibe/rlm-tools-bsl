@@ -86,6 +86,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
     db_size = db_path.stat().st_size if db_path.exists() else 0
 
     print(f"\nIndex built in {elapsed:.1f}s")
+    print(f"  Index:    v{stats.get('builder_version', '?')}")
     if stats.get("config_name"):
         print(f"  Config:   {stats['config_name']} {stats.get('config_version', '')}")
     print(f"  Format:   {stats.get('source_format', 'unknown')}")

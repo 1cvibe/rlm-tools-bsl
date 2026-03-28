@@ -17,8 +17,12 @@
 - **WORKFLOW Step 5** — упрощён: `get_overrides()`, `read_procedure(include_overrides=True)`, `extract_procedures.overridden_by`
 - **BUILDER_VERSION** = 9
 
+### Улучшено
+- **CLI `rlm-bsl-index index build`** — выводит версию индекса (`Index: v9`) в сводке после построения
+- **Документация** — требование к структуре репозитория (vanessa-bootstrap) для автодетекта расширений
+
 ### Тесты
-- 20 новых тестов extension_overrides, **631 всего**
+- 24 новых теста extension_overrides (включая case-insensitive кириллица, early-exit meta), **635 всего**
 
 ## [1.4.5] — 2026-03-27
 
