@@ -64,10 +64,13 @@ Step 0 — UNDERSTAND: decode the business question
   analyze_subsystem('ПодсистемаИмя') → all objects in the business domain
 
 Step 1 — DISCOVER: find what you need
+  search(query)                          → BROAD first pass: methods + objects + regions + headers
   find_module('name') or find_by_type('Documents', 'name') → get file paths
-  search_objects('бизнес-имя') → find 1C OBJECTS by Russian synonym (needs index v7+)
-  search_methods('substring') → find METHODS by code name (needs index with FTS)
-  NOTE: search_objects = WHAT object? search_methods = WHAT code?
+  search_objects('бизнес-имя')           → precise: find 1C OBJECTS by Russian synonym
+  search_methods('substring')            → precise: find METHODS by code name (FTS)
+  search_regions('имя')                  → precise: find code regions
+  search_module_headers('текст')         → precise: find modules by header
+  NOTE: search() = broad first pass; specialized helpers = precise follow-up when you need specific fields
   parse_object_xml(path) → attributes, tabular sections, dimensions, resources
 
 Step 2 — READ: understand the code
@@ -375,6 +378,7 @@ def get_strategy(
         if bver >= 8:
             instant_helpers.append("search_regions()")
             instant_helpers.append("search_module_headers()")
+        instant_helpers.append("search()")
         idx_lines.append(f"INSTANT from index: {', '.join(instant_helpers)}.")
 
         # FTS/synonym discovery
@@ -535,7 +539,8 @@ RLM_EXECUTE_DESCRIPTION = (
     "Example: code=\"modules = find_module('MyModule')\\nfor m in modules:\\n    print(m['path'])\"\n"
     "BSL helpers: help, find_module, find_by_type, extract_procedures, find_exports,\n"
     "safe_grep, read_procedure, find_callers, find_callers_context, parse_object_xml,\n"
-    "search_methods, extract_queries, code_metrics.\n"
+    "search, search_methods, search_objects, search_regions, search_module_headers,\n"
+    "extract_queries, code_metrics.\n"
     "Composite: analyze_object, analyze_subsystem, find_custom_modifications,\n"
     "find_event_subscriptions, find_scheduled_jobs, find_register_movements,\n"
     "find_register_writers, analyze_document_flow, find_based_on_documents,\n"

@@ -1937,6 +1937,91 @@ def make_bsl_helpers(
                 return result
         return []
 
+    _VALID_SCOPES = frozenset({"all", "methods", "objects", "regions", "headers"})
+
+    def search(query: str, scope: str = "all", limit: int = 30) -> list[dict]:
+        """Unified search across methods, object synonyms, regions, headers.
+
+        Args:
+            query: Search string (required).
+            scope: Filter — 'all', 'methods', 'objects', 'regions', 'headers'.
+            limit: Max results (applied to final list).
+
+        Returns: list of dicts {text, source_type, object_name, path, path_kind, detail}.
+        """
+        if scope not in _VALID_SCOPES:
+            msg = f"Unknown scope '{scope}'. Valid: {', '.join(sorted(_VALID_SCOPES))}"
+            raise ValueError(msg)
+
+        query = query.strip() if query else ""
+        empty_query = not query
+        if empty_query and scope == "all":
+            return []
+
+        per_source = max(limit // 4, 3) if scope == "all" else limit
+        results: list[dict] = []
+
+        if scope in ("all", "methods"):
+            if not empty_query:  # search_methods('') → [] by design
+                for m in search_methods(query, limit=per_source):
+                    results.append(
+                        {
+                            "text": m["name"],
+                            "source_type": "method",
+                            "object_name": m.get("object_name", ""),
+                            "path": m.get("module_path", ""),
+                            "path_kind": "bsl",
+                            "detail": m,
+                        }
+                    )
+
+        if scope in ("all", "objects"):
+            raw = search_objects(query, limit=per_source)
+            if raw:
+                for o in raw:
+                    results.append(
+                        {
+                            "text": o["synonym"],
+                            "source_type": "object",
+                            "object_name": o.get("object_name", ""),
+                            "path": o.get("file", ""),
+                            "path_kind": "metadata",
+                            "detail": o,
+                        }
+                    )
+
+        if scope in ("all", "regions"):
+            raw = search_regions(query, limit=per_source)
+            if raw:
+                for r in raw:
+                    results.append(
+                        {
+                            "text": r["name"],
+                            "source_type": "region",
+                            "object_name": r.get("object_name", ""),
+                            "path": r.get("module_path", ""),
+                            "path_kind": "bsl",
+                            "detail": r,
+                        }
+                    )
+
+        if scope in ("all", "headers"):
+            raw = search_module_headers(query, limit=per_source)
+            if raw:
+                for h in raw:
+                    results.append(
+                        {
+                            "text": h["header_comment"],
+                            "source_type": "header",
+                            "object_name": h.get("object_name", ""),
+                            "path": h.get("module_path", ""),
+                            "path_kind": "bsl",
+                            "detail": h,
+                        }
+                    )
+
+        return results[:limit]
+
     def get_index_info() -> dict:
         """Return index metadata: version, capabilities, staleness."""
         if idx_reader is None:
@@ -2563,6 +2648,25 @@ def make_bsl_helpers(
         "  headers = search_module_headers('себестоимость')\n"
         "  for h in headers:\n"
         "      print(h['category'], h['object_name'], h['header_comment'][:80])",
+    )
+    _reg(
+        "search",
+        search,
+        "search(query, scope='all', limit=30) -> [{text, source_type, object_name, path, path_kind, detail}]",
+        "discovery",
+        ["поиск", "search", "найти", "unified", "discovery", "искать"],
+        "UNIFIED SEARCH across methods, synonyms, regions, headers:\n"
+        "  # Broad first pass:\n"
+        "  results = search('себестоимость')\n"
+        "  for r in results:\n"
+        "      print(r['source_type'], r['text'], r['path'])\n"
+        "  # Filter by scope:\n"
+        "  search('себестоимость', scope='methods')   # only code methods\n"
+        "  search('себестоимость', scope='objects')    # only 1C objects by synonym\n"
+        "  search('себестоимость', scope='regions')    # only #Область\n"
+        "  search('себестоимость', scope='headers')    # only module headers\n"
+        "  # Browse mode (empty query, specific scope, set limit for full list):\n"
+        "  search('', scope='objects', limit=20000)  # browse objects (default limit=30)",
     )
     _reg(
         "get_index_info",

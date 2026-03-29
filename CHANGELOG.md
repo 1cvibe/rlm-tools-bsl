@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.5.1] — 2026-03-29
+
+### Добавлено
+
+- **Универсальный поиск `search()`** — единый хелпер для broad-first discovery по методам, объектам (синонимам), областям и заголовкам модулей. Fan-out по существующим поисковикам с per-source квотой, graceful degradation при отсутствии таблиц. Параметр `scope` для фильтрации по типу источника (`methods`, `objects`, `regions`, `headers`). Browse mode для пустого query с конкретным scope
+
+### Тесты
+
+- Добавлено 20 тестов на `search()`: diversity, quota, scope, validation, graceful degradation, registration
+
 ## [1.5.0] — 2026-03-28
 
 ### Добавлено

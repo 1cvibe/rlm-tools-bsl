@@ -189,7 +189,7 @@ rlm_start(project="My Config", query="find module...")
 
 ## Как работает (под капотом)
 
-Четыре MCP-инструмента (`rlm_projects`, `rlm_start` → `rlm_execute` → `rlm_end`), песочница с **46 хелперами**, сессионные кэши, таймауты, безопасность, пример построения графа вызовов на крупной конфигурации (23K+ файлов) — **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+Четыре MCP-инструмента (`rlm_projects`, `rlm_start` → `rlm_execute` → `rlm_end`), песочница с **48 хелперами**, сессионные кэши, таймауты, безопасность, пример построения графа вызовов на крупной конфигурации (23K+ файлов) — **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
 Полный список хелперов — **[docs/HELPERS.md](docs/HELPERS.md)** | Совместное использование с RAG — **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#совместное-использование-с-rag)**
 
@@ -210,7 +210,7 @@ rlm_start(project="My Config", query="find module...")
 Выполнено на BSL-кодовой базе доработанной ERP 2.4 (формат выгрузки - EDT)
 Выполнено на BSL-выгрузках расширений в обоих форматах
 
-Готовые промпты для комплексных E2E-тестов всех 44 хелперов: **[docs/full_analysis_prompt.md](docs/full_analysis_prompt.md)**
+Готовые промпты для комплексных E2E-тестов BSL-хелперов: **[docs/full_analysis_prompt.md](docs/full_analysis_prompt.md)**
 
 ## Лицензия
 

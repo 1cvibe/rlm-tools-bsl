@@ -48,11 +48,11 @@ Replace `РеализацияТоваровУслуг` with your target object n
 
 ## What it covers
 
-This prompt exercises all 36 BSL helpers without explicitly naming them. The AI agent discovers the toolset via `help()` and decides which helpers to use. Business questions in the prompt trigger `_BUSINESS_RECIPES` injection via `get_strategy()` (v1.3.5+).
+This prompt exercises all 38 BSL helpers without explicitly naming them. The AI agent discovers the toolset via `help()` and decides which helpers to use. Business questions in the prompt trigger `_BUSINESS_RECIPES` injection via `get_strategy()` (v1.3.5+).
 
 | Area | Expected helpers |
 |------|-----------------|
-| Navigation | `find_module`, `find_by_type`, `safe_grep`, `search_methods` |
+| Navigation | `find_module`, `find_by_type`, `safe_grep`, `search`, `search_methods` |
 | Code analysis | `extract_procedures`, `find_exports`, `read_procedure`, `extract_queries`, `code_metrics` |
 | Call graph | `find_callers`, `find_callers_context` |
 | XML parsing | `parse_object_xml`, `find_enum_values` |
@@ -480,3 +480,136 @@ This prompt verifies the extension overrides indexing pipeline from v1.5.0: the 
 | read_procedure(include_overrides=True) | Original + extension body | Must contain "=== Перехвачен" section |
 | read_procedure() default | Original only | No override data (regression check) |
 | Overhead on build time | <0.5s | <1s for 1 extension |
+
+---
+
+# Unified Search Prompt — E2E Test for v1.5.1 Helper
+
+Use this prompt to verify the unified `search()` helper added in v1.5.1.
+Replace `<path>` with the actual path to your 1C source code (EDT or CF format). Requires index v8+ with FTS and synonyms (`rlm-bsl-index index build <path>`).
+
+---
+
+## Prompt
+
+```
+Мне нужно проверить возможности единого поиска search() в конфигурации ERP.
+Путь: <путь к каталогу исходников 1С>
+
+Используй ТОЛЬКО MCP-сервер rlm-tools-bsl (rlm_start / rlm_execute / rlm_end).
+Не используй встроенные инструменты чтения файлов — всё делай через песочницу.
+
+Мне нужно проверить:
+
+1. **Broad-first discovery**:
+   - search('себестоимость') → выведи ВСЕ результаты
+   - Для каждого: source_type, text, object_name, path, path_kind
+   - Сколько различных source_type получено? Должны быть минимум method + object (а лучше все 4)
+   - search('проведение') → аналогично, покажи diversity результатов
+
+2. **Per-source quota**:
+   - search('а', limit=30) → группировка по source_type: сколько от каждого источника
+   - Ни один source_type не должен занимать более 7-8 записей (квота = limit // 4)
+   - search('а', limit=8) → группировка — покажи, как квота работает при малом limit
+
+3. **Scope фильтрация**:
+   - search('себестоимость', scope='methods') → все source_type == 'method', path_kind == 'bsl'
+   - search('себестоимость', scope='objects') → все source_type == 'object', path_kind == 'metadata'
+   - search('Проведение', scope='regions') → все source_type == 'region', path_kind == 'bsl'
+   - search('подсистема', scope='headers') → все source_type == 'header', path_kind == 'bsl'
+   - Для каждого scope покажи количество результатов
+
+4. **Browse mode (пустой query + конкретный scope)**:
+   - search('', scope='objects', limit=20000) → полный список объектов (parity с search_objects('', limit=20000))
+   - search('', scope='regions', limit=200) → список областей
+   - search('') → пустой список (scope='all' + пустой query)
+   - Покажи количество в каждом случае (учти, что без явного limit=... вернётся максимум 30)
+
+5. **path_kind семантика**:
+   - Из результатов search('себестоимость'): выбери один с path_kind='bsl' и один с path_kind='metadata'
+   - Для bsl-результата: прочитай модуль через read_file(path) — должен быть BSL-код
+   - Для metadata-результата: прочитай через read_file(path) — должен быть XML/.mdo
+   - Подтверди, что path_kind корректно отражает тип файла
+
+6. **detail — доступ к оригинальным полям**:
+   - Из результата с source_type='method': detail['rank'], detail['line'], detail['end_line'], detail['is_export']
+   - Из результата с source_type='object': detail['category'], detail['synonym']
+   - Из результата с source_type='region': detail['line'], detail['end_line'], detail['category']
+   - Из результата с source_type='header': detail['header_comment'], detail['category']
+   - Все detail-поля должны быть доступны
+
+7. **Цепочка broad → precise**:
+   - search('себестоимость') → находим объект (source_type='object')
+   - Берём object_name из результата → find_module(object_name) → модули
+   - extract_procedures(module_path) → процедуры
+   - Цепочка: broad search → precise follow-up через специализированные хелперы
+
+8. **Сравнение с прямыми вызовами**:
+   - search('себестоимость', scope='methods') vs search_methods('себестоимость')
+   - search('себестоимость', scope='objects') vs search_objects('себестоимость')
+   - Совпадает ли количество результатов? (может отличаться из-за квоты limit)
+   - При одинаковом limit результаты должны совпадать по содержанию
+
+9. **Валидация**:
+   - Попробуй search('тест', scope='invalid') → должен вернуть ValueError
+   - Попробуй search('', scope='all') → пустой список
+
+10. **Статистика** (передай limit=20000 для полного подсчёта):
+    - search('', scope='objects', limit=20000): общее количество объектов с синонимами
+    - search('', scope='regions', limit=200000): общее количество областей
+    - search('', scope='headers', limit=20000): общее количество заголовков
+    - Для methods пустой query не работает (FTS by design)
+
+Начни с get_index_info() для проверки, затем help('search') для рецепта.
+Обрати внимание: search() — broad-first shortcut; search_methods/search_objects/search_regions/search_module_headers — precise follow-up.
+
+Дай итоговую сводку со всеми цифрами. Сохрани файл с анализом в текущий рабочий каталог своими инструментами (НЕ через rlm_execute).
+
+## ВАЖНЫЕ ПРАВИЛА
+
+1. Каждый rlm_execute должен батчить несколько связанных операций. Плохо: один вызов на один хелпер. Хорошо: несколько хелперов + print() в одном вызове.
+2. Переменные сохраняются между вызовами rlm_execute.
+3. Используй print() для вывода результатов.
+4. В конце ОБЯЗАТЕЛЬНО вызови rlm_end для освобождения ресурсов.
+```
+
+---
+
+## What it covers
+
+This prompt verifies the unified `search()` helper from v1.5.1: broad-first discovery with per-source quota, scope filtering, browse mode parity, `path_kind` semantics, `detail` field access, and the broad-to-precise chaining workflow.
+
+| Area | Expected helpers | What to verify |
+|------|-----------------|----------------|
+| Broad discovery | `search(query)` | Multiple source_types in results (diversity) |
+| Per-source quota | `search(query, limit=N)` | No source_type exceeds `max(limit//4, 3)` entries |
+| Scope: methods | `search(q, scope='methods')` | All source_type='method', path_kind='bsl' |
+| Scope: objects | `search(q, scope='objects')` | All source_type='object', path_kind='metadata' |
+| Scope: regions | `search(q, scope='regions')` | All source_type='region', path_kind='bsl' |
+| Scope: headers | `search(q, scope='headers')` | All source_type='header', path_kind='bsl' |
+| Browse mode | `search('', scope='objects')` | Non-empty list, parity with search_objects('') |
+| Empty all | `search('')` | Empty list |
+| path_kind | Read files by path | bsl=BSL code, metadata=XML/.mdo |
+| detail field | Access detail['rank'], detail['line'] etc. | All original fields present |
+| Broad-to-precise | `search()` -> `find_module()` -> `extract_procedures()` | Chaining works end-to-end |
+| Parity | `search(q, scope='X')` vs `search_X(q)` | Same results at same limit |
+| Validation | `search(q, scope='invalid')` | ValueError raised |
+| Help recipe | `help('search')` | Recipe displayed correctly |
+| Strategy | WORKFLOW Step 1 | search() as broad-first, specialized as follow-up |
+
+## Expected results on ERP 2.5
+
+| Metric | Expected range |
+|--------|---------------|
+| search('себестоимость') source_types | 2-4 distinct types |
+| search('себестоимость') total hits | 10-40 |
+| search('а', limit=30) max per source_type | <= 7-8 (quota = 30//4) |
+| search('себестоимость', scope='methods') | 5-20 methods |
+| search('себестоимость', scope='objects') | 5-30 objects |
+| search('Проведение', scope='regions') | 30 (default limit); 1,200-1,400 with limit=2000 |
+| search('', scope='objects', limit=20000) count | 12,000-18,000 |
+| search('', scope='regions', limit=200000) count | 85,000-105,000 |
+| search('', scope='all') | [] (empty) |
+| search(q, scope='invalid') | ValueError |
+| path_kind='bsl' paths | End with .bsl |
+| path_kind='metadata' paths | End with .xml or .mdo |
