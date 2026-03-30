@@ -613,3 +613,123 @@ This prompt verifies the unified `search()` helper from v1.5.1: broad-first disc
 | search(q, scope='invalid') | ValueError |
 | path_kind='bsl' paths | End with .bsl |
 | path_kind='metadata' paths | End with .xml or .mdo |
+
+---
+
+# Form Analysis Prompt — E2E Test for v1.6.0 Helpers
+
+Use this prompt to verify the form XML parsing helper added in v1.6.0.
+Replace `<path>` with the actual path to your 1C source code (EDT or CF format). Requires index v10+ (`rlm-bsl-index index build <path>`).
+
+---
+
+## Prompt
+
+```
+Мне нужно провести полный анализ форм документа РеализацияТоваровУслуг в конфигурации ERP.
+Путь: <путь к каталогу исходников 1С>
+
+Используй ТОЛЬКО MCP-сервер rlm-tools-bsl (rlm_start / rlm_execute / rlm_end).
+Не используй встроенные инструменты чтения файлов — всё делай через песочницу.
+
+Мне нужно проверить:
+
+1. **Диагностика индекса**:
+   - Вызови get_index_info() и выведи: builder_version, has_form_elements, form_elements_count
+   - Если builder_version < 10 — сообщи, что нужно перестроить индекс
+
+2. **Обзор форм объекта**:
+   - parse_form('РеализацияТоваровУслуг') → список всех форм документа
+   - Для каждой формы: имя формы, количество обработчиков, количество команд, количество атрибутов
+   - Какая форма самая сложная (больше всего обработчиков)?
+
+3. **Детали обработчиков событий**:
+   - Выбери форму с наибольшим количеством обработчиков
+   - Сгруппируй обработчики по scope: сколько form-level, ext_info-level, element-level
+   - Для element-level обработчиков: покажи element_name, element_type, event, handler, data_path
+   - Какие события самые частые (OnChange, StartChoice, Selection)?
+
+4. **Обратный поиск: процедура → элемент**:
+   - Из формы, выбранной на шаге 2, возьми module_path и вызови extract_procedures(module_path) → найди ПриСозданииНаСервере
+   - parse_form('РеализацияТоваровУслуг', handler='ПриСозданииНаСервере') → к чему привязана
+   - Покажи scope и event найденной привязки
+   - Выбери другой обработчик (element-level) и покажи: к какому элементу, какому событию, какому реквизиту привязан
+
+5. **Команды формы**:
+   - Из результата parse_form: выведи все команды формы (commands)
+   - Для каждой: имя команды → процедура-действие (action)
+   - Найди процедуру-действие в модуле формы через extract_procedures() — есть ли она?
+
+6. **Атрибуты формы и DynamicList**:
+   - Из атрибутов формы: найди основной атрибут (main=True) — какой тип объекта
+   - Если есть атрибут типа DynamicList: покажи main_table и query_text (начало запроса)
+   - Атрибут DynamicList привязан к табличному элементу формы — найди его в handlers по data_path
+
+7. **Цепочка: форма → код → бизнес-логика (через module_path)**:
+   - forms = parse_form('РеализацияТоваровУслуг') → выбери ФормаДокумента
+   - Найди обработчик ПередЗаписью или ПослеЗаписи (scope="ext_info") в handlers
+   - read_procedure(form['module_path'], handler_name) → прочитай тело обработчика (module_path уже в ответе parse_form!)
+   - find_callers_context(handler_name) → кто ещё вызывает эту процедуру
+   - find_register_movements('РеализацияТоваровУслуг') → регистры, куда пишет документ
+   - Покажи связь: событие формы → обработчик (через module_path) → бизнес-логика → регистры
+
+8. **Статистика из индекса**:
+   - get_index_info() → form_elements_count
+   - parse_form('') с пустым именем не должен работать (проверка валидации)
+   - Сколько всего обработчиков, команд, атрибутов в form_elements_count
+
+9. **CommonForms (если доступны)**:
+   - Попробуй найти общие формы: search_objects('общая форма') или find_by_type('CommonForms')
+   - Если найдена общая форма — вызови parse_form('ИмяОбщейФормы') и покажи её обработчики
+   - У CommonForms: category='CommonForms', object_name=form_name=ИмяФормы, module_path указывает на Module.bsl если есть
+
+Начни с get_index_info() для проверки, затем help('события формы') для рецепта.
+Обрати внимание: parse_form() возвращает grouped-структуру по формам с handlers/commands/attributes внутри.
+
+Дай итоговую сводку со всеми цифрами. Сохрани файл с анализом в текущий рабочий каталог своими инструментами (НЕ через rlm_execute).
+
+## ВАЖНЫЕ ПРАВИЛА
+
+1. Каждый rlm_execute должен батчить несколько связанных операций. Плохо: один вызов на один хелпер. Хорошо: несколько хелперов + print() в одном вызове.
+2. Переменные сохраняются между вызовами rlm_execute.
+3. Используй print() для вывода результатов.
+4. В конце ОБЯЗАТЕЛЬНО вызови rlm_end для освобождения ресурсов.
+```
+
+---
+
+## What it covers
+
+This prompt verifies the form XML parsing helper from v1.6.0: `parse_form()` with grouped output, `scope` field semantics, reverse handler lookup, EDT/CF command extraction, DynamicList attributes, CommonForms support, and the form→code→business-logic chaining workflow.
+
+| Area | Expected helpers | What to verify |
+|------|-----------------|----------------|
+| Index diagnostics | `get_index_info()` | builder_version=10, has_form_elements=True, count>0 |
+| Form overview | `parse_form(object_name)` | Grouped output: handlers/commands/attributes per form |
+| Handler scope | `parse_form()` handlers | scope="form", "ext_info", "element" — no empty strings |
+| Reverse lookup | `parse_form(handler='...')` | Finds binding for a BSL procedure |
+| Commands | `parse_form()` commands | name→action mapping (CF and EDT) |
+| DynamicList | `parse_form()` attributes | main_table, query_text (≤512 chars) |
+| CommonForms | `parse_form('CommonFormName')` | Works for top-level common forms |
+| Chaining | `parse_form` → `read_procedure` → `find_callers_context` → `find_register_movements` | Form event → handler → business logic → registers |
+| Help recipe | `help('события формы')` | Recipe displayed correctly |
+| Strategy | WORKFLOW Step 1 | parse_form listed |
+| INSTANT | `parse_form()` source | Instant from index (has_form_elements=True) |
+
+## Expected results on ERP 2.5
+
+| Metric | Expected range |
+|--------|---------------|
+| builder_version | 10 |
+| form_elements_count (CF) | ~250,000 |
+| form_elements_count (EDT) | ~210,000 |
+| Forms for РеализацияТоваровУслуг | 2–5 (ФормаДокумента + ФормаСписка + ...) |
+| Handlers in ФормаДокумента | 20–60 |
+| Commands in ФормаДокумента | 5–20 |
+| Attributes in ФормаДокумента | 5–30 |
+| scope="form" handlers | 3–8 per form (OnCreateAtServer, NotificationProcessing, ...) |
+| scope="ext_info" handlers | 2–5 per form (AfterWrite, OnReadAtServer, ...) |
+| scope="element" handlers | 10–50 per form (OnChange, StartChoice, ...) |
+| CommonForms total | 300–600 |
+| DB size overhead | +60–73 MB (+6.5%) |
+| Build time overhead | +6–11 с (+1.5–2.6%) |

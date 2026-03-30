@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.6.0] — 2026-03-30
+
+### Добавлено
+
+- **Парсинг XML форм** — новый хелпер `parse_form(object_name, form_name='', handler='')` для извлечения обработчиков событий, команд и атрибутов форм
+  - Авто-детект формата CF (`Ext/Form.xml`) и EDT (`Form.form`) по namespace
+  - Grouped output по формам с `module_path` для перехода к коду модуля формы
+  - Обработчики с `scope`: `form` (форменные), `ext_info` (типо-специфичные), `element` (элементные)
+  - Команды формы: маппинг command → BSL-процедура (CF и EDT)
+  - Атрибуты: тип, `main_table` для DynamicList, `query_text` (≤512 символов)
+  - Обратный поиск: `handler='ПроцИмя'` → к какому элементу/событию привязана процедура
+  - Поддержка CommonForms: `category='CommonForms'`, `object_name=form_name=ИмяФормы`
+- **Таблица `form_elements`** в SQLite-индексе (Level-9, index v10)
+  - Параллельный сбор: `ThreadPoolExecutor(min(os.cpu_count(), 8))` по аналогии с role_rights
+  - 4 индекса: по `object_name`, `(object_name, form_name)`, `handler`, `kind`
+  - Meta-ключи: `has_form_elements`, `form_elements_count`
+  - Мягкий апгрейд v9→v10 через `update()`, привязка к `build_metadata`
+- **IndexReader**: `get_form_elements(object_name, form_name, handler)` — raw rows query
+- **Бизнес-рецепт `"события формы"`** — пошаговый рецепт анализа форм объекта
+  - Алиасы: `"обработчики формы"`, `"элементы формы"`, `"кнопки формы"`
+- **E2E промпт** для верификации v1.6.0 в `docs/full_analysis_prompt.md`
+
+### Изменено
+
+- **BUILDER_VERSION** = 10
+- **WORKFLOW Step 1 DISCOVER** — добавлен `parse_form()` (для задач про формы/UI)
+- **RLM_EXECUTE_DESCRIPTION** — `parse_form` в списке хелперов
+- **Instant helpers** — `parse_form()` при наличии `form_elements` в индексе
+
+### Тесты
+
+- Добавлено 35 тестов: парсер CF/EDT, хелпер (fallback + indexed), индекс, parity, CommonForms
+- Обновлены тесты `test_bsl_knowledge.py`: рецепт count=7, `_match_recipe("события формы")`
+
 ## [1.5.1] — 2026-03-29
 
 ### Добавлено

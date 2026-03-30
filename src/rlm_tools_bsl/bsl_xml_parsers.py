@@ -1292,3 +1292,325 @@ def parse_rights_xml(xml_content: str, object_filter: str = "") -> list[dict]:
         break  # Found working namespace, stop trying
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Form XML parser (v1.6.0) — handlers, commands, attributes
+# ---------------------------------------------------------------------------
+
+_FORM_NS_EDT = "http://g5.1c.ru/v8/dt/form"
+_FORM_NS_CF = "http://v8.1c.ru/8.3/xcf/logform"
+
+
+def _find_children(parent, local_name: str) -> list:
+    """Find all direct children by local tag name (namespace-agnostic)."""
+    return [ch for ch in parent if (ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag) == local_name]
+
+
+def _find_child(parent, local_name: str):
+    """Find first direct child by local tag name (namespace-agnostic)."""
+    for ch in parent:
+        if (ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag) == local_name:
+            return ch
+    return None
+
+
+def _parse_form_edt(root) -> dict:
+    """Parse EDT Form.form XML → handlers, commands, attributes.
+
+    Uses namespace-agnostic child lookup because EDT forms may declare
+    the form namespace as default (no prefix) or as ``form:``.
+    """
+    handlers: list[dict] = []
+    commands: list[dict] = []
+    attributes: list[dict] = []
+
+    xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+
+    # --- Form-level handlers ---
+    for h_el in _find_children(root, "handlers"):
+        event = _xml_direct_text(h_el, "event")
+        handler = _xml_direct_text(h_el, "name")
+        if event and handler:
+            handlers.append(
+                {
+                    "element": "",
+                    "event": event,
+                    "handler": handler,
+                    "element_type": "",
+                    "data_path": "",
+                    "scope": "form",
+                }
+            )
+
+    # --- ExtInfo handlers ---
+    ext_info = _find_child(root, "extInfo")
+    if ext_info is not None:
+        for h_el in _find_children(ext_info, "handlers"):
+            event = _xml_direct_text(h_el, "event")
+            handler = _xml_direct_text(h_el, "name")
+            if event and handler:
+                handlers.append(
+                    {
+                        "element": "",
+                        "event": event,
+                        "handler": handler,
+                        "element_type": "",
+                        "data_path": "",
+                        "scope": "ext_info",
+                    }
+                )
+
+    # --- Elements (stack-based) ---
+    stack = list(_find_children(root, "items"))
+    while stack:
+        item = stack.pop()
+        # Control type from <type> child (InputField, CheckBoxField, etc.)
+        # Fallback to xsi:type minus namespace prefix (FormField, FormGroup, Table)
+        elem_type = _xml_direct_text(item, "type")
+        if not elem_type:
+            xsi_type = item.get(f"{{{xsi_ns}}}type", "")
+            elem_type = xsi_type.split(":")[-1] if ":" in xsi_type else xsi_type
+        elem_name = _xml_direct_text(item, "name")
+        # data_path
+        dp_el = _find_child(item, "dataPath")
+        data_path = ""
+        if dp_el is not None:
+            data_path = _xml_direct_text(dp_el, "segments")
+
+        # element handlers
+        for h_el in _find_children(item, "handlers"):
+            event = _xml_direct_text(h_el, "event")
+            handler = _xml_direct_text(h_el, "name")
+            if event and handler:
+                handlers.append(
+                    {
+                        "element": elem_name,
+                        "event": event,
+                        "handler": handler,
+                        "element_type": elem_type,
+                        "data_path": data_path,
+                        "scope": "element",
+                    }
+                )
+
+        # push nested items (groups, tables)
+        stack.extend(_find_children(item, "items"))
+
+    # --- Commands (EDT: <formCommands>) ---
+    for cmd_el in _find_children(root, "formCommands"):
+        cmd_name = _xml_direct_text(cmd_el, "name")
+        action_el = _find_child(cmd_el, "action")
+        action = ""
+        if action_el is not None:
+            handler_el = _find_child(action_el, "handler")
+            if handler_el is not None:
+                action = _xml_direct_text(handler_el, "name")
+        if cmd_name:
+            commands.append({"name": cmd_name, "action": action})
+
+    # --- Attributes ---
+    for attr_el in _find_children(root, "attributes"):
+        attr_name = _xml_direct_text(attr_el, "name")
+        if not attr_name:
+            continue
+        # main flag
+        main_val = _xml_direct_text(attr_el, "main")
+        is_main = main_val.lower() == "true" if main_val else False
+        # types
+        vt_el = _find_child(attr_el, "valueType")
+        types_str = ""
+        if vt_el is not None:
+            type_parts = []
+            for t_el in vt_el:
+                local = t_el.tag.split("}")[-1] if "}" in t_el.tag else t_el.tag
+                if local == "types":
+                    if t_el.text:
+                        type_parts.append(t_el.text.strip())
+            types_str = ", ".join(type_parts)
+        # DynamicList extInfo
+        main_table = ""
+        query_text = ""
+        ext = _find_child(attr_el, "extInfo")
+        if ext is not None:
+            main_table = _xml_direct_text(ext, "mainTable")
+            qt = _xml_direct_text(ext, "queryText")
+            if qt:
+                query_text = qt[:512]
+
+        attr_dict: dict = {"name": attr_name, "types": types_str, "main": is_main}
+        if main_table:
+            attr_dict["main_table"] = main_table
+        if query_text:
+            attr_dict["query_text"] = query_text
+        attributes.append(attr_dict)
+
+    return {"handlers": handlers, "commands": commands, "attributes": attributes}
+
+
+def _parse_form_cf(root) -> dict:
+    """Parse CF Ext/Form.xml → handlers, commands, attributes."""
+    handlers: list[dict] = []
+    commands: list[dict] = []
+    attributes: list[dict] = []
+
+    # --- Form-level and ext_info events ---
+    # CF puts both form-level and ext_info events in the same root <Events>.
+    # Classify by event name: object lifecycle events → ext_info, rest → form.
+    _EXT_INFO_EVENTS = frozenset(
+        {
+            "AfterWrite",
+            "AfterWriteAtServer",
+            "BeforeWrite",
+            "BeforeWriteAtServer",
+            "OnReadAtServer",
+            "BeforeClose",
+            "OnClose",
+            "AfterWriteError",
+            "BeforeRecordBreak",
+        }
+    )
+    events_el = root.find("{%s}Events" % _FORM_NS_CF)
+    if events_el is not None:
+        for ev in events_el:
+            local = ev.tag.split("}")[-1] if "}" in ev.tag else ev.tag
+            if local == "Event":
+                event_name = ev.get("name", "")
+                handler = ev.text.strip() if ev.text else ""
+                if event_name and handler:
+                    scope = "ext_info" if event_name in _EXT_INFO_EVENTS else "form"
+                    handlers.append(
+                        {
+                            "element": "",
+                            "event": event_name,
+                            "handler": handler,
+                            "element_type": "",
+                            "data_path": "",
+                            "scope": scope,
+                        }
+                    )
+
+    # --- Elements (stack-based via ChildItems) ---
+    stack = list(root.findall("{%s}ChildItems" % _FORM_NS_CF))
+    # Also check for ChildItems one level deeper (some CF forms have wrapper)
+    while stack:
+        container = stack.pop()
+        for child in container:
+            local_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if local_tag == "ChildItems":
+                stack.append(child)
+                continue
+            # This is an element
+            elem_name = child.get("name", "")
+            elem_type = local_tag  # InputField, Table, UsualGroup, etc.
+            # data_path
+            dp_el = child.find("{%s}DataPath" % _FORM_NS_CF)
+            data_path = ""
+            if dp_el is not None:
+                data_path = dp_el.text.strip() if dp_el.text else ""
+
+            # element events
+            ev_el = child.find("{%s}Events" % _FORM_NS_CF)
+            if ev_el is not None:
+                for ev in ev_el:
+                    ev_local = ev.tag.split("}")[-1] if "}" in ev.tag else ev.tag
+                    if ev_local == "Event":
+                        event_name = ev.get("name", "")
+                        handler = ev.text.strip() if ev.text else ""
+                        if event_name and handler:
+                            handlers.append(
+                                {
+                                    "element": elem_name,
+                                    "event": event_name,
+                                    "handler": handler,
+                                    "element_type": elem_type,
+                                    "data_path": data_path,
+                                    "scope": "element",
+                                }
+                            )
+
+            # push nested ChildItems (groups, tables)
+            for sub_ci in child.findall("{%s}ChildItems" % _FORM_NS_CF):
+                stack.append(sub_ci)
+
+    # --- Commands ---
+    cmds_el = root.find("{%s}Commands" % _FORM_NS_CF)
+    if cmds_el is not None:
+        for cmd in cmds_el:
+            local_tag = cmd.tag.split("}")[-1] if "}" in cmd.tag else cmd.tag
+            if local_tag == "Command":
+                cmd_name = cmd.get("name", "")
+                action_el = cmd.find("{%s}Action" % _FORM_NS_CF)
+                action = action_el.text.strip() if action_el is not None and action_el.text else ""
+                if cmd_name:
+                    commands.append({"name": cmd_name, "action": action})
+
+    # --- Attributes ---
+    attrs_el = root.find("{%s}Attributes" % _FORM_NS_CF)
+    if attrs_el is not None:
+        for attr in attrs_el:
+            local_tag = attr.tag.split("}")[-1] if "}" in attr.tag else attr.tag
+            if local_tag != "Attribute":
+                continue
+            attr_name = attr.get("name", "")
+            if not attr_name:
+                continue
+            # main
+            main_el = attr.find("{%s}Main" % _FORM_NS_CF)
+            is_main = False
+            if main_el is not None and main_el.text:
+                is_main = main_el.text.strip().lower() == "true"
+            # type
+            type_el = attr.find("{%s}Type" % _FORM_NS_CF)
+            types_str = ""
+            if type_el is not None:
+                type_parts = []
+                for t in type_el:
+                    t_local = t.tag.split("}")[-1] if "}" in t.tag else t.tag
+                    if t_local == "Type":
+                        if t.text:
+                            type_parts.append(t.text.strip())
+                types_str = ", ".join(type_parts)
+            # DynamicList settings
+            main_table = ""
+            query_text = ""
+            xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+            settings_el = attr.find("{%s}Settings" % _FORM_NS_CF)
+            if settings_el is not None:
+                xsi_type = settings_el.get(f"{{{xsi_ns}}}type", "")
+                if "DynamicList" in xsi_type:
+                    mt_el = settings_el.find("{%s}MainTable" % _FORM_NS_CF)
+                    if mt_el is not None and mt_el.text:
+                        main_table = mt_el.text.strip()
+                    qt_el = settings_el.find("{%s}QueryText" % _FORM_NS_CF)
+                    if qt_el is not None and qt_el.text:
+                        query_text = qt_el.text.strip()[:512]
+
+            attr_dict: dict = {"name": attr_name, "types": types_str, "main": is_main}
+            if main_table:
+                attr_dict["main_table"] = main_table
+            if query_text:
+                attr_dict["query_text"] = query_text
+            attributes.append(attr_dict)
+
+    return {"handlers": handlers, "commands": commands, "attributes": attributes}
+
+
+def parse_form_xml(xml_content: str) -> dict | None:
+    """Parse a 1C form XML (CF or EDT) → handlers, commands, attributes.
+
+    Auto-detects format by namespace.
+    Returns None on parse error.
+    """
+    if not xml_content or not xml_content.strip():
+        return None
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    if _FORM_NS_EDT in xml_content:
+        return _parse_form_edt(root)
+    if _FORM_NS_CF in xml_content:
+        return _parse_form_cf(root)
+    return None

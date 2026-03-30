@@ -81,7 +81,8 @@ Call graph:  yes
 Metadata:    yes
 FTS search:  yes
 
-Index built in 630.2s
+Index built in 633.0s
+  Index:    v10
   Config:   УправлениеПредприятием 2.5.14.59
   Format:   cf
   Modules:  23461
@@ -93,7 +94,7 @@ Index built in 630.2s
   FuncOpts:   929
   Synonyms:   13661
   FilePaths:  103128
-  DB size:  1137.6 MB
+  DB size:  1291.1 MB
   DB path:  C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
 ```
 
@@ -130,6 +131,7 @@ rlm-bsl-index index info <path>
 ```
 $ rlm-bsl-index index info "D:\ERP\src\cf"
 Index: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
+  Index:    v10
   Config:   УправлениеПредприятием 2.5.14.59
   Format:   cf
   Status:   fresh
@@ -143,7 +145,7 @@ Index: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
   Synonyms:   13661
   FilePaths:  103128
   FTS:      yes
-  DB size:  1137.6 MB
+  DB size:  1291.1 MB
   Built:    10s ago
   BSL files on disk: 23461
 ```
@@ -175,8 +177,8 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 | key                     | Описание                                                | Пример                             |
 | ----------------------- | ------------------------------------------------------- | ---------------------------------- |
-| `version`               | Версия схемы                                            | `8`                                |
-| `builder_version`       | Версия построителя                                      | `8`                                |
+| `version`               | Версия схемы                                            | `10`                               |
+| `builder_version`       | Версия построителя                                      | `10`                               |
 | `bsl_count`             | Количество .bsl файлов                                  | `23461`                            |
 | `paths_hash`            | MD5-хеш отсортированных путей                           | `6c4e5a0f0d506f67...`              |
 | `built_at`              | Unix-timestamp построения                               | `1773740509.56`                    |
@@ -197,6 +199,8 @@ $ rlm-bsl-index index drop D:\ERP\src
 | `has_configuration_xml` | Наличие Configuration.xml (0/1)                         | `0`                                |
 | `detected_prefixes`     | JSON-массив авто-определённых кастомных префиксов       | `["ал"]`                           |
 | `file_paths_count`      | Количество записей в таблице file_paths                 | `35000`                            |
+| `has_form_elements`     | Есть ли таблица form_elements (0/1)                     | `1`                                |
+| `form_elements_count`   | Количество записей в таблице form_elements              | `250000`                           |
 
 ### modules
 
@@ -515,6 +519,43 @@ LIMIT 30;
 
 **Обратная совместимость:** на v8 индексе все методы возвращают `None` / `{}` через `try/except OperationalError`. `update()` создаёт таблицу через `CREATE TABLE IF NOT EXISTS`.
 
+### form_elements (Level-9, v10+)
+
+Обработчики событий, команды и атрибуты форм 1С. Строится при `build_metadata=True` (по умолчанию). Параллельный сбор через `ThreadPoolExecutor(min(os.cpu_count(), 8))`.
+
+| Колонка             | Тип        | Описание                                        | Пример                                              |
+| ------------------- | ---------- | ----------------------------------------------- | --------------------------------------------------- |
+| `id`                | INTEGER PK | Идентификатор                                   | `1`                                                 |
+| `object_name`       | TEXT       | Имя объекта                                     | `РеализацияТоваровУслуг`                            |
+| `category`          | TEXT       | Категория объекта                               | `Documents` / `CommonForms`                         |
+| `form_name`         | TEXT       | Имя формы                                       | `ФормаДокумента`                                    |
+| `kind`              | TEXT       | Тип записи                                      | `handler` / `command` / `attribute`                 |
+| `scope`             | TEXT       | Область (для handler)                           | `form` / `ext_info` / `element`                     |
+| `element_name`      | TEXT       | Имя элемента / команды / атрибута               | `ОрганизацияОтбор`                                  |
+| `element_type`      | TEXT       | Тип элемента / тип атрибута                     | `InputField` / `DynamicList`                        |
+| `event`             | TEXT       | Событие (для handler)                           | `OnChange` / `StartChoice`                          |
+| `handler`           | TEXT       | BSL-процедура (для handler/command action)      | `ОрганизацияОтборПриИзменении`                      |
+| `data_path`         | TEXT       | Путь данных элемента                            | `Организация`                                       |
+| `main_table`        | TEXT       | Основная таблица DynamicList                    | `Document.РеализацияТоваровУслуг`                   |
+| `attribute_is_main` | INTEGER    | Основной атрибут формы (1/0)                    | `1`                                                 |
+| `extra_json`        | TEXT       | JSON с query_text (≤512 символов)               | `{"query_text":"ВЫБРАТЬ..."}`                       |
+| `file`              | TEXT       | Относительный путь к XML формы                  | `Documents/Тест/Forms/Ф1/Ext/Form.xml`             |
+
+Индексы: `idx_fe_object` (object_name NOCASE), `idx_fe_object_form` (object_name, form_name), `idx_fe_handler` (handler NOCASE), `idx_fe_kind` (kind).
+
+**IndexReader API:**
+- `get_form_elements(object_name, form_name, handler)` — raw rows, все параметры опциональные
+
+**Обратная совместимость:** на v9 индексе `get_form_elements()` возвращает `None` через `try/except OperationalError`. `update()` создаёт и заполняет таблицу через `CREATE TABLE IF NOT EXISTS`.
+
+**Замеры на реальных конфигурациях:**
+
+| Конфигурация | Формат | form_elements | handlers | commands | attributes | Прирост DB |
+|-------------|--------|--------------|----------|----------|------------|-----------|
+| ЕРП 2.5.14 (23K модулей) | CF | 258 100 | 93 756 | 50 195 | 114 149 | +154 MB |
+| БГУ 2.0.105 (14K модулей) | CF | 187 217 | 66 355 | 38 586 | 82 276 | — |
+| ЕРП 2.5.7 (20K модулей) | EDT | 195 516 | 58 306 | 41 740 | 95 470 | +111 MB |
+
 ## 5. Инкрементальное обновление
 
 Команда `index update` работает по следующему алгоритму:
@@ -654,7 +695,7 @@ search_methods(query) — full-text search by method name substring.
 - **UNIQUE(module_id, name, line)** — парсер может создать дубликаты для нестандартного кода (например, несколько процедур с одинаковым именем в одном модуле). При конфликте используется `INSERT OR REPLACE`
 - **Переименование методов** — инкрементальное обновление не пересчитывает входящие рёбра в `calls`, если метод был переименован. Для полной корректности графа после массовых переименований рекомендуется `index build`
 - **Точность mtime** — зависит от файловой системы (FAT32 — 2 сек, NTFS — 100 нс, ext4 — 1 нс). Допуск в 1 секунду учтён при сравнении
-- **Время первого построения** — на ERP полный `index build` (calls + metadata + FTS + synonyms): CF (~23K модулей, ЕРП 2.5.14) — **~402с**, EDT (~20K модулей, ЕРП 2.5.7) — **~420с**. FTS добавляет ~5 секунд, synonyms добавляет ~3-5 секунд. Без графа вызовов (`--no-calls`) — ~30-90 секунд
+- **Время первого построения** — на ERP полный `index build` (calls + metadata + FTS + synonyms + form_elements): CF (~23K модулей, ЕРП 2.5.14) — **~633с**, EDT (~20K модулей, ЕРП 2.5.7) — **~383с**, CF (БГУ 2.0.105, ~14K модулей) — **~373с**. FTS добавляет ~5 секунд, synonyms добавляет ~3-5 секунд. Без графа вызовов (`--no-calls`) — ~30-90 секунд
 - **Потребление памяти при построении** — все результаты парсинга (методы + вызовы) накапливаются в ОЗУ до момента записи в SQLite. На конфигурации ERP пиковое потребление составляет ~3 GB RAM. Если на машине мало оперативной памяти, используйте `--no-calls` для снижения нагрузки
 - **`extension_purpose`** — ключ в `index_meta` присутствует только для расширений (`config_role = extension`). Для основных конфигураций не записывается
-- **Размер БД** — CF (ЕРП 2.5.14, 23K модулей): **~1124 MB** (calls + metadata + FTS + synonyms), 13 661 синонимов. EDT (ЕРП 2.5.7, 20K модулей): **~954 MB**, 17 218 синонимов. Без FTS (`--no-fts`) — на ~230 MB меньше. Без графа вызовов (`--no-calls`) — ~35 MB
+- **Размер БД** — CF (ЕРП 2.5.14, 23K модулей): **~1291 MB** (calls + metadata + FTS + synonyms + form_elements), 13 661 синонимов, 258K form_elements. EDT (ЕРП 2.5.7, 20K модулей): **~1078 MB**, 17 218 синонимов, 196K form_elements. CF (БГУ 2.0.105, 14K модулей): **~839 MB**, 7 329 синонимов, 187K form_elements. Без FTS (`--no-fts`) — на ~230 MB меньше. Без графа вызовов (`--no-calls`) — ~35 MB

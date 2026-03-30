@@ -169,7 +169,7 @@ def test_rlm_execute_description():
 
 def test_business_recipes_structure():
     """All domains must have compact and full keys."""
-    assert len(_BUSINESS_RECIPES) == 6
+    assert len(_BUSINESS_RECIPES) == 7
     for domain, recipe in _BUSINESS_RECIPES.items():
         assert "compact" in recipe, f"{domain}: missing compact"
         assert "full" in recipe, f"{domain}: missing full"
@@ -190,6 +190,25 @@ def test_match_recipe_aliases():
     assert _match_recipe("обмен данными с сайтом") == "интеграция"
     assert _match_recipe("синхронизация с сайтом") == "интеграция"
     assert _match_recipe("exchange data with external system") == "интеграция"
+
+
+def test_match_recipe_form_events():
+    """'события формы' recipe matches form-related queries."""
+    assert _match_recipe("события формы документа") == "события формы"
+    assert _match_recipe("обработчики формы справочника") == "события формы"
+
+
+def test_match_recipe_print_form_not_hijacked():
+    """'печатная форма' must NOT match 'события формы' — 'печать' matches first."""
+    result = _match_recipe("печатная форма")
+    assert result is None or result == "печать"
+    # 'печать' domain requires exact substring: "печать" NOT in "печатная форма" (ь≠н)
+    # so both None and "печать" are acceptable (depends on substring match)
+
+
+def test_match_recipe_bare_form_no_match():
+    """Bare 'форма' must NOT match any recipe (too broad)."""
+    assert _match_recipe("форма ТОРГ-12") is None
 
 
 def test_match_recipe_not_found():

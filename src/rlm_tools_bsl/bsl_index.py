@@ -24,7 +24,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 9
+BUILDER_VERSION = 10
 
 # ---------------------------------------------------------------------------
 # Regex patterns copied from bsl_helpers._parse_procedures / _strip_code_line
@@ -1762,6 +1762,184 @@ def _collect_extension_overrides(
 
 
 # ---------------------------------------------------------------------------
+# Form elements collection (v1.6.0)
+# ---------------------------------------------------------------------------
+
+
+def _collect_form_elements(base_path: str) -> list[tuple]:
+    """Collect form elements (handlers, commands, attributes) from all forms.
+
+    Returns list of tuples ready for INSERT into form_elements:
+    (object_name, category, form_name, kind, scope, element_name, element_type,
+     event, handler, data_path, main_table, attribute_is_main, extra_json, file).
+    """
+    from rlm_tools_bsl.bsl_xml_parsers import parse_form_xml
+    from rlm_tools_bsl.format_detector import METADATA_CATEGORIES
+
+    base = Path(base_path)
+    form_files: list[tuple[str, str, str, Path]] = []  # (category, object_name, form_name, path)
+
+    # Discover forms in standard categories
+    for cat in METADATA_CATEGORIES:
+        cat_dir = base / cat
+        if not cat_dir.is_dir():
+            continue
+        for obj_dir in cat_dir.iterdir():
+            if not obj_dir.is_dir():
+                continue
+            forms_dir = obj_dir / "Forms"
+            if not forms_dir.is_dir():
+                continue
+            for form_dir in forms_dir.iterdir():
+                if not form_dir.is_dir():
+                    continue
+                # EDT: Form.form
+                ff = form_dir / "Form.form"
+                if ff.is_file():
+                    form_files.append((cat, obj_dir.name, form_dir.name, ff))
+                    continue
+                # CF: Ext/Form.xml
+                ff = form_dir / "Ext" / "Form.xml"
+                if ff.is_file():
+                    form_files.append((cat, obj_dir.name, form_dir.name, ff))
+
+    # CommonForms (separate path structure)
+    cf_dir = base / "CommonForms"
+    if cf_dir.is_dir():
+        for form_dir in cf_dir.iterdir():
+            if not form_dir.is_dir():
+                continue
+            # EDT: Form.form (no intermediate Forms/)
+            ff = form_dir / "Form.form"
+            if ff.is_file():
+                form_files.append(("CommonForms", form_dir.name, form_dir.name, ff))
+                continue
+            # CF: Ext/Form.xml
+            ff = form_dir / "Ext" / "Form.xml"
+            if ff.is_file():
+                form_files.append(("CommonForms", form_dir.name, form_dir.name, ff))
+
+    if not form_files:
+        return []
+
+    def _process_form(item: tuple[str, str, str, Path]) -> list[tuple]:
+        cat, obj_name, frm_name, fpath = item
+        try:
+            content = fpath.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            return []
+        parsed = parse_form_xml(content)
+        if parsed is None:
+            return []
+        rel = fpath.relative_to(base).as_posix()
+        rows: list[tuple] = []
+        for h in parsed.get("handlers", []):
+            rows.append(
+                (
+                    obj_name,
+                    cat,
+                    frm_name,
+                    "handler",
+                    h.get("scope", ""),
+                    h.get("element", ""),
+                    h.get("element_type", ""),
+                    h.get("event", ""),
+                    h.get("handler", ""),
+                    h.get("data_path", ""),
+                    "",
+                    0,
+                    "",
+                    rel,
+                )
+            )
+        for c in parsed.get("commands", []):
+            rows.append(
+                (
+                    obj_name,
+                    cat,
+                    frm_name,
+                    "command",
+                    "",
+                    c.get("name", ""),
+                    "",
+                    "",
+                    c.get("action", ""),
+                    "",
+                    "",
+                    0,
+                    "",
+                    rel,
+                )
+            )
+        for a in parsed.get("attributes", []):
+            extra = ""
+            qt = a.get("query_text", "")
+            if qt:
+                extra = json.dumps({"query_text": qt}, ensure_ascii=False)
+            rows.append(
+                (
+                    obj_name,
+                    cat,
+                    frm_name,
+                    "attribute",
+                    "",
+                    a.get("name", ""),
+                    a.get("types", ""),
+                    "",
+                    "",
+                    "",
+                    a.get("main_table", ""),
+                    1 if a.get("main") else 0,
+                    extra,
+                    rel,
+                )
+            )
+        return rows
+
+    all_results: list[tuple] = []
+    if len(form_files) > 1:
+        workers = min(os.cpu_count() or 4, 8)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for batch in pool.map(_process_form, form_files):
+                all_results.extend(batch)
+    elif form_files:
+        all_results.extend(_process_form(form_files[0]))
+
+    return all_results
+
+
+_FORM_ELEMENTS_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS form_elements ("
+    "id INTEGER PRIMARY KEY, "
+    "object_name TEXT NOT NULL, "
+    "category TEXT NOT NULL, "
+    "form_name TEXT NOT NULL, "
+    "kind TEXT NOT NULL, "
+    "scope TEXT NOT NULL DEFAULT '', "
+    "element_name TEXT NOT NULL DEFAULT '', "
+    "element_type TEXT NOT NULL DEFAULT '', "
+    "event TEXT NOT NULL DEFAULT '', "
+    "handler TEXT NOT NULL DEFAULT '', "
+    "data_path TEXT NOT NULL DEFAULT '', "
+    "main_table TEXT NOT NULL DEFAULT '', "
+    "attribute_is_main INTEGER DEFAULT 0, "
+    "extra_json TEXT NOT NULL DEFAULT '', "
+    "file TEXT NOT NULL);\n"
+    "CREATE INDEX IF NOT EXISTS idx_fe_object ON form_elements(object_name COLLATE NOCASE);\n"
+    "CREATE INDEX IF NOT EXISTS idx_fe_object_form ON form_elements(object_name, form_name);\n"
+    "CREATE INDEX IF NOT EXISTS idx_fe_handler ON form_elements(handler COLLATE NOCASE);\n"
+    "CREATE INDEX IF NOT EXISTS idx_fe_kind ON form_elements(kind);\n"
+)
+
+_FORM_ELEMENTS_INSERT = (
+    "INSERT INTO form_elements "
+    "(object_name, category, form_name, kind, scope, element_name, element_type, "
+    "event, handler, data_path, main_table, attribute_is_main, extra_json, file) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+# ---------------------------------------------------------------------------
 # IndexBuilder
 # ---------------------------------------------------------------------------
 class IndexBuilder:
@@ -1830,6 +2008,14 @@ class IndexBuilder:
             conn.execute(
                 "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
                 ("extension_overrides_count", "0"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                ("has_form_elements", "0"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                ("form_elements_count", "0"),
             )
             conn.commit()
             conn.close()
@@ -1947,6 +2133,24 @@ class IndexBuilder:
         conn.execute(
             "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
             ("extension_overrides_count", str(len(override_rows))),
+        )
+
+        # Level-9: form elements (handlers, commands, attributes)
+        fe_rows: list[tuple] = []
+        if build_metadata:
+            conn.executescript(_FORM_ELEMENTS_SCHEMA)
+            fe_rows = _collect_form_elements(base_path)
+            if fe_rows:
+                conn.executemany(_FORM_ELEMENTS_INSERT, fe_rows)
+                conn.commit()
+                logger.info("Form elements: %d entries", len(fe_rows))
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("has_form_elements", "1" if build_metadata else "0"),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+            ("form_elements_count", str(len(fe_rows))),
         )
 
         # Detect custom prefixes from object names in index
@@ -2362,7 +2566,24 @@ class IndexBuilder:
             ("extension_overrides_count", str(len(override_rows))),
         )
 
-        # Bump builder_version to current (schema upgrade v8→v9 etc.)
+        # Level-9: form elements (schema upgrade v9→v10, full refresh)
+        if has_metadata:
+            conn.executescript(_FORM_ELEMENTS_SCHEMA)
+            conn.execute("DELETE FROM form_elements")
+            fe_rows = _collect_form_elements(base_path)
+            if fe_rows:
+                conn.executemany(_FORM_ELEMENTS_INSERT, fe_rows)
+                logger.info("Form elements: %d entries", len(fe_rows))
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                ("has_form_elements", "1"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                ("form_elements_count", str(len(fe_rows))),
+            )
+
+        # Bump builder_version to current
         conn.execute(
             "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
             ("builder_version", str(BUILDER_VERSION)),
@@ -3309,6 +3530,13 @@ class IndexReader:
             except sqlite3.Error:
                 stats["extension_overrides"] = 0
 
+            # Level-9: form elements
+            try:
+                row = self._conn.execute("SELECT COUNT(*) AS cnt FROM form_elements").fetchone()
+                stats["form_elements"] = row["cnt"] if row else 0
+            except sqlite3.Error:
+                stats["form_elements"] = 0
+
             return stats
 
     @property
@@ -3886,6 +4114,39 @@ class IndexReader:
                     key = ext_root
                 result.setdefault(key, []).append(d)
             return result
+
+    def get_form_elements(
+        self,
+        object_name: str = "",
+        form_name: str = "",
+        handler: str = "",
+    ) -> list[dict] | None:
+        """Get form elements (handlers, commands, attributes) as raw rows.
+
+        Returns None if table doesn't exist (pre-v10 index).
+        """
+        with self._lock:
+            try:
+                conditions: list[str] = []
+                params: list[str] = []
+                if object_name:
+                    conditions.append("object_name = ?")
+                    params.append(object_name)
+                if form_name:
+                    conditions.append("form_name = ?")
+                    params.append(form_name)
+                if handler:
+                    conditions.append("handler = ? COLLATE NOCASE")
+                    params.append(handler)
+
+                where = " WHERE " + " AND ".join(conditions) if conditions else ""
+                rows = self._conn.execute(
+                    f"SELECT * FROM form_elements{where}",  # noqa: S608
+                    params,
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                return None
 
     def close(self) -> None:
         """Close the database connection."""

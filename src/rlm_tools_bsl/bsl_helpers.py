@@ -1,5 +1,6 @@
 from __future__ import annotations
 import concurrent.futures
+import json
 import logging
 import os
 import re
@@ -220,6 +221,8 @@ def make_bsl_helpers(
         "СправочникОбъект.",
         "ДокументСсылка.",
         "СправочникСсылка.",
+        "ОбщаяФорма.",
+        "CommonForm.",
     )
 
     def _strip_meta_prefix(name: str) -> str:
@@ -1692,6 +1695,213 @@ def make_bsl_helpers(
 
         return result
 
+    # ── Form XML parsing helper ──────────────────────────────────
+
+    def parse_form(object_name: str, form_name: str = "", handler: str = "") -> list[dict]:
+        """Form event handlers, commands and attributes for an object's forms.
+
+        Without form_name — all forms of the object. With form_name — specific form.
+        handler='ProcName' — reverse lookup: find what a BSL procedure is bound to.
+
+        Returns: list of dicts grouped by form, each with:
+            category, object_name, form_name, file, module_path,
+            handlers, commands, attributes."""
+        object_name = _strip_meta_prefix(object_name)
+        if not object_name:
+            raise ValueError("object_name is required, e.g. parse_form('РеализацияТоваровУслуг')")
+
+        # --- Fast path: SQLite index ---
+        if idx_reader is not None:
+            # Query ALL rows for the object/form (no handler filter at SQL level).
+            # handler filters the SET of forms in _group_form_rows, but inside
+            # each form commands/attributes stay complete for context.
+            raw = idx_reader.get_form_elements(object_name, form_name)
+            if raw is not None and raw:
+                return _group_form_rows(raw, handler)
+            # raw == [] means table exists but no rows — fall through to live
+            # path so that empty forms (zero elements) are still discoverable.
+
+        # --- Fallback: path-heuristic discovery ---
+        from rlm_tools_bsl.bsl_xml_parsers import parse_form_xml as _parse_form_xml
+
+        form_files: list[tuple[str, str, str, str]] = []  # (cat, obj, frm, rel_path)
+
+        # Check CommonForms first (object_name = form_name)
+        for pattern in (
+            f"CommonForms/{object_name}/Form.form",
+            f"CommonForms/{object_name}/Ext/Form.xml",
+        ):
+            found = glob_files_fn(pattern)
+            for fp in found:
+                form_files.append(("CommonForms", object_name, object_name, fp))
+
+        # Standard categories
+        from rlm_tools_bsl.format_detector import METADATA_CATEGORIES
+
+        for cat in METADATA_CATEGORIES:
+            if cat in ("CommonForms", "CommonModules", "CommonCommands", "CommonTemplates"):
+                continue
+            for pattern in (
+                f"{cat}/{object_name}/Forms/*/Form.form",
+                f"{cat}/{object_name}/Forms/*/Ext/Form.xml",
+            ):
+                found = glob_files_fn(pattern)
+                for fp in found:
+                    parts = fp.replace("\\", "/").split("/")
+                    try:
+                        fi = parts.index("Forms")
+                        frm = parts[fi + 1]
+                    except (ValueError, IndexError):
+                        frm = ""
+                    form_files.append((cat, object_name, frm, fp))
+
+        # Last resort: broad glob
+        if not form_files:
+            for pattern in ("**/Forms/*/Form.form", "**/Forms/*/Ext/Form.xml"):
+                found = glob_files_fn(pattern)
+                for fp in found:
+                    if object_name.lower() in fp.lower():
+                        parts = fp.replace("\\", "/").split("/")
+                        try:
+                            fi = parts.index("Forms")
+                            frm = parts[fi + 1]
+                            obj = parts[fi - 1] if fi > 0 else object_name
+                            c = parts[fi - 2] if fi > 1 else ""
+                        except (ValueError, IndexError):
+                            frm, obj, c = "", object_name, ""
+                        form_files.append((c, obj, frm, fp))
+
+        if form_name:
+            form_files = [(c, o, f, p) for c, o, f, p in form_files if f == form_name]
+
+        results: list[dict] = []
+        for cat, obj, frm, fp in form_files:
+            content = read_file_fn(fp)
+            if not content:
+                continue
+            parsed = _parse_form_xml(content)
+            if parsed is None:
+                continue
+
+            rel = fp if not os.path.isabs(fp) else os.path.relpath(fp, base_path).replace("\\", "/")
+            full_fp = fp if os.path.isabs(fp) else os.path.join(base_path, fp)
+
+            # Determine module_path
+            module_path = ""
+            if full_fp.replace("\\", "/").endswith("Ext/Form.xml"):
+                form_dir = os.path.dirname(os.path.dirname(full_fp))
+            else:
+                form_dir = os.path.dirname(full_fp)
+            for candidate in ("Ext/Module.bsl", "Module.bsl"):
+                mp = os.path.join(form_dir, candidate)
+                if os.path.isfile(mp):
+                    module_path = os.path.relpath(mp, base_path).replace("\\", "/")
+                    break
+
+            hs = parsed.get("handlers", [])
+            if handler:
+                hs = [h for h in hs if h["handler"].lower() == handler.lower()]
+                if not hs:
+                    continue
+
+            results.append(
+                {
+                    "category": cat,
+                    "object_name": obj,
+                    "form_name": frm,
+                    "file": rel,
+                    "module_path": module_path,
+                    "handlers": hs,
+                    "commands": parsed.get("commands", []),
+                    "attributes": parsed.get("attributes", []),
+                }
+            )
+
+        return results
+
+    def _group_form_rows(raw_rows: list[dict], handler_filter: str = "") -> list[dict]:
+        """Group raw form_elements rows into per-form dicts."""
+        forms: dict[tuple[str, str, str], dict] = {}
+        for r in raw_rows:
+            key = (r["category"], r["object_name"], r["form_name"])
+            if key not in forms:
+                # Derive module_path from file path
+                file_path = r.get("file", "")
+                module_path = ""
+                if file_path:
+                    if file_path.endswith("Form.form"):
+                        # EDT: Form.form → Module.bsl in same dir
+                        mp = file_path.rsplit("/", 1)[0] + "/Module.bsl"
+                    elif file_path.endswith("Form.xml"):
+                        # CF: Ext/Form.xml → Ext/Module.bsl
+                        mp = file_path.rsplit("/", 1)[0] + "/Module.bsl"
+                    else:
+                        mp = ""
+                    # Check if exists via glob
+                    if mp:
+                        found = glob_files_fn(mp)
+                        module_path = mp if found else ""
+
+                forms[key] = {
+                    "category": r["category"],
+                    "object_name": r["object_name"],
+                    "form_name": r["form_name"],
+                    "file": file_path,
+                    "module_path": module_path,
+                    "handlers": [],
+                    "commands": [],
+                    "attributes": [],
+                }
+
+            form = forms[key]
+            kind = r.get("kind", "")
+            if kind == "handler":
+                h = {
+                    "element": r.get("element_name", ""),
+                    "event": r.get("event", ""),
+                    "handler": r.get("handler", ""),
+                    "element_type": r.get("element_type", ""),
+                    "data_path": r.get("data_path", ""),
+                    "scope": r.get("scope", ""),
+                }
+                if handler_filter:
+                    if h["handler"].lower() == handler_filter.lower():
+                        form["handlers"].append(h)
+                else:
+                    form["handlers"].append(h)
+            elif kind == "command":
+                form["commands"].append(
+                    {
+                        "name": r.get("element_name", ""),
+                        "action": r.get("handler", ""),
+                    }
+                )
+            elif kind == "attribute":
+                attr: dict = {
+                    "name": r.get("element_name", ""),
+                    "types": r.get("element_type", ""),
+                    "main": bool(r.get("attribute_is_main", 0)),
+                }
+                mt = r.get("main_table", "")
+                if mt:
+                    attr["main_table"] = mt
+                extra = r.get("extra_json", "")
+                if extra:
+                    try:
+                        ex = json.loads(extra)
+                        qt = ex.get("query_text", "")
+                        if qt:
+                            attr["query_text"] = qt
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                form["attributes"].append(attr)
+
+        # Filter out forms with no matching handlers when handler_filter is set
+        result = list(forms.values())
+        if handler_filter:
+            result = [f for f in result if f["handlers"]]
+        return result
+
     # ── Enum / FunctionalOption / Roles helpers ──────────────────
 
     def find_enum_values(enum_name: str) -> dict:
@@ -2041,6 +2251,8 @@ def make_bsl_helpers(
             "has_module_headers": int(stats.get("builder_version") or 0) >= 8,
             "has_extension_overrides": int(stats.get("builder_version") or 0) >= 9,
             "extension_overrides": stats.get("extension_overrides", 0),
+            "has_form_elements": int(stats.get("builder_version") or 0) >= 10 and stats.get("has_metadata", False),
+            "form_elements_count": stats.get("form_elements", 0),
             "built_at": stats.get("built_at"),
         }
 
@@ -2398,6 +2610,28 @@ def make_bsl_helpers(
         "  meta = parse_object_xml('Documents/Name/Ext/Document.xml')   # direct XML\n"
         "  for key in meta:\n"
         "      print(key, ':', meta[key])",
+    )
+    _reg(
+        "parse_form",
+        parse_form,
+        "parse_form(object_name, form_name='', handler='') -> [{form_name, module_path, handlers, commands, attributes}]",
+        "xml",
+        kw=["parse_form", "события формы", "обработчики формы", "элементы формы", "form handler", "form event"],
+        recipe=(
+            "# Обработчики и команды формы объекта:\n"
+            "forms = parse_form('БанковскиеСчетаОрганизаций')\n"
+            "for f in forms:\n"
+            '    print(f\'{f["form_name"]}: {len(f["handlers"])} handlers, {len(f["commands"])} commands\')\n'
+            "    for h in f['handlers']:\n"
+            '        print(f\'  {h["element"] or "[form]"}.{h["event"]} → {h["handler"]}\')\n\n'
+            "# Обратный поиск: к чему привязана процедура?\n"
+            "forms = parse_form('БанковскиеСчетаОрганизаций', handler='ПриСозданииНаСервере')\n\n"
+            "# module_path для быстрого перехода к коду:\n"
+            "for f in forms:\n"
+            "    if f['module_path']:\n"
+            "        procs = extract_procedures(f['module_path'])\n"
+            "        print(f'{f[\"form_name\"]}: {len(procs)} procedures')\n"
+        ),
     )
     _reg(
         "find_enum_values",

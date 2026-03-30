@@ -72,6 +72,7 @@ Step 1 — DISCOVER: find what you need
   search_module_headers('текст')         → precise: find modules by header
   NOTE: search() = broad first pass; specialized helpers = precise follow-up when you need specific fields
   parse_object_xml(path) → attributes, tabular sections, dimensions, resources
+  parse_form(object_name) → form handlers, commands, attributes (for UI/form analysis tasks)
 
 Step 2 — READ: understand the code
   extract_procedures(path) → list all procedures with lines
@@ -235,12 +236,32 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
             "print(f'Exchange jobs: {len(ex_jobs)} of {len(all_jobs)}')"
         ),
     },
+    "события формы": {
+        "compact": [
+            "search_objects('ОбъектИмя') → найти объект по бизнес-имени",
+            "forms = parse_form('ОбъектИмя') → список форм с handlers, commands, attributes, module_path",
+            "for f in forms: if f['module_path']: extract_procedures(f['module_path'])",
+        ],
+        "full": [
+            "search_objects('ОбъектИмя') → найти объект по бизнес-имени",
+            "forms = parse_form('ОбъектИмя') → все формы с handlers/commands/attributes/module_path",
+            "parse_form('ОбъектИмя', handler='ПроцИмя') → обратный поиск: к чему привязана процедура",
+            "forms_with_code = [f for f in forms if f['module_path']]  # формы с BSL-модулем",
+            "for f in forms_with_code: extract_procedures(f['module_path']) → процедуры каждой формы",
+            "for f in forms_with_code: read_procedure(f['module_path'], 'ПриСозданииНаСервере') → код инициализации",
+            "find_callers_context('ОбработчикИмя') → кто вызывает обработчик",
+            "parse_object_xml(path) → метаданные объекта (реквизиты, ТЧ)",
+        ],
+    },
 }
 
 _RECIPE_ALIASES: dict[str, str] = {
     "обмен": "интеграция",
     "синхрониз": "интеграция",
     "exchange": "интеграция",
+    "обработчики формы": "события формы",
+    "элементы формы": "события формы",
+    "кнопки формы": "события формы",
 }
 
 _STRATEGY_IO_SECTION = """\
@@ -374,6 +395,9 @@ def get_strategy(
             instant_helpers.extend(["glob_files(indexed)", "tree(indexed)", "find_files(indexed)"])
         if synonyms_count:
             instant_helpers.append("search_objects()")
+        form_elements_count = idx_stats.get("form_elements", 0)
+        if form_elements_count:
+            instant_helpers.append("parse_form()")
         bver = int(idx_stats.get("builder_version") or 0)
         if bver >= 8:
             instant_helpers.append("search_regions()")
@@ -540,7 +564,7 @@ RLM_EXECUTE_DESCRIPTION = (
     "BSL helpers: help, find_module, find_by_type, extract_procedures, find_exports,\n"
     "safe_grep, read_procedure, find_callers, find_callers_context, parse_object_xml,\n"
     "search, search_methods, search_objects, search_regions, search_module_headers,\n"
-    "extract_queries, code_metrics.\n"
+    "extract_queries, code_metrics, parse_form.\n"
     "Composite: analyze_object, analyze_subsystem, find_custom_modifications,\n"
     "find_event_subscriptions, find_scheduled_jobs, find_register_movements,\n"
     "find_register_writers, analyze_document_flow, find_based_on_documents,\n"
