@@ -175,6 +175,43 @@ def _resolve_mapped_drive(path: str) -> str | None:
     return None
 
 
+def _resolve_path_map(path: str) -> str:
+    """Translate host filesystem path to container path using RLM_PATH_MAP.
+
+    RLM_PATH_MAP format: "host_prefix:container_prefix"
+    Example: "D:/MyDEV/Repo:/repos"
+
+    Handles Windows backslashes and case-insensitive prefix matching.
+    Returns the original path if no mapping matches.
+    """
+    mapping = os.environ.get("RLM_PATH_MAP", "")
+    if not mapping:
+        return path
+    # Split on last ":" to handle Windows drive letters (e.g. "D:/foo:/repos")
+    # Find the separator: scan from the end for ":" that is not at position 1 (drive letter)
+    sep_idx = mapping.rfind(":")
+    if sep_idx <= 0:
+        return path
+    # Handle edge case: "D:/foo:/bar" — rfind gives the right split
+    host_prefix = mapping[:sep_idx]
+    container_prefix = mapping[sep_idx + 1 :]
+    if not host_prefix or not container_prefix:
+        return path
+
+    # Normalize separators for comparison
+    path_normalized = path.replace("\\", "/")
+    host_normalized = host_prefix.replace("\\", "/").rstrip("/")
+
+    # Case-insensitive prefix match (Windows paths) with boundary check
+    if path_normalized.lower().startswith(host_normalized.lower()):
+        remainder = path_normalized[len(host_normalized) :]
+        if remainder and not remainder.startswith("/"):
+            return path  # not a true directory boundary match
+        return container_prefix.rstrip("/") + remainder
+
+    return path
+
+
 def _install_session_llm_tools(session, sandbox: Sandbox) -> bool:
     try:
         base_llm_query = get_llm_query_fn()
@@ -275,6 +312,7 @@ def _rlm_start(
         path = matches[0]["path"]
     else:
         # path is provided -- check if registered, hint if not
+        path = _resolve_path_map(path)
         from rlm_tools_bsl.projects import get_registry
 
         try:
@@ -885,6 +923,10 @@ def _rlm_projects(
     try:
         reg = get_registry()
 
+        # Translate host paths to container paths (Docker)
+        if path:
+            path = _resolve_path_map(path)
+
         # Resolve mapped drives (Windows service in Session 0)
         if path and not os.path.isdir(path):
             unc = _resolve_mapped_drive(path)
@@ -931,6 +973,157 @@ def _rlm_projects(
         )
     except (ValueError, KeyError) as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def rlm_index(
+    action: Annotated[
+        Literal["build", "update", "info", "drop"],
+        Field(description="Action to perform on the index"),
+    ],
+    path: Annotated[str | None, Field(description="Root path to 1C configuration sources")] = None,
+    project: Annotated[str | None, Field(description="Project name from the registry")] = None,
+    no_calls: Annotated[bool, Field(description="Skip call graph (build only)")] = False,
+    no_metadata: Annotated[bool, Field(description="Skip L2 metadata (build only)")] = False,
+    no_fts: Annotated[bool, Field(description="Skip FTS5 full-text index (build only)")] = False,
+    no_synonyms: Annotated[bool, Field(description="Skip object synonyms (build only)")] = False,
+) -> str:
+    """Manage the BSL method index — build, update, get info, or drop.
+    Full parity with CLI 'rlm-bsl-index'. Use 'build' to create index from scratch,
+    'update' for incremental refresh, 'info' for statistics, 'drop' to remove the index.
+    Provide either 'path' (filesystem path) or 'project' (registered project name)."""
+    return await anyio.to_thread.run_sync(
+        lambda: _rlm_index(
+            action=action,
+            path=path,
+            project=project,
+            no_calls=no_calls,
+            no_metadata=no_metadata,
+            no_fts=no_fts,
+            no_synonyms=no_synonyms,
+        )
+    )
+
+
+def _rlm_index(
+    action: str,
+    path: str | None = None,
+    project: str | None = None,
+    no_calls: bool = False,
+    no_metadata: bool = False,
+    no_fts: bool = False,
+    no_synonyms: bool = False,
+) -> str:
+    from rlm_tools_bsl.projects import RegistryCorruptedError, get_registry
+    from rlm_tools_bsl.bsl_index import IndexBuilder, IndexReader, get_index_db_path
+
+    # --- Resolve path ---
+    if path is None and project is None:
+        return json.dumps({"error": "Either 'path' or 'project' must be provided"}, ensure_ascii=False)
+
+    resolved_project_name: str | None = None
+    if path is None:
+        try:
+            reg = get_registry()
+            matches, method = reg.resolve(project)  # type: ignore[arg-type]
+        except RegistryCorruptedError as exc:
+            return json.dumps(
+                {"error": f"Registry file is corrupted: {exc}. Run rlm_projects(action='list') after fixing the file."},
+                ensure_ascii=False,
+            )
+        if not matches:
+            all_projects = reg.list_projects()
+            available = [{"name": p["name"], "description": p.get("description", "")} for p in all_projects]
+            return json.dumps(
+                {"error": f"Project not found: {project}", "available_projects": available}, ensure_ascii=False
+            )
+        if len(matches) > 1:
+            ambiguous = [{"name": p["name"], "description": p.get("description", "")} for p in matches]
+            return json.dumps({"error": f"Ambiguous project name: {project}", "matches": ambiguous}, ensure_ascii=False)
+        if method == "fuzzy":
+            return json.dumps({"error": f"Did you mean '{matches[0]['name']}'?"}, ensure_ascii=False)
+        path = matches[0]["path"]
+        resolved_project_name = matches[0]["name"]
+    else:
+        path = _resolve_path_map(path)
+
+    # Resolve mapped drives (Windows service)
+    resolved = str(pathlib.Path(path).resolve())
+    if not os.path.isdir(resolved):
+        unc_path = _resolve_mapped_drive(path)
+        if unc_path:
+            resolved = str(pathlib.Path(unc_path).resolve())
+        if not os.path.isdir(resolved):
+            return json.dumps({"error": f"Path not found: {path}"}, ensure_ascii=False)
+
+    try:
+        if action == "build":
+            t0 = time.monotonic()
+            builder = IndexBuilder()
+            db_path = builder.build(
+                resolved,
+                build_calls=not no_calls,
+                build_metadata=not no_metadata,
+                build_fts=not no_fts,
+                build_synonyms=not no_synonyms,
+            )
+            elapsed = time.monotonic() - t0
+            result = {
+                "action": "build",
+                "path": resolved,
+                "db_path": str(db_path),
+                "elapsed_seconds": round(elapsed, 1),
+            }
+            if resolved_project_name:
+                result["project"] = resolved_project_name
+            return json.dumps(result, ensure_ascii=False)
+
+        if action == "update":
+            t0 = time.monotonic()
+            builder = IndexBuilder()
+            delta = builder.update(resolved)
+            elapsed = time.monotonic() - t0
+            result = {"action": "update", "path": resolved, "elapsed_seconds": round(elapsed, 1), **delta}
+            if resolved_project_name:
+                result["project"] = resolved_project_name
+            return json.dumps(result, ensure_ascii=False)
+
+        if action == "info":
+            db_path = get_index_db_path(resolved)
+            if not db_path.exists():
+                return json.dumps({"error": "Index not found", "path": resolved}, ensure_ascii=False)
+            reader = IndexReader(str(db_path))
+            try:
+                stats = reader.get_statistics()
+                result = {"action": "info", "path": resolved, **stats}
+                if resolved_project_name:
+                    result["project"] = resolved_project_name
+                return json.dumps(result, ensure_ascii=False)
+            finally:
+                reader.close()
+
+        if action == "drop":
+            db_path = get_index_db_path(resolved)
+            if not db_path.exists():
+                return json.dumps({"error": "Index not found", "path": resolved}, ensure_ascii=False)
+            db_path.unlink()
+            # Remove parent dir if empty
+            try:
+                db_path.parent.rmdir()
+            except OSError:
+                pass
+            result = {"action": "drop", "path": resolved, "dropped": str(db_path)}
+            if resolved_project_name:
+                result["project"] = resolved_project_name
+            return json.dumps(result, ensure_ascii=False)
+
+        return json.dumps({"error": f"Unknown action: {action}"}, ensure_ascii=False)
+
+    except FileNotFoundError as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        logger.exception("rlm_index error: action=%s path=%s", action, resolved)
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
 
 
 class _HealthLogFilter(logging.Filter):

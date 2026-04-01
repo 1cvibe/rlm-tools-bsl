@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.6.3] — 2026-04-01
+
+### Добавлено
+
+- **Docker-поддержка** — `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.example.yml` для развёртывания MCP-сервера в контейнере с авто-обновлением из PyPI, фиксацией версии через `RLM_VERSION` и graceful degradation при отсутствии сети
+- **MCP-тул `rlm_index`** — полный паритет с CLI `rlm-bsl-index`: действия `build`, `update`, `info`, `drop` через MCP-протокол без shell-доступа к контейнеру
+- **`RLM_PATH_MAP`** — автоматическая трансляция хостовых путей в контейнерные (Docker): пользователь указывает привычные пути хоста, сервер подменяет префикс
+- **`docs/QUICKSTART.md`** — сценарии развёртывания (Windows/Linux/Docker) + пошаговый пример настройки VSCode + Kilo Code от нуля до первого вопроса
+
+### Изменено
+
+- **`docs/INSTALL.md`** — добавлена секция Docker (Вариант B)
+- **`README.md`** — секция Docker, ссылка на QUICKSTART
+
 ## [1.6.2] — 2026-04-01
 
 ### Добавлено

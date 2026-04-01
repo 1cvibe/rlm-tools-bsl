@@ -32,9 +32,9 @@ rlm_start(project="My Config", query="find all exported procedures")
 | `rename` | `name`, `new_name`                          | `rlm_projects(action="rename", name="Dev", new_name="Development")` |
 | `update` | `name`, `path` (опц.), `description` (опц.) | `rlm_projects(action="update", name="Dev", description="Updated")`  |
 
-## Использование в rlm_start
+## Использование в rlm_start и rlm_index
 
-Параметр `project` -- альтернатива `path`. Достаточно указать один из них:
+Параметр `project` -- альтернатива `path` в `rlm_start` и `rlm_index`. Достаточно указать один из них:
 
 ```
 # По имени проекта (точное или подстрока)
@@ -42,6 +42,10 @@ rlm_start(project="My Config", query="find module SomeModule")
 
 # По пути (как раньше, обратная совместимость)
 rlm_start(path="/path/to/1c-sources", query="find module SomeModule")
+
+# Индексирование по имени проекта
+rlm_index(action="build", project="My Config")
+rlm_index(action="info", project="My Config")
 ```
 
 ### Поиск по имени

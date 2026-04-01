@@ -82,7 +82,156 @@ curl -LO https://raw.githubusercontent.com/Dach-Coin/rlm-tools-bsl/master/simple
 chmod +x simple-install-from-pip.sh && ./simple-install-from-pip.sh
 ```
 
-### Вариант B: Из исходников (для разработки)
+### Вариант B: Docker
+
+Контейнер автоматически проверяет наличие новой версии в PyPI при каждом старте,
+обновляется и пересчитывает индексы — разработчику достаточно публиковать пакет в PyPI.
+
+> **Windows + WSL2 + Docker Desktop — НЕ РЕКОМЕНДУЕТСЯ**
+>
+> Docker Desktop на Windows запускает контейнеры в WSL2 VM. Файлы хоста (исходники 1С)
+> прокидываются через Virtiofs/9P протокол — **каждая операция чтения файла проходит через
+> границу виртуальной машины**. На практике это даёт **замедление I/O в 5-10 раз**:
+>
+> - **Построение индексов:** конфигурация, которая индексируется за ~6 мин на хосте,
+>   в контейнере может строиться **50+ минут**
+> - **Работа хелперов:** `grep`, `glob`, `read_file` и другие операции с исходниками
+>   также будут значительно медленнее — это влияет на **каждый** запрос к серверу
+>
+> Это задокументированное архитектурное ограничение Docker Desktop/WSL2, а не rlm-tools-bsl:
+> - [Microsoft: Comparing WSL Versions](https://learn.microsoft.com/en-us/windows/wsl/compare-versions) — WSL2 проигрывает в «performance across OS file systems»
+> - [Microsoft: Working across file systems](https://learn.microsoft.com/en-us/windows/wsl/filesystems) — «We recommend against working across operating systems with your files»
+> - [Docker: WSL 2 Best Practices](https://docs.docker.com/desktop/features/wsl/best-practices/) — «Performance is much higher when files are bind-mounted from the Linux filesystem»
+> - [microsoft/WSL#4197](https://github.com/microsoft/WSL/issues/4197) — замеры: ~11x замедление I/O через 9P протокол
+>
+> Для Windows рекомендуется **Вариант A** (установка пакета на хост, см. выше) или
+> **установка службой** через `simple-install-from-pip.ps1` (сценарий W2 в [QUICKSTART.md](QUICKSTART.md)).
+>
+> **Docker-вариант оптимален для Linux** (нативный Docker, без прослойки VM) — там
+> bind mount работает на скорости файловой системы.
+>
+> **Если всё же используете Docker на Windows** — построение индекса (`rlm_index(action="build")`)
+> обязательно. Без индекса каждый запрос хелпера идёт через файловую систему напрямую,
+> и замедление WSL2 (8-10x) будет ощущаться на **каждом** вызове `rlm_execute`.
+> С индексом большинство операций выполняются из SQLite за миллисекунды — замедление I/O
+> влияет только на начальное построение индекса, а не на повседневную работу.
+
+> **Важно:** Docker-образ использует модель **PyPI-first** — при сборке и обновлении пакет устанавливается из PyPI, а не из локальных исходников. Для работы новых фич в контейнере нужна опубликованная версия в PyPI.
+>
+> **Для разработчиков:** если вы хотите запустить контейнер из локальных исходников (свои доработки, тестирование до публикации в PyPI), соберите wheel перед сборкой образа:
+> ```bash
+> uv build                        # создаст dist/*.whl из текущих исходников
+> docker compose up -d --build    # Dockerfile подхватит wheel автоматически
+> ```
+> Без `dist/*.whl` образ установит пакет из PyPI как обычно.
+
+**1. Подготовка:**
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+# Отредактируйте REPOS_ROOT и другие переменные
+```
+
+**2. Запуск:**
+
+```bash
+docker compose up -d
+```
+
+**3. Проверка:**
+
+```bash
+docker compose logs -f rlm
+curl http://localhost:9000/health
+```
+
+**4. Настройте трансляцию путей** (рекомендуется):
+
+Добавьте в `docker-compose.yml` переменную `RLM_PATH_MAP`, чтобы использовать привычные хостовые пути:
+```yaml
+environment:
+  - RLM_PATH_MAP=D:/Repos/1c:/repos    # Windows
+  # - RLM_PATH_MAP=/home/user/repos:/repos  # Linux
+```
+
+С `RLM_PATH_MAP` сервер автоматически транслирует хостовые пути в контейнерные.
+Без неё — нужно указывать контейнерные пути (`/repos/...`) вручную.
+
+**5. Регистрация проектов:**
+
+Зарегистрируйте проекты через MCP-хелпер из AI-клиента:
+
+```
+rlm_projects(action="add", name="ERP", path="D:/Repos/1c/erp/src/cf")
+```
+
+> При наличии `RLM_PATH_MAP` путь `D:/Repos/1c/erp/src/cf` автоматически
+> транслируется в `/repos/erp/src/cf` внутри контейнера.
+
+**6. Построение индекса:**
+
+Индекс ускоряет работу хелперов на больших конфигурациях. Строится через MCP-тул из AI-клиента:
+
+```
+rlm_index(action="build", project="ERP")
+```
+
+Или через CLI:
+```bash
+docker compose exec rlm rlm-bsl-index index build /repos/erp/src/cf
+```
+
+Полный набор действий MCP-тула `rlm_index`: `build`, `update`, `info`, `drop`.
+
+При следующих стартах/рестартах контейнера entrypoint автоматически обновляет
+существующие индексы зарегистрированных проектов.
+Если индекс не строился — проект пропускается.
+
+**Хранение данных:**
+
+| Что | Путь в контейнере | Том |
+|-----|-------------------|-----|
+| Реестр проектов, логи | `~/.config/rlm-tools-bsl/` | `rlm-config` (включён) |
+| SQLite-индексы | `~/.cache/rlm-tools-bsl/` | `rlm-index-cache` (включён) |
+| Исходники 1С | `/repos/` | `REPOS_ROOT` (read-only) |
+
+Оба тома включены по умолчанию — реестр проектов и индексы переживают `docker compose down && up`.
+
+**7. Обновление и откат:**
+
+Автоматически при перезапуске:
+```bash
+docker compose restart rlm
+```
+
+Если PyPI недоступен — контейнер стартует с текущей версией.
+
+**Фиксация/откат версии** — если новая версия сломалась:
+```yaml
+environment:
+  - RLM_VERSION=1.6.2   # зафиксировать конкретную версию
+```
+```bash
+docker compose restart rlm
+```
+Убрать `RLM_VERSION` (или `=latest`) → вернуться к авто-обновлению.
+
+**8. Конфиг AI-клиента:**
+
+```json
+{
+  "mcpServers": {
+    "rlm-tools-bsl": {
+      "type": "http",
+      "url": "http://HOST:9000/mcp"
+    }
+  }
+}
+```
+
+Все переменные окружения: [ENV_REFERENCE.md](ENV_REFERENCE.md)
+
+### Вариант C: Из исходников (для разработки)
 
 ```bash
 git clone https://github.com/Dach-Coin/rlm-tools-bsl.git

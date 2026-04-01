@@ -1,0 +1,59 @@
+# WARNING: Windows + Docker Desktop (WSL2) — NOT recommended.
+# File I/O through Virtiofs/9P is 5-10x slower than native.
+# Indexing and helpers will be significantly slower.
+# Use pip install / Windows service instead. Docker is optimal for Linux.
+
+services:
+  rlm:
+    build: .
+    ports:
+      - "${RLM_PORT:-9000}:9000"
+    volumes:
+      # Root of 1C repositories — mount read-only.
+      # Examples:
+      #   Windows: - "D:/Repos/1c:/repos:ro"
+      #   Linux:   - "/home/user/repos:/repos:ro"
+      #   Env var: - "${REPOS_ROOT:?Set REPOS_ROOT}:/repos:ro"
+      - "${REPOS_ROOT:?Set REPOS_ROOT to your 1C repos root}:/repos:ro"
+      # Config: projects.json, service.json, logs/ — survives container recreation
+      - rlm-config:/home/rlm/.config/rlm-tools-bsl
+      # Index cache (SQLite indexes) — survives container recreation
+      - rlm-index-cache:/home/rlm/.cache/rlm-tools-bsl
+    environment:
+      ## === Package version ===
+      # Empty or "latest" — auto-update from PyPI on start.
+      # Specific version — pip install ==version, no PyPI check.
+      # - RLM_VERSION=latest
+
+      ## === Path mapping (IMPORTANT for Docker) ===
+      ## Translates host paths to container paths automatically.
+      ## Without this, you must use container paths (/repos/...) when registering projects.
+      ## With this, you can use host paths (D:/Repos/1c/...) — the server translates them.
+      ## Format: "host_prefix:container_prefix". Pick ONE based on your OS:
+      # - RLM_PATH_MAP=D:/Repos/1c:/repos       # Windows
+      # - RLM_PATH_MAP=/home/user/repos:/repos   # Linux
+
+      ## === Server ===
+      - RLM_TRANSPORT=streamable-http
+      - RLM_HOST=0.0.0.0
+      - RLM_PORT=9000
+      # - RLM_MAX_SESSIONS=5
+      # - RLM_SESSION_TIMEOUT=10
+
+      ## === Indexes ===
+      # - RLM_INDEX_DIR=/home/rlm/.cache/rlm-tools-bsl
+      # - RLM_INDEX_MAX_AGE_DAYS=7
+
+      ## === LLM for llm_query() (optional) ===
+      # - RLM_LLM_BASE_URL=https://api.kilo.ai/api/gateway
+      # - RLM_LLM_API_KEY=your-api-key
+      # - RLM_LLM_MODEL=kilo-auto/free
+      # - ANTHROPIC_API_KEY=sk-ant-...
+
+      ## === Debug ===
+      # - RLM_LOG_HELPERS=all
+    restart: unless-stopped
+
+volumes:
+  rlm-config:
+  rlm-index-cache:

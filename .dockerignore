@@ -1,0 +1,11 @@
+.git
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+tmp/
+benchmarks/
+tests/
+docs/
+*.egg-info
+# NOTE: dist/ is NOT excluded — Dockerfile uses dist/*.whl for local wheel builds

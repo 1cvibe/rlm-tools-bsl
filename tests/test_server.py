@@ -4,7 +4,15 @@ import sys
 import tempfile
 from unittest.mock import patch, MagicMock
 
-from rlm_tools_bsl.server import _rlm_start, _rlm_execute, _rlm_end, _format_helper_summary, _rlm_projects
+from rlm_tools_bsl.server import (
+    _rlm_start,
+    _rlm_execute,
+    _rlm_end,
+    _format_helper_summary,
+    _rlm_projects,
+    _rlm_index,
+    _resolve_path_map,
+)
 from rlm_tools_bsl.sandbox import HelperCall
 
 
@@ -1004,3 +1012,209 @@ def test_streamable_http_server_starts():
     finally:
         proc.terminate()
         proc.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# rlm_index integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_rlm_index_requires_path_or_project():
+    r = json.loads(_rlm_index(action="build"))
+    assert "error" in r
+    assert "path" in r["error"].lower() or "project" in r["error"].lower()
+
+
+def test_rlm_index_path_not_found():
+    r = json.loads(_rlm_index(action="build", path="/nonexistent/path/xyz"))
+    assert "error" in r
+
+
+def test_rlm_index_build_and_info_and_drop():
+    """Full lifecycle: build → info → drop."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, "src")
+        idx_dir = os.path.join(tmpdir, "indexes")
+        os.makedirs(src)
+        with open(os.path.join(src, "Module.bsl"), "w", encoding="utf-8") as f:
+            f.write("Процедура Тест()\nКонецПроцедуры\n")
+
+        with patch.dict(os.environ, {"RLM_INDEX_DIR": idx_dir}):
+            # build
+            r = json.loads(_rlm_index(action="build", path=src))
+            assert r["action"] == "build"
+            assert "db_path" in r
+            assert r["elapsed_seconds"] >= 0
+
+            # info
+            r = json.loads(_rlm_index(action="info", path=src))
+            assert r["action"] == "info"
+            assert "modules" in r
+            assert "methods" in r
+
+            # drop
+            r = json.loads(_rlm_index(action="drop", path=src))
+            assert r["action"] == "drop"
+            assert "dropped" in r
+
+            # info after drop → error
+            r = json.loads(_rlm_index(action="info", path=src))
+            assert "error" in r
+            assert "not found" in r["error"].lower()
+
+
+def test_rlm_index_drop_nonexistent():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        r = json.loads(_rlm_index(action="drop", path=tmpdir))
+        assert "error" in r
+        assert "not found" in r["error"].lower()
+
+
+def test_rlm_index_update_no_index():
+    """Update without prior build → FileNotFoundError."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, "src")
+        idx_dir = os.path.join(tmpdir, "indexes")
+        os.makedirs(src)
+        with patch.dict(os.environ, {"RLM_INDEX_DIR": idx_dir}):
+            r = json.loads(_rlm_index(action="update", path=src))
+            assert "error" in r
+
+
+def test_rlm_index_build_and_update():
+    """Build then update → returns delta counts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, "src")
+        idx_dir = os.path.join(tmpdir, "indexes")
+        os.makedirs(src)
+        with open(os.path.join(src, "Module.bsl"), "w", encoding="utf-8") as f:
+            f.write("Процедура Один()\nКонецПроцедуры\n")
+
+        with patch.dict(os.environ, {"RLM_INDEX_DIR": idx_dir}):
+            _rlm_index(action="build", path=src)
+
+            # update with no changes
+            r = json.loads(_rlm_index(action="update", path=src))
+            assert r["action"] == "update"
+            assert r["added"] == 0
+            assert r["changed"] == 0
+            assert r["removed"] == 0
+
+            # cleanup
+            _rlm_index(action="drop", path=src)
+
+
+def test_rlm_index_with_project():
+    """rlm_index resolves project name from the registry."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from rlm_tools_bsl.projects import _reset_registry
+
+        src = os.path.join(tmpdir, "src")
+        idx_dir = os.path.join(tmpdir, "indexes")
+        os.makedirs(src)
+        with open(os.path.join(src, "Module.bsl"), "w", encoding="utf-8") as f:
+            f.write("Процедура Два()\nКонецПроцедуры\n")
+
+        _reset_registry()
+        with patch.dict(
+            os.environ, {"RLM_CONFIG_FILE": os.path.join(tmpdir, "service.json"), "RLM_INDEX_DIR": idx_dir}
+        ):
+            _reset_registry()
+            _rlm_projects(action="add", name="IdxTest", path=src)
+
+            # build by project name
+            r = json.loads(_rlm_index(action="build", project="IdxTest"))
+            assert r["action"] == "build"
+            assert r["project"] == "IdxTest"
+
+            # info by project name
+            r = json.loads(_rlm_index(action="info", project="IdxTest"))
+            assert r["action"] == "info"
+            assert r["project"] == "IdxTest"
+
+            # drop by project name
+            r = json.loads(_rlm_index(action="drop", project="IdxTest"))
+            assert r["action"] == "drop"
+            assert r["project"] == "IdxTest"
+
+
+def test_rlm_index_unknown_action():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        r = json.loads(_rlm_index(action="unknown", path=tmpdir))
+        assert "error" in r
+
+
+def test_rlm_index_build_options():
+    """Build with all skip flags."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, "src")
+        idx_dir = os.path.join(tmpdir, "indexes")
+        os.makedirs(src)
+        with open(os.path.join(src, "Module.bsl"), "w", encoding="utf-8") as f:
+            f.write("Процедура Три()\nКонецПроцедуры\n")
+
+        with patch.dict(os.environ, {"RLM_INDEX_DIR": idx_dir}):
+            r = json.loads(
+                _rlm_index(
+                    action="build",
+                    path=src,
+                    no_calls=True,
+                    no_metadata=True,
+                    no_fts=True,
+                    no_synonyms=True,
+                )
+            )
+            assert r["action"] == "build"
+            assert "db_path" in r
+            assert r["db_path"].startswith(idx_dir)
+
+            # cleanup
+            _rlm_index(action="drop", path=src)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_path_map tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_path_map_no_env():
+    """Without RLM_PATH_MAP, path is returned unchanged."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("RLM_PATH_MAP", None)
+        assert _resolve_path_map("D:/Repos/erp/src") == "D:/Repos/erp/src"
+
+
+def test_resolve_path_map_windows_prefix():
+    with patch.dict(os.environ, {"RLM_PATH_MAP": "D:/Repos:/repos"}):
+        assert _resolve_path_map("D:/Repos/erp/src/cf") == "/repos/erp/src/cf"
+
+
+def test_resolve_path_map_backslashes():
+    with patch.dict(os.environ, {"RLM_PATH_MAP": "D:/Repos:/repos"}):
+        assert _resolve_path_map("D:\\Repos\\erp\\src\\cf") == "/repos/erp/src/cf"
+
+
+def test_resolve_path_map_case_insensitive():
+    with patch.dict(os.environ, {"RLM_PATH_MAP": "D:/Repos:/repos"}):
+        assert _resolve_path_map("d:/repos/erp/src") == "/repos/erp/src"
+
+
+def test_resolve_path_map_no_match():
+    with patch.dict(os.environ, {"RLM_PATH_MAP": "D:/Repos:/repos"}):
+        assert _resolve_path_map("/home/user/data") == "/home/user/data"
+
+
+def test_resolve_path_map_linux():
+    with patch.dict(os.environ, {"RLM_PATH_MAP": "/home/user/repos:/repos"}):
+        assert _resolve_path_map("/home/user/repos/erp/src") == "/repos/erp/src"
+
+
+def test_resolve_path_map_trailing_slash():
+    with patch.dict(os.environ, {"RLM_PATH_MAP": "D:/Repos/:/repos/"}):
+        assert _resolve_path_map("D:/Repos/erp/src") == "/repos/erp/src"
+
+
+def test_resolve_path_map_partial_prefix_no_match():
+    """D:/Rep must NOT match D:/Repos — boundary check."""
+    with patch.dict(os.environ, {"RLM_PATH_MAP": "D:/Rep:/repos"}):
+        assert _resolve_path_map("D:/Repos/erp") == "D:/Repos/erp"
