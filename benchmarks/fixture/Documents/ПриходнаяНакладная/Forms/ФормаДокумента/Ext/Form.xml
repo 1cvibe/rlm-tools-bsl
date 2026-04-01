@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Events>
+    <Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
+  </Events>
+  <ChildItems>
+    <InputField name="Контрагент" id="1">
+      <DataPath>Контрагент</DataPath>
+      <Events>
+        <Event name="OnChange">КонтрагентПриИзменении</Event>
+      </Events>
+    </InputField>
+    <Button name="КнопкаОбновить" id="2">
+      <CommandName>Form.Command.Обновить</CommandName>
+    </Button>
+    <Table name="Товары" id="3">
+      <ChildItems>
+        <InputField name="Номенклатура" id="4">
+          <DataPath>Товары.Номенклатура</DataPath>
+          <Events>
+            <Event name="OnChange">ТоварыНоменклатураПриИзменении</Event>
+          </Events>
+        </InputField>
+      </ChildItems>
+    </Table>
+  </ChildItems>
+  <Commands>
+    <Command name="Обновить">
+      <Action>ОбновитьВыполнить</Action>
+    </Command>
+  </Commands>
+  <Attributes>
+    <Attribute name="Объект" id="10">
+      <Main>true</Main>
+      <Type>
+        <Type>DocumentObject.ПриходнаяНакладная</Type>
+      </Type>
+    </Attribute>
+  </Attributes>
+</Form>

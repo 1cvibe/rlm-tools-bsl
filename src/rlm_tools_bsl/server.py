@@ -523,11 +523,11 @@ def _rlm_start(
     available_functions = [entry["sig"] for entry in bsl_registry.values()]
     available_functions.extend(
         [
-            "read_file(path) -> str",
-            "read_files(paths) -> dict[path, content]",
+            "read_file(path) -> str (numbered: '  42 | code')",
+            "read_files(paths) -> dict[path, str] (numbered: '  42 | code')",
             "grep(pattern, path='.') -> list[dict] keys: file, line, text",
             "grep_summary(pattern, path='.') -> compact grouped string",
-            "grep_read(pattern, path='.', max_files=10, context_lines=0) -> {matches, files, summary}",
+            "grep_read(pattern, path='.', max_files=10, context_lines=0) -> {matches, files (numbered), summary}",
             "glob_files(pattern) -> list[str]",
             "tree(path='.', max_depth=3) -> str",
             "find_files(name) -> list[str]",

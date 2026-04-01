@@ -65,7 +65,7 @@ docs/                   # документация
 
 ## Версионирование
 
-Проект публикуется в [PyPI](https://pypi.org/project/rlm-tools-bsl/). Если ваш PR изменяет код (не только документацию), **обязательно сделайте bump версии** в `pyproject.toml`:
+Проект публикуется в [PyPI](https://pypi.org/project/rlm-tools-bsl/). Если ваш PR изменяет код (не только документацию), **обязательно сделайте bump версии** в `pyproject.toml` и `uv.lock`:
 
 - Багфиксы: `x.x.x` → `x.x.x+1` (patch)
 - Новые фичи: `x.x.x` → `x.x+1.0` (minor)
@@ -77,7 +77,7 @@ docs/                   # документация
 1. Форкните репозиторий
 2. Создайте ветку от `master` (`git checkout -b feature/my-feature`)
 3. Внесите изменения и убедитесь, что тесты проходят
-4. Если изменён код — сделайте version bump в `pyproject.toml` и запись в `CHANGELOG.md`
+4. Если изменён код — сделайте version bump в `pyproject.toml`, обновите `uv.lock` (`uv lock`), и добавьте запись в `CHANGELOG.md`
 5. Отправьте PR с описанием: что изменено и зачем
 
 ## Что можно улучшить

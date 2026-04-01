@@ -123,6 +123,10 @@ def run_benchmarks():
     else:
         results.append(("parse_metadata_xml(ТоварыНаСкладах)", "-", "SKIP: XML не найден"))
 
+    # parse_form — парсинг CF-формы
+    form_result, ms = timed("parse_form", bsl["parse_form"], "ПриходнаяНакладная", "ФормаДокумента")
+    results.append(("parse_form(ПриходнаяНакладная, ФормаДокумента)", f"{ms:.1f}", f"{len(form_result)} форм"))
+
     # find_event_subscriptions
     subs, ms = timed("find_event_subscriptions", bsl["find_event_subscriptions"])
     results.append(("find_event_subscriptions()", f"{ms:.1f}", f"{len(subs)} подписок"))

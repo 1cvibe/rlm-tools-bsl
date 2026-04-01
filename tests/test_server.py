@@ -252,8 +252,8 @@ def test_new_helpers_in_sandbox():
             code="result = read_files(['a.txt', 'b.txt'])\nfor k, v in sorted(result.items()):\n    print(f'{k}: {v}')",
         )
         exec_data = json.loads(exec_result)
-        assert "a.txt: hello from a" in exec_data["stdout"]
-        assert "b.txt: hello from b" in exec_data["stdout"]
+        assert "a.txt: 1 | hello from a" in exec_data["stdout"]
+        assert "b.txt: 1 | hello from b" in exec_data["stdout"]
 
         exec_result2 = _rlm_execute(session_id=session_id, code="print(grep_summary('hello'))")
         exec_data2 = json.loads(exec_result2)
@@ -789,6 +789,163 @@ def test_rlm_start_path_project_hint():
             assert "session_id" in result
             assert "project_hint" in result
             _rlm_end(result["session_id"])
+
+
+def test_sandbox_read_file_numbered():
+    """read_file in MCP sandbox returns numbered lines."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "test.txt"), "w") as f:
+            f.write("alpha\nbeta\ngamma")
+
+        result = _rlm_start(path=tmpdir, query="test numbered")
+        data = json.loads(result)
+        session_id = data["session_id"]
+
+        exec_result = _rlm_execute(session_id=session_id, code="print(read_file('test.txt'))")
+        exec_data = json.loads(exec_result)
+        assert "1 | alpha" in exec_data["stdout"]
+        assert "2 | beta" in exec_data["stdout"]
+        assert "3 | gamma" in exec_data["stdout"]
+
+        _rlm_end(session_id)
+
+
+def test_sandbox_read_files_numbered():
+    """read_files in MCP sandbox returns numbered lines."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "x.txt"), "w") as f:
+            f.write("line1\nline2")
+
+        result = _rlm_start(path=tmpdir, query="test numbered files")
+        data = json.loads(result)
+        session_id = data["session_id"]
+
+        exec_result = _rlm_execute(
+            session_id=session_id,
+            code="r = read_files(['x.txt'])\nprint(r['x.txt'])",
+        )
+        exec_data = json.loads(exec_result)
+        assert "1 | line1" in exec_data["stdout"]
+        assert "2 | line2" in exec_data["stdout"]
+
+        _rlm_end(session_id)
+
+
+def test_sandbox_grep_read_numbered():
+    """grep_read with context_lines=0 returns numbered file contents."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "code.txt"), "w") as f:
+            f.write("function test()\n  return true\nend")
+
+        result = _rlm_start(path=tmpdir, query="test grep numbered")
+        data = json.loads(result)
+        session_id = data["session_id"]
+
+        exec_result = _rlm_execute(
+            session_id=session_id,
+            code="r = grep_read('test', 'code.txt')\nprint(r['files']['code.txt'])",
+        )
+        exec_data = json.loads(exec_result)
+        assert "1 | " in exec_data["stdout"]
+        assert "2 | " in exec_data["stdout"]
+
+        _rlm_end(session_id)
+
+
+def test_sandbox_grep_read_context_unchanged():
+    """grep_read with context_lines>0 keeps L42: format (not numbered)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "code.txt"), "w") as f:
+            f.write("line1\nline2\ntarget\nline4\nline5")
+
+        result = _rlm_start(path=tmpdir, query="test grep context")
+        data = json.loads(result)
+        session_id = data["session_id"]
+
+        exec_result = _rlm_execute(
+            session_id=session_id,
+            code="r = grep_read('target', 'code.txt', context_lines=1)\nprint(r['files']['code.txt'])",
+        )
+        exec_data = json.loads(exec_result)
+        # context_lines>0 should use L-prefix format, not pipe format
+        assert "L2:" in exec_data["stdout"] or "L3:" in exec_data["stdout"]
+        assert " | " not in exec_data["stdout"]
+
+        _rlm_end(session_id)
+
+
+def test_read_procedure_numbered_param():
+    """read_procedure with numbered=True returns numbered lines, default returns raw."""
+    from rlm_tools_bsl.bsl_helpers import make_bsl_helpers
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl_path = os.path.join(tmpdir, "Module.bsl")
+        with open(bsl_path, "w", encoding="utf-8") as f:
+            f.write("// header\nПроцедура Тест()\n  Возврат;\nКонецПроцедуры\n")
+
+        def _read(p):
+            with open(os.path.join(tmpdir, p), encoding="utf-8-sig", errors="replace") as fh:
+                return fh.read()
+
+        helpers = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=lambda p: os.path.join(tmpdir, p),
+            read_file_fn=_read,
+            grep_fn=lambda *a, **kw: [],
+            glob_files_fn=lambda *a, **kw: [],
+            format_info=None,
+        )
+        rp = helpers["read_procedure"]
+
+        raw = rp("Module.bsl", "Тест")
+        assert raw is not None
+        assert " | " not in raw
+        assert raw.startswith("Процедура Тест()")
+
+        numbered = rp("Module.bsl", "Тест", numbered=True)
+        assert numbered is not None
+        assert "2 | Процедура Тест()" in numbered
+        assert "3 |   Возврат;" in numbered
+
+
+def test_read_procedure_numbered_absolute():
+    """read_procedure numbered=True starts numbering at the actual line in file."""
+    from rlm_tools_bsl.bsl_helpers import make_bsl_helpers
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bsl_path = os.path.join(tmpdir, "Module.bsl")
+        # Procedure starts at line 5
+        lines = [
+            "// line 1",
+            "// line 2",
+            "// line 3",
+            "// line 4",
+            "Процедура Пятая()",
+            "  Возврат;",
+            "КонецПроцедуры",
+        ]
+        with open(bsl_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+        def _read(p):
+            with open(os.path.join(tmpdir, p), encoding="utf-8-sig", errors="replace") as fh:
+                return fh.read()
+
+        helpers = make_bsl_helpers(
+            base_path=tmpdir,
+            resolve_safe=lambda p: os.path.join(tmpdir, p),
+            read_file_fn=_read,
+            grep_fn=lambda *a, **kw: [],
+            glob_files_fn=lambda *a, **kw: [],
+            format_info=None,
+        )
+        rp = helpers["read_procedure"]
+
+        numbered = rp("Module.bsl", "Пятая", numbered=True)
+        assert numbered is not None
+        assert "5 | Процедура Пятая()" in numbered
+        assert "6 |   Возврат;" in numbered
+        assert "7 | КонецПроцедуры" in numbered
 
 
 def test_streamable_http_server_starts():

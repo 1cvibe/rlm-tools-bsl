@@ -76,7 +76,7 @@ Step 1 — DISCOVER: find what you need
 
 Step 2 — READ: understand the code
   extract_procedures(path) → list all procedures with lines
-  read_procedure(path, 'ProcName') → get procedure body
+  read_procedure(path, 'ProcName') → get procedure body (numbered)
   find_exports(path) → exported API of a module
 
 Step 3 — TRACE: follow the call chains
@@ -266,7 +266,7 @@ _RECIPE_ALIASES: dict[str, str] = {
 
 _STRATEGY_IO_SECTION = """\
 File I/O:
-  read_file(path), read_files(paths)       → str / dict
+  read_file(path), read_files(paths)       → str / dict (numbered in MCP session)
   grep(pattern, path), grep_summary(pattern), grep_read(pattern, path)
   glob_files(pattern), tree(path, max_depth=3), find_files(name)
   NOTE: For BSL modules prefer find_module()/find_by_type() over glob_files()

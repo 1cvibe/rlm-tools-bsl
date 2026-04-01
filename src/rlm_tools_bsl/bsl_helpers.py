@@ -420,7 +420,9 @@ def make_bsl_helpers(
         results.sort(key=lambda m: (m.get("file", ""), m.get("line", 0)))
         return results
 
-    def read_procedure(path: str, proc_name: str, include_overrides: bool = False) -> str | None:
+    def read_procedure(
+        path: str, proc_name: str, include_overrides: bool = False, numbered: bool = False
+    ) -> str | None:
         """Extract a single procedure body from a BSL file by name.
         With include_overrides=True, appends extension override bodies if available."""
         procedures = extract_procedures(path)
@@ -440,6 +442,11 @@ def make_bsl_helpers(
         # end_line is 1-based and inclusive
         extracted = lines[start:end]
         body = "\n".join(extracted)
+
+        if numbered:
+            from rlm_tools_bsl._format import number_lines
+
+            body = number_lines(body, start=target["line"])
 
         if not include_overrides:
             return body
@@ -516,6 +523,10 @@ def make_bsl_helpers(
             parts.append(header)
             parts.append(file_ref)
             if ext_body:
+                if numbered and start_idx is not None:
+                    from rlm_tools_bsl._format import number_lines
+
+                    ext_body = number_lines(ext_body, start=start_idx + 1)
                 parts.append(ext_body)
 
         return "\n".join(parts)
@@ -2544,11 +2555,11 @@ def make_bsl_helpers(
     _reg(
         "read_procedure",
         read_procedure,
-        "read_procedure(path, proc_name, include_overrides=False) -> str | None",
+        "read_procedure(path, proc_name, include_overrides=False) -> str | None (numbered in MCP session)",
         "code",
         ["read", "чтени", "читать", "содержим", "content", "тело", "body"],
         "READ PROCEDURE BODY:\n"
-        "  body = read_procedure('path/to/Module.bsl', 'ProcedureName')\n"
+        "  body = read_procedure('path/to/Module.bsl', 'ProcedureName')  # numbered in MCP session\n"
         "  print(body)\n"
         "  # Or read full file:\n"
         "  content = read_file('path/to/Module.bsl')\n"

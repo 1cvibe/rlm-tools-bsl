@@ -133,6 +133,49 @@ class Sandbox:
             )
             self._namespace.update(self._wrap_helpers(bsl_helpers))
 
+            # --- Agent-facing line numbering (presentation layer) ---
+            from rlm_tools_bsl._format import number_lines
+
+            _raw_rf = helpers["read_file"]
+
+            def _numbered_read_file(path: str) -> str:
+                return number_lines(_raw_rf(path))
+
+            def _numbered_read_files(paths: list[str]) -> dict[str, str]:
+                result = {}
+                for path in paths:
+                    try:
+                        result[path] = number_lines(_raw_rf(path))
+                    except (OSError, PermissionError) as e:
+                        result[path] = f"[error: {e}]"
+                return result
+
+            _raw_grep_read = helpers["grep_read"]
+
+            def _numbered_grep_read(pattern, path=".", max_files=10, context_lines=0):
+                result = _raw_grep_read(pattern, path, max_files, context_lines)
+                if context_lines == 0:
+                    for fp in list(result.get("files", {})):
+                        content = result["files"][fp]
+                        if not content.startswith("[error:"):
+                            result["files"][fp] = number_lines(content)
+                return result
+
+            _raw_read_procedure = bsl_helpers.get("read_procedure")
+
+            def _numbered_read_procedure(path, proc_name, include_overrides=False):
+                return _raw_read_procedure(path, proc_name, include_overrides, numbered=True)
+
+            numbered_overrides = [
+                ("read_file", _numbered_read_file),
+                ("read_files", _numbered_read_files),
+                ("grep_read", _numbered_grep_read),
+            ]
+            if _raw_read_procedure is not None:
+                numbered_overrides.append(("read_procedure", _numbered_read_procedure))
+            for name, fn in numbered_overrides:
+                self._namespace[name] = self._wrap_helpers({name: fn})[name]
+
     def _wrap_helpers(self, helpers: dict) -> dict:
         """Wrap callable helpers with timing instrumentation."""
         wrapped = {}
