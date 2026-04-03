@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-from rlm_tools_bsl.session import SessionManager
+from rlm_tools_bsl.session import SessionManager, build_session_manager_from_env
 from rlm_tools_bsl.sandbox import Sandbox
 from rlm_tools_bsl.llm_bridge import get_llm_query_fn, make_llm_query_batched, warmup_openai_import
 from rlm_tools_bsl.format_detector import FormatInfo, SourceFormat, detect_format
@@ -41,10 +41,7 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP("rlm-tools-bsl", stateless_http=True)
 
-session_manager = SessionManager(
-    max_sessions=int(os.environ.get("RLM_MAX_SESSIONS", "5")),
-    timeout_minutes=int(os.environ.get("RLM_SESSION_TIMEOUT", "10")),
-)
+session_manager = SessionManager()  # defaults for tests/import
 
 _sandboxes: dict[str, Sandbox] = {}
 _idx_readers: dict[str, IndexReader] = {}
@@ -1197,9 +1194,12 @@ def _warmup_imports():
 
 
 def main():
+    global session_manager
     from rlm_tools_bsl._config import load_project_env
 
     load_project_env()
+
+    session_manager = build_session_manager_from_env()
 
     parser = argparse.ArgumentParser(description="rlm-tools-bsl MCP server")
     parser.add_argument(

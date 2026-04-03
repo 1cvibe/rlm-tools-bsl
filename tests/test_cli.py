@@ -60,7 +60,7 @@ class TestCliBuild:
         assert result.returncode == 0
         assert "Индекс построен" in result.stdout or "methods" in result.stdout.lower()
         # DB file should exist
-        db_files = list(idx_dir.rglob("method_index.db"))
+        db_files = list(idx_dir.rglob("bsl_index.db"))
         assert len(db_files) == 1
 
     def test_cli_build_no_calls(self, cli_bsl_project):
@@ -73,7 +73,7 @@ class TestCliBuild:
             env_override={"RLM_INDEX_DIR": str(idx_dir)},
         )
         assert result.returncode == 0
-        db_files = list(idx_dir.rglob("method_index.db"))
+        db_files = list(idx_dir.rglob("bsl_index.db"))
         assert len(db_files) == 1
 
 
@@ -129,7 +129,7 @@ class TestCliDrop:
             str(project_path),
             env_override={"RLM_INDEX_DIR": str(idx_dir)},
         )
-        db_files = list(idx_dir.rglob("method_index.db"))
+        db_files = list(idx_dir.rglob("bsl_index.db"))
         assert len(db_files) == 1
         # Drop
         result = _run_cli(
@@ -139,5 +139,5 @@ class TestCliDrop:
             env_override={"RLM_INDEX_DIR": str(idx_dir)},
         )
         assert result.returncode == 0
-        db_files = list(idx_dir.rglob("method_index.db"))
+        db_files = list(idx_dir.rglob("bsl_index.db"))
         assert len(db_files) == 0

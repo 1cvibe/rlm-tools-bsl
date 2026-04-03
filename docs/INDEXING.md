@@ -42,13 +42,15 @@
 
 ## 2. Включение и настройка
 
-Признак «включённости» индекса — не переменная окружения, а наличие файла `method_index.db` в каталоге хранения. Индекс создаётся командой `rlm-bsl-index index build <path>`. Если файл `method_index.db` существует — хелперы автоматически используют его для ускорения. Если файла нет — всё работает как раньше, без индекса.
+Признак «включённости» индекса — не переменная окружения, а наличие файла `bsl_index.db` в каталоге хранения. Индекс создаётся командой `rlm-bsl-index index build <path>`. Если файл `bsl_index.db` существует — хелперы автоматически используют его для ускорения. Если файла нет — всё работает как раньше, без индекса.
+
+> **Миграция с `method_index.db`:** при первом обращении к индексу файл `method_index.db` автоматически переименовывается в `bsl_index.db` (ленивая миграция). Если переименование невозможно (файл занят другим процессом) — используется старое имя как fallback, индекс работает без перебоев. Повторная попытка переименования произойдёт при следующем обращении.
 
 Поведение индекса настраивается переменными окружения:
 
 | Переменная                    | По умолчанию              | Описание                                                                                                                                                                                                                                                  |
 | ----------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RLM_INDEX_DIR`               | `~/.cache/rlm-tools-bsl/` | Каталог хранения индексов (Linux: `/home/user/.cache/rlm-tools-bsl/`, Windows: `C:\Users\user\.cache\rlm-tools-bsl\`). Внутри создаётся подкаталог с хешем пути конфигурации, например: `C:\Users\user\.cache\rlm-tools-bsl\a3f8b2c1d4e5\method_index.db` |
+| `RLM_INDEX_DIR`               | `~/.cache/rlm-tools-bsl/` | Каталог хранения индексов (Linux: `/home/user/.cache/rlm-tools-bsl/`, Windows: `C:\Users\user\.cache\rlm-tools-bsl\`). Внутри создаётся подкаталог с хешем пути конфигурации, например: `C:\Users\user\.cache\rlm-tools-bsl\a3f8b2c1d4e5\bsl_index.db` |
 | `RLM_INDEX_MAX_AGE_DAYS`      | `7`                       | Порог предупреждения о возрасте индекса (дни). Если индекс старше — статус `STALE_AGE`                                                                                                                                                                    |
 | `RLM_INDEX_SAMPLE_SIZE`       | `5`                       | Количество файлов для выборочной проверки свежести. `0` — отключить проверку                                                                                                                                                                              |
 | `RLM_INDEX_SAMPLE_THRESHOLD`  | `30`                      | Минимальное число модулей в индексе, при котором выполняется выборочная проверка                                                                                                                                                                          |
@@ -77,7 +79,7 @@
 
 ### Блокировка параллельных сборок (build lock)
 
-При запуске `build` или `update` сервер захватывает эксклюзивную файловую блокировку (`method_index.lock` рядом с БД). Если другой процесс уже строит индекс для этого же пути — возвращается ошибка `RuntimeError` вместо повреждения БД. Блокировка реентрантна в рамках одного процесса (последовательные `build` + `update`), использует OS-level locking (`msvcrt.locking` на Windows, `fcntl.flock` на Linux) и автоматически освобождается при аварийном завершении процесса.
+При запуске `build` или `update` сервер захватывает эксклюзивную файловую блокировку (`bsl_index.lock` рядом с БД). Если другой процесс уже строит индекс для этого же пути — возвращается ошибка `RuntimeError` вместо повреждения БД. Блокировка реентрантна в рамках одного процесса (последовательные `build` + `update`), использует OS-level locking (`msvcrt.locking` на Windows, `fcntl.flock` на Linux) и автоматически освобождается при аварийном завершении процесса.
 
 ## 4. CLI-команды
 
@@ -104,21 +106,23 @@ Call graph:  yes
 Metadata:    yes
 FTS search:  yes
 
-Index built in 511.6s
+Index built in 768.3s
   Index:    v11
-  Config:   УправлениеПредприятием 2.5.14.59
+  Config:   УправлениеПредприятием 2.5.20.80
   Format:   cf
-  Modules:  23461
-  Methods:  569068
-  Calls:    4554311
-  Exports:  187585
-  EventSubs:  536
+  Modules:  24055
+  Methods:  617207
+  Calls:    4897432
+  Exports:  206207
+  EventSubs:  532
   SchedJobs:  238
-  FuncOpts:   929
-  Synonyms:   13661
-  FilePaths:  103128
-  DB size:  1322.5 MB
-  DB path:  C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
+  FuncOpts:   944
+  Synonyms:   13340
+  Attributes: 73172
+  Predefined: 3849
+  FilePaths:  106692
+  DB size:  1305.4 MB
+  DB path:  C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\bsl_index.db
 ```
 
 ### Инкрементальное обновление
@@ -153,22 +157,24 @@ rlm-bsl-index index info <path>
 
 ```
 $ rlm-bsl-index index info "D:\ERP\src\cf"
-Index: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db
+Index: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\bsl_index.db
   Index:    v11
-  Config:   УправлениеПредприятием 2.5.14.59
+  Config:   УправлениеПредприятием 2.5.20.80
   Format:   cf
   Status:   fresh
-  Modules:  23461
-  Methods:  569068
-  Calls:    4554311
-  Exports:  187585
-  EventSubs:  536
+  Modules:  24055
+  Methods:  617207
+  Calls:    4897432
+  Exports:  206207
+  EventSubs:  532
   SchedJobs:  238
-  FuncOpts:   929
-  Synonyms:   13661
-  FilePaths:  103128
+  FuncOpts:   944
+  Synonyms:   13340
+  Attributes: 73172
+  Predefined: 3849
+  FilePaths:  106692
   FTS:      yes
-  DB size:  1322.5 MB
+  DB size:  1305.4 MB
   Built:    10s ago
   BSL files on disk: 23461
 ```
@@ -187,12 +193,12 @@ rlm-bsl-index index drop <path>
 
 ```bash
 $ rlm-bsl-index index drop D:\ERP\src
-Индекс удалён: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\method_index.db (142.5 MB)
+Индекс удалён: C:\Users\user\.cache\rlm-tools-bsl\a1b2c3d4e5f6\bsl_index.db (142.5 MB)
 ```
 
 ## 5. Структура индекса
 
-Индекс хранится в SQLite-базе `method_index.db` и содержит 22 таблицы (4 основные + 17 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
+Индекс хранится в SQLite-базе `bsl_index.db` и содержит 22 таблицы (4 основные + 17 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
 
 ### index_meta
 
@@ -587,8 +593,9 @@ LIMIT 30;
 | `attr_name`    | TEXT       | Техническое имя реквизита                         | `Организация`                                       |
 | `attr_synonym` | TEXT       | Синоним (отображаемое имя)                        | `Организация`                                       |
 | `attr_type`    | TEXT       | JSON-массив типов                                 | `["CatalogRef.Организации"]`                        |
-| `attr_kind`    | TEXT       | Вид: attribute / dimension / resource / column    | `attribute`                                         |
-| `ts_name`      | TEXT       | Имя табличной части (для kind=column), иначе NULL | `Товары`                                            |
+| `attr_kind`    | TEXT       | Вид: attribute / dimension / resource / ts_attribute | `attribute`                                         |
+| `ts_name`      | TEXT       | Имя табличной части (для kind=ts_attribute), иначе NULL | `Товары`                                            |
+| `source_file`  | TEXT       | Путь к исходному XML-файлу метаданных             | `Documents/Тест/Тест.xml` (CF) / `Documents/Тест/Тест.mdo` (EDT) |
 
 Поддерживаемые категории (6): Documents, Catalogs, InformationRegisters, AccumulationRegisters, ChartsOfCharacteristicTypes, AccountingRegisters.
 
@@ -596,14 +603,14 @@ LIMIT 30;
 - `attribute` — реквизиты объекта (Attributes)
 - `dimension` — измерения регистра (Dimensions)
 - `resource` — ресурсы регистра (Resources)
-- `column` — колонки табличной части (TabularSection → Attributes), `ts_name` заполняется
+- `ts_attribute` — реквизиты табличной части (TabularSection → Attributes), `ts_name` заполняется
 
 Типы (`attr_type`) нормализуются из XML-формата: `xs:string` → `String`, `cfg:CatalogRef.Номенклатура` → `CatalogRef.Номенклатура`, `d4p1:CatalogRef.*` → `CatalogRef.*`. Составные типы хранятся как JSON-массив: `["CatalogRef.Организации", "String"]`.
 
 Индексы: `idx_oa_object` (object_name NOCASE), `idx_oa_attr` (attr_name NOCASE), `idx_oa_cat` (category).
 
 **IndexReader API:**
-- `get_object_attributes(object_name, category, attr_name, kind)` — все параметры опциональные, UDF `py_lower()` для case-insensitive поиска
+- `get_object_attributes(object_name, category, attr_name, kind, limit=500)` — все параметры опциональные, UDF `py_lower()` для case-insensitive поиска
 
 Ускоряет хелперы: `find_attributes()`.
 
@@ -618,15 +625,17 @@ LIMIT 30;
 | `category`    | TEXT       | Категория (English)         | `Catalogs`                               |
 | `item_name`   | TEXT       | Техническое имя элемента    | `Товар`                                  |
 | `item_synonym`| TEXT       | Синоним элемента             | `Товар`                                  |
-| `types`       | TEXT       | JSON типов (для ПВХ)        | `["CatalogRef.Номенклатура"]` или `null` |
+| `types_json`  | TEXT       | JSON типов (для ПВХ). API хелпера возвращает как `types` (list после json.loads) | `["CatalogRef.Номенклатура"]` или `null` |
 | `item_code`   | TEXT       | Код элемента                | `000000001` или `null`                   |
+| `is_folder`   | INTEGER    | Признак группы (0/1)        | `0`                                      |
+| `source_file` | TEXT       | Путь к исходному XML-файлу  | `Catalogs/Номенклатура/Predefined.xml`   |
 
 Поддерживаемые категории: Catalogs, ChartsOfCharacteristicTypes, ChartsOfAccounts.
 
 Индексы: `idx_pi_object` (object_name NOCASE), `idx_pi_item` (item_name NOCASE).
 
 **IndexReader API:**
-- `get_predefined_items(object_name, item_name)` — оба параметра опциональные, UDF `py_lower()` для case-insensitive поиска
+- `get_predefined_items(object_name, item_name, limit=500)` — оба параметра опциональные, UDF `py_lower()` для case-insensitive поиска
 
 Ускоряет хелперы: `find_predefined()`.
 
@@ -634,6 +643,7 @@ LIMIT 30;
 
 | Конфигурация | Формат | object_attributes | predefined_items |
 |-------------|--------|-------------------|------------------|
+| ЕРП 2.5.20 (24K модулей) | CF | 73 172 | 3 849 |
 | ЕРП 2.5.14 (23K модулей) | CF | 72 663 | 4 006 |
 | БГУ 2.0.105 (14K модулей) | CF | 38 003 | 1 991 |
 | ЕРП 2.5.7 (20K модулей) | EDT | 67 369 | 4 408 |

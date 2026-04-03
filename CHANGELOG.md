@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.7.1] — 2026-04-03
+
+### Исправлено
+- docs/INDEXING.md — 5 неточностей (attr_kind, source_file, types_json, limit, CLI-примеры)
+
+### Изменено
+- Переименование method_index.db → bsl_index.db (ленивая миграция при первом обращении; fallback на старое имя если файл занят; повторная попытка при следующем обращении)
+- Двухуровневый TTL сессий: 10 мин (idle, calls=0) / 30 мин (active, calls>0)
+- Новые env: RLM_SESSION_TIMEOUT_IDLE, RLM_SESSION_TIMEOUT_ACTIVE
+- Исправлен wiring: session_manager теперь подхватывает .env после load_project_env()
+
+### Добавлено
+- docs/MODULE_MAP.md — карта модулей и граф зависимостей
+- docs/DEVELOPER_GUIDE.md — внутренние чеклисты (новая таблица / хелпер / рецепт)
+
 ## [1.7.0] — 2026-04-03
 
 ### Добавлено

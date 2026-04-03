@@ -499,10 +499,41 @@ def get_index_dir(base_path: str) -> Path:
     return Path.home() / ".cache" / "rlm-tools-bsl"
 
 
+def _migrate_old_index_db(index_dir: Path) -> str:
+    """One-time rename method_index.db → bsl_index.db (+ lock).
+
+    Returns the actual DB filename to use ("bsl_index.db" or "method_index.db" as fallback).
+    """
+    new_db = index_dir / "bsl_index.db"
+    old_db = index_dir / "method_index.db"
+    if new_db.exists():
+        return "bsl_index.db"
+    if not old_db.exists():
+        return "bsl_index.db"  # new installs
+    try:
+        old_db.rename(new_db)
+    except OSError:
+        # Another process may have already renamed it
+        if new_db.exists():
+            return "bsl_index.db"
+        return "method_index.db"  # rename genuinely failed — use old file as-is
+    # migrate lock file too
+    old_lock = index_dir / "method_index.lock"
+    new_lock = index_dir / "bsl_index.lock"
+    if old_lock.exists():
+        try:
+            old_lock.rename(new_lock)
+        except OSError:
+            pass
+    return "bsl_index.db"
+
+
 def get_index_db_path(base_path: str) -> Path:
-    """Return the full path to the method_index.db for a given base_path."""
+    """Return the full path to the index DB for a given base_path."""
     h = hashlib.md5(base_path.encode()).hexdigest()[:12]
-    return get_index_dir(base_path) / h / "method_index.db"
+    index_dir = get_index_dir(base_path) / h
+    db_name = _migrate_old_index_db(index_dir)
+    return index_dir / db_name
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,11 @@
+import logging
+import os
 import uuid
 import time
 import threading
 from dataclasses import dataclass, field
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -22,10 +26,22 @@ class Session:
 
 
 class SessionManager:
-    def __init__(self, max_sessions: int = 5, timeout_minutes: int = 10):
+    def __init__(
+        self,
+        max_sessions: int = 5,
+        timeout_minutes: int | None = None,
+        timeout_idle_minutes: int = 10,
+        timeout_active_minutes: int = 30,
+    ):
         self._sessions: dict[str, Session] = {}
         self._max_sessions = max_sessions
-        self._timeout_seconds = timeout_minutes * 60
+        if timeout_minutes is not None:
+            # Backward compat: single value overrides both
+            self._timeout_idle = timeout_minutes * 60
+            self._timeout_active = timeout_minutes * 60
+        else:
+            self._timeout_idle = timeout_idle_minutes * 60
+            self._timeout_active = timeout_active_minutes * 60
         self._lock = threading.Lock()
 
     def create(
@@ -69,7 +85,28 @@ class SessionManager:
 
     def _cleanup_expired_locked(self) -> list[str]:
         now = time.time()
-        expired = [sid for sid, s in self._sessions.items() if now - s.last_used > self._timeout_seconds]
+        expired: list[str] = []
+        for sid, s in self._sessions.items():
+            timeout = self._timeout_idle if s.execute_calls == 0 else self._timeout_active
+            if now - s.last_used > timeout:
+                expired.append(sid)
         for sid in expired:
-            self._sessions.pop(sid, None)
+            s = self._sessions.pop(sid)
+            _logger.info(
+                "session %s evicted (idle %.0fs, calls=%d)",
+                sid,
+                now - s.last_used,
+                s.execute_calls,
+            )
         return expired
+
+
+def build_session_manager_from_env() -> SessionManager:
+    """Create SessionManager from environment variables."""
+    timeout = os.environ.get("RLM_SESSION_TIMEOUT")
+    return SessionManager(
+        max_sessions=int(os.environ.get("RLM_MAX_SESSIONS", "5")),
+        timeout_minutes=int(timeout) if timeout else None,
+        timeout_idle_minutes=int(os.environ.get("RLM_SESSION_TIMEOUT_IDLE", "10")),
+        timeout_active_minutes=int(os.environ.get("RLM_SESSION_TIMEOUT_ACTIVE", "30")),
+    )

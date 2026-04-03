@@ -1038,6 +1038,56 @@ class TestPathHelpers:
 
         result = get_index_db_path(base)
         assert expected_hash in str(result), f"Expected hash {expected_hash} in path {result}"
+        assert result.name == "bsl_index.db"
+
+    def test_get_index_db_path_migrates_old_name(self, monkeypatch, tmp_path):
+        """Old method_index.db is automatically renamed to bsl_index.db."""
+        monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path))
+
+        import hashlib
+
+        base = "/migrate/test"
+        h = hashlib.md5(base.encode()).hexdigest()[:12]
+        index_dir = tmp_path / h
+        index_dir.mkdir(parents=True)
+
+        old_db = index_dir / "method_index.db"
+        old_lock = index_dir / "method_index.lock"
+        old_db.write_text("test")
+        old_lock.write_text("")
+
+        result = get_index_db_path(base)
+        assert result.name == "bsl_index.db"
+        assert (index_dir / "bsl_index.db").exists()
+        assert not old_db.exists()
+        assert (index_dir / "bsl_index.lock").exists()
+        assert not old_lock.exists()
+
+    def test_get_index_db_path_fallback_on_failed_rename(self, monkeypatch, tmp_path):
+        """If rename fails, fallback to old method_index.db."""
+        monkeypatch.setenv("RLM_INDEX_DIR", str(tmp_path))
+
+        import hashlib
+        from pathlib import Path
+
+        base = "/fallback/test"
+        h = hashlib.md5(base.encode()).hexdigest()[:12]
+        index_dir = tmp_path / h
+        index_dir.mkdir(parents=True)
+
+        old_db = index_dir / "method_index.db"
+        old_db.write_text("test")
+
+        original_rename = Path.rename
+
+        def failing_rename(self, target):
+            if self.name == "method_index.db":
+                raise OSError("permission denied")
+            return original_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", failing_rename)
+
+        result = get_index_db_path(base)
         assert result.name == "method_index.db"
 
 

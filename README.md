@@ -193,6 +193,8 @@ rlm_start(project="My Config", query="find module...")
 
 Полный список хелперов — **[docs/HELPERS.md](docs/HELPERS.md)** | Совместное использование с RAG — **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#совместное-использование-с-rag)**
 
+Карта модулей и зависимостей — **[docs/MODULE_MAP.md](docs/MODULE_MAP.md)** | Внутренние чеклисты разработчика — **[docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)**
+
 ## Совместимость с оригинальным rlm-tools
 
 Весь функционал оригинального [rlm-tools](https://github.com/stefanoshea/rlm-tools) сохранён. BSL-функционал добавлен поверх, не ломая исходную механику. Подробнее — **[docs/HELPERS.md](docs/HELPERS.md#совместимость-с-оригинальным-rlm-tools)**
