@@ -384,6 +384,68 @@ def test_extension_context_main_with_nearby_extension():
         _rlm_end(data["session_id"])
 
 
+def test_multiple_extensions_in_container_e2e():
+    """rlm_start with container dir (cfe/) holding multiple extensions."""
+    import textwrap
+
+    with tempfile.TemporaryDirectory() as parent:
+        main_dir = os.path.join(parent, "cf")
+        os.makedirs(main_dir)
+
+        # Main config
+        with open(os.path.join(main_dir, "Configuration.xml"), "w", encoding="utf-8") as f:
+            f.write(
+                textwrap.dedent("""\
+                <?xml version="1.0" encoding="UTF-8"?>
+                <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+                    <Configuration uuid="00000000-0000-0000-0000-000000000001">
+                        <Properties>
+                            <Name>Основная</Name>
+                            <NamePrefix/>
+                        </Properties>
+                    </Configuration>
+                </MetaDataObject>
+            """)
+            )
+
+        # Container cfe/ with two extensions
+        cfe_dir = os.path.join(parent, "cfe")
+        for name, purpose, prefix, uid_suffix in [
+            ("Расш1", "AddOn", "р1_", "a"),
+            ("Расш2", "Customization", "р2_", "b"),
+        ]:
+            ext_sub = os.path.join(cfe_dir, name)
+            os.makedirs(ext_sub)
+            with open(os.path.join(ext_sub, "Configuration.xml"), "w", encoding="utf-8") as f:
+                f.write(
+                    textwrap.dedent(f"""\
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+                        <Configuration uuid="00000000-0000-0000-0000-00000000000{uid_suffix}">
+                            <Properties>
+                                <ObjectBelonging>Adopted</ObjectBelonging>
+                                <Name>{name}</Name>
+                                <ConfigurationExtensionPurpose>{purpose}</ConfigurationExtensionPurpose>
+                                <NamePrefix>{prefix}</NamePrefix>
+                            </Properties>
+                        </Configuration>
+                    </MetaDataObject>
+                """)
+                )
+
+        result = _rlm_start(path=main_dir, query="test multi ext")
+        data = json.loads(result)
+
+        ec = data["extension_context"]
+        assert ec["is_extension"] is False
+        assert ec["config_role"] == "main"
+        assert len(ec["nearby_extensions"]) == 2
+        names = {e["name"] for e in ec["nearby_extensions"]}
+        assert names == {"Расш1", "Расш2"}
+
+        _rlm_end(data["session_id"])
+
+
 def test_extension_context_for_extension():
     """rlm_start for extension shows is_extension=True."""
     import textwrap

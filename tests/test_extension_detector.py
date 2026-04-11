@@ -250,6 +250,31 @@ def test_warnings_extension_standalone():
         assert any("EXTENSION" in w for w in ctx.warnings)
 
 
+def test_multiple_extensions_in_container():
+    """Container dir (e.g. cfe/) with several extensions — all must be found."""
+    with tempfile.TemporaryDirectory() as parent:
+        # Main config: parent/cf/Configuration.xml
+        main_dir = os.path.join(parent, "cf")
+        _write(os.path.join(main_dir, "Configuration.xml"), _CF_MAIN_XML)
+
+        # Container: parent/cfe/ with two extensions
+        cfe_dir = os.path.join(parent, "cfe")
+        _write(
+            os.path.join(cfe_dir, "Ext1", "Configuration.xml"),
+            _cf_extension_xml("Расш1", "AddOn", "р1_"),
+        )
+        _write(
+            os.path.join(cfe_dir, "Ext2", "Configuration.xml"),
+            _cf_extension_xml("Расш2", "Customization", "р2_"),
+        )
+
+        ctx = detect_extension_context(main_dir)
+        assert ctx.current.role == ConfigRole.MAIN
+        assert len(ctx.nearby_extensions) == 2
+        names = {e.name for e in ctx.nearby_extensions}
+        assert names == {"Расш1", "Расш2"}
+
+
 # ---------------------------------------------------------------------------
 # Tests: find_extension_overrides
 # ---------------------------------------------------------------------------

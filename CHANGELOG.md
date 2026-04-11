@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.2] — 2026-04-11
+
+### Исправлено
+- **detect_extensions() находит все расширения в контейнере** ([#7](https://github.com/Dach-Coin/rlm-tools-bsl/issues/7)) — ранее `_detect_single()` возвращала только первое расширение из каталогов-контейнеров (напр. `src/cfe/`). Новая функция `_detect_all()` собирает все конфигурации
+- **find_callers_context не находит вызов из RecordSetModule** ([#9](https://github.com/Dach-Coin/rlm-tools-bsl/issues/9)) — `module_hint` в `get_callers()` ошибочно фильтровал вызывающих (caller) по `mod.object_name` вместо фильтрации по квалификации callee. Исправлен контракт: `module_hint` уточняет модуль определения метода, а не ограничивает вызывающих
+- **Проверка формы в FS-fallback** — `"Form" in module_type` никогда не срабатывала; заменена на `form_name is not None`
+- **Scope-выравнивание index/fallback** — для non-export и form-методов index path теперь сужает поиск callers до того же файла, как и FS-fallback
+
 ## [1.8.1] — 2026-04-10
 
 ### Исправлено

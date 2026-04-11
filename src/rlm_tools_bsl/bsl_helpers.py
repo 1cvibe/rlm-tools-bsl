@@ -667,7 +667,7 @@ def make_bsl_helpers(
                         procs = extract_procedures(hm["path"])
                         for p in procs:
                             if p["name"].lower() == proc_name.lower():
-                                if not p["is_export"] or "Form" in (hm.get("module_type") or ""):
+                                if not p["is_export"] or hm.get("form_name") is not None:
                                     # Not exported or form module -> only search same file
                                     target_files = [hm["path"]]
                                 break

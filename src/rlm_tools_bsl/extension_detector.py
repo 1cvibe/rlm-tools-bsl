@@ -235,6 +235,60 @@ def _detect_single(directory: str) -> ExtensionInfo | None:
         return None
 
 
+def _detect_all(directory: str) -> list[ExtensionInfo]:
+    """Detect ALL 1C configurations inside *directory* (main or extensions).
+
+    Unlike ``_detect_single`` which returns the first match, this function
+    collects every configuration found — important for container directories
+    like ``src/cfe/`` that hold several extensions.
+    """
+    results: list[ExtensionInfo] = []
+    try:
+        base = Path(directory)
+        if not base.is_dir():
+            return results
+
+        # 1. Check Configuration.xml directly
+        cfg_xml = base / "Configuration.xml"
+        if cfg_xml.is_file():
+            result = _parse_config_xml(str(cfg_xml), directory)
+            if result is not None:
+                results.append(result)
+                return results  # directory itself is a config — no deeper scan
+
+        # 2. Check */Configuration.mdo (EDT: Configuration/Configuration.mdo)
+        result = _scan_for_mdo(base, directory)
+        if result is not None:
+            results.append(result)
+            return results  # directory itself is EDT config
+
+        # 3. One level deeper: check each subdirectory
+        entries = list(base.iterdir())
+
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            if entry.name in _SKIP_DIRS or entry.name.startswith("."):
+                continue
+
+            # CF: subdir/Configuration.xml
+            sub_xml = entry / "Configuration.xml"
+            if sub_xml.is_file():
+                info = _parse_config_xml(str(sub_xml), str(entry))
+                if info is not None:
+                    results.append(info)
+                    continue  # found config in this subdir, skip mdo check
+
+            # EDT: subdir/*/Configuration.mdo
+            info = _scan_for_mdo(entry, str(entry))
+            if info is not None:
+                results.append(info)
+
+        return results
+    except OSError:
+        return results
+
+
 def _scan_for_mdo(base: Path, directory: str) -> ExtensionInfo | None:
     """Look for Configuration.mdo in immediate subdirectories of *base*."""
     try:
@@ -298,8 +352,8 @@ def detect_extension_context(base_path: str) -> ExtensionContext:
             resolved_entry = entry.resolve()
             if resolved_entry == base:
                 continue
-            info = _detect_single(str(resolved_entry))
-            if info is not None:
+            infos = _detect_all(str(resolved_entry))
+            for info in infos:
                 # Avoid duplicates (same resolved path)
                 if not any(Path(s.path).resolve() == Path(info.path).resolve() for s in siblings):
                     siblings.append(info)

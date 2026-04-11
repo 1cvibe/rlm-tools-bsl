@@ -4285,8 +4285,24 @@ class IndexReader:
             params_list: list = [proc_name, f"%.{escaped_name}"]
 
             if module_hint:
-                query += " AND mod.object_name LIKE ? COLLATE NOCASE"
-                params_list.append(f"%{module_hint}%")
+                # Filter by callee qualification: match qualified "hint.proc"
+                # OR unqualified "proc" (ambiguous — could belong to hint module)
+                escaped_hint = module_hint.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                query += " AND (c.callee_name LIKE ? ESCAPE '\\' OR c.callee_name = ? COLLATE NOCASE)"
+                params_list.append(f"{escaped_hint}.%")
+                params_list.append(proc_name)
+
+                # Scope narrowing: non-export or form → callers only in same file
+                target = self._conn.execute(
+                    """SELECT m.is_export, mod.is_form, mod.rel_path
+                       FROM methods m JOIN modules mod ON mod.id = m.module_id
+                       WHERE m.name = ? COLLATE NOCASE
+                         AND mod.object_name = ? COLLATE NOCASE""",
+                    [proc_name, module_hint],
+                ).fetchone()
+                if target and (not target["is_export"] or target["is_form"]):
+                    query += " AND mod.rel_path = ?"
+                    params_list.append(target["rel_path"])
 
             # Count total
             _t0 = time.monotonic()

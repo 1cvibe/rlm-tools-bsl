@@ -38,6 +38,7 @@ COMMON_MODULE_BSL = """\
     Для Каждого Строка Из ДокументОбъект[ИмяТабличнойЧасти] Цикл
         Строка.Количество = 1;
     КонецЦикла;
+    ВычислитьИтоги(ДокументОбъект[ИмяТабличнойЧасти]);
 КонецПроцедуры
 
 // Возвращает текущую дату сеанса с учетом часового пояса.
@@ -80,6 +81,23 @@ MANAGER_MODULE_BSL = """\
 КонецФункции
 """
 
+RECORDSET_MODULE_BSL = """\
+Процедура ПриЗаписи(Отказ)
+    МойМодуль.ЗаполнитьТабличнуюЧасть(ЭтотОбъект, "Движения");
+    ЗаполнитьТабличнуюЧасть(ЭтотОбъект, "Итоги");
+КонецПроцедуры
+"""
+
+FORM_MODULE_BSL = """\
+Процедура ОбработчикФормы()
+    ЛокальныйХелпер();
+КонецПроцедуры
+
+Процедура ЛокальныйХелпер()
+    Сообщить("Привет");
+КонецПроцедуры
+"""
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -114,6 +132,16 @@ def tmp_bsl_project(tmp_path):
 
     # Documents/ТестовыйДокумент/Ext/ManagerModule.bsl
     (doc_dir / "ManagerModule.bsl").write_text(MANAGER_MODULE_BSL, encoding="utf-8-sig")
+
+    # InformationRegisters/МойРегистр/Ext/RecordSetModule.bsl
+    reg_dir = tmp_path / "InformationRegisters" / "МойРегистр" / "Ext"
+    reg_dir.mkdir(parents=True)
+    (reg_dir / "RecordSetModule.bsl").write_text(RECORDSET_MODULE_BSL, encoding="utf-8-sig")
+
+    # Documents/ТестовыйДокумент/Forms/ФормаДокумента/Ext/Form/Module.bsl
+    form_dir = tmp_path / "Documents" / "ТестовыйДокумент" / "Forms" / "ФормаДокумента" / "Ext" / "Form"
+    form_dir.mkdir(parents=True)
+    (form_dir / "Module.bsl").write_text(FORM_MODULE_BSL, encoding="utf-8-sig")
 
     return tmp_path
 
@@ -180,12 +208,14 @@ class TestIndexBuilder:
         conn.close()
 
         rel_paths = sorted(r[0] for r in rows)
-        assert len(rel_paths) == 3, f"Expected 3 modules, got {len(rel_paths)}"
+        assert len(rel_paths) == 5, f"Expected 5 modules, got {len(rel_paths)}"
 
         # Check that all expected relative paths are present
         assert any("CommonModules" in p and "Module.bsl" in p for p in rel_paths)
         assert any("ObjectModule.bsl" in p for p in rel_paths)
         assert any("ManagerModule.bsl" in p for p in rel_paths)
+        assert any("RecordSetModule.bsl" in p for p in rel_paths)
+        assert any("Form" in p and "Module.bsl" in p for p in rel_paths)
 
     def test_build_modules_mtime_and_size(self, built_index):
         """mtime and size fields are stored and are positive numbers."""
@@ -224,8 +254,15 @@ class TestIndexBuilder:
         # From MANAGER_MODULE_BSL
         assert "ПолучитьФорму" in method_names
 
-        # Total: 3 + 3 + 1 = 7
-        assert len(method_names) == 7, f"Expected 7 methods, got {len(method_names)}: {method_names}"
+        # From RECORDSET_MODULE_BSL
+        assert "ПриЗаписи" in method_names
+
+        # From FORM_MODULE_BSL
+        assert "ОбработчикФормы" in method_names
+        assert "ЛокальныйХелпер" in method_names
+
+        # Total: 3 + 3 + 1 + 1 + 2 = 10
+        assert len(method_names) == 10, f"Expected 10 methods, got {len(method_names)}: {method_names}"
 
     def test_build_methods_unique_constraint(self, built_index):
         """No duplicates for (module_id, name, line) in the methods table."""
@@ -380,17 +417,18 @@ class TestIndexReader:
             reader.close()
 
     def test_reader_get_callers_with_hint_meta(self, built_index):
-        """get_callers with module_hint: precise COUNT via JOIN."""
+        """get_callers with module_hint pointing to callee's module (cross-module)."""
         db_path, _ = built_index
         reader = IndexReader(db_path)
         try:
-            result = reader.get_callers("ЗаполнитьТабличнуюЧасть", module_hint="ТестовыйДокумент")
+            # hint=МойМодуль — module where ЗаполнитьТабличнуюЧасть is DEFINED
+            result = reader.get_callers("ЗаполнитьТабличнуюЧасть", module_hint="МойМодуль")
             meta = result["_meta"]
             assert meta["total_callers"] >= 1
             assert meta["returned"] == len(result["callers"])
-            # All callers should be from the hinted module
-            for c in result["callers"]:
-                assert "ТестовыйДокумент" in c["object_name"]
+            # Must find cross-module callers (ТестовыйДокумент, МойРегистр)
+            caller_objects = {c["object_name"] for c in result["callers"]}
+            assert "ТестовыйДокумент" in caller_objects
         finally:
             reader.close()
 
@@ -435,6 +473,77 @@ class TestIndexReader:
         finally:
             reader.close()
 
+    def test_reader_get_callers_cross_module(self, built_index):
+        """get_callers with hint finds cross-module caller from RecordSetModule."""
+        db_path, _ = built_index
+        reader = IndexReader(db_path)
+        try:
+            result = reader.get_callers("ЗаполнитьТабличнуюЧасть", module_hint="МойМодуль")
+            caller_objects = {c["object_name"] for c in result["callers"]}
+            # RecordSetModule calls МойМодуль.ЗаполнитьТабличнуюЧасть
+            assert "МойРегистр" in caller_objects
+        finally:
+            reader.close()
+
+    def test_reader_get_callers_unqualified_with_hint(self, built_index):
+        """get_callers with hint finds unqualified calls too (not filtered out)."""
+        db_path, _ = built_index
+        reader = IndexReader(db_path)
+        try:
+            # RecordSetModule has BOTH in same method ПриЗаписи:
+            #   line 2: МойМодуль.ЗаполнитьТабличнуюЧасть(...) — qualified
+            #   line 3: ЗаполнитьТабличнуюЧасть(...)           — unqualified
+            # ObjectModule also has 1 qualified call.
+            # Without unqualified support we'd get only qualified edges.
+            result = reader.get_callers("ЗаполнитьТабличнуюЧасть", module_hint="МойМодуль")
+            # Count call edges from RecordSetModule specifically
+            rs_callers = [c for c in result["callers"] if "RecordSetModule" in c["file"]]
+            # Must have 2 edges (qualified + unqualified), not just 1
+            assert len(rs_callers) == 2, (
+                f"Expected 2 call edges from RecordSetModule (qualified + unqualified), got {len(rs_callers)}"
+            )
+        finally:
+            reader.close()
+
+    def test_reader_get_callers_non_export_scoped(self, built_index):
+        """Non-export method: callers scoped to same file only."""
+        db_path, _ = built_index
+        reader = IndexReader(db_path)
+        try:
+            # ВычислитьИтоги is NOT export (defined in МойМодуль)
+            # ObjectModule.bsl calls МойМодуль.ВычислитьИтоги — but scope
+            # should restrict to same-file callers only.
+            # Without scope narrowing, ObjectModule caller would leak through.
+            result_no_hint = reader.get_callers("ВычислитьИтоги")
+            # Sanity: without hint, cross-module caller IS visible
+            assert any("ObjectModule" in c["file"] for c in result_no_hint["callers"]), (
+                "Sanity check: ObjectModule should call ВычислитьИтоги"
+            )
+
+            result = reader.get_callers("ВычислитьИтоги", module_hint="МойМодуль")
+            # Must have at least 1 caller (non-empty result)
+            assert len(result["callers"]) >= 1, "Expected at least 1 same-file caller for non-export method"
+            for c in result["callers"]:
+                assert "CommonModules" in c["file"], (
+                    f"Non-export method callers must be from same module, got {c['file']}"
+                )
+        finally:
+            reader.close()
+
+    def test_reader_get_callers_form_module_scoped(self, built_index):
+        """Form module method: callers scoped to same form file only."""
+        db_path, _ = built_index
+        reader = IndexReader(db_path)
+        try:
+            result = reader.get_callers("ЛокальныйХелпер", module_hint="ТестовыйДокумент")
+            # ЛокальныйХелпер is called from ОбработчикФормы in the same form module
+            assert result is not None
+            assert len(result["callers"]) >= 1, "Expected at least 1 same-form caller for form method"
+            for c in result["callers"]:
+                assert "Form" in c["file"], f"Form method callers must be from same form, got {c['file']}"
+        finally:
+            reader.close()
+
     def test_reader_get_exports(self, built_index):
         """get_exports_by_path returns only exported methods."""
         db_path, _ = built_index
@@ -469,8 +578,8 @@ class TestIndexReader:
             for key in ("modules", "methods", "calls", "exports", "built_at"):
                 assert key in stats, f"Missing key '{key}' in statistics"
 
-            assert stats["modules"] == 3
-            assert stats["methods"] == 7
+            assert stats["modules"] == 5
+            assert stats["methods"] == 10
             assert stats["calls"] > 0
             assert stats["exports"] > 0
             assert stats["built_at"] is not None
