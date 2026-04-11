@@ -14,11 +14,12 @@ body:
     id: steps
     attributes:
       label: Шаги воспроизведения
-      description: Как воспроизвести ошибку?
+      description: |
+        Как воспроизвести ошибку? Укажите конкретные вызовы хелперов и их параметры.
       placeholder: |
-        1. Запустил сервер с параметрами ...
-        2. Отправил запрос ...
-        3. Получил ошибку ...
+        1. Открыл сессию: `rlm_start(source_dir="/path/to/cf")`
+        2. Вызвал хелпер: `find_callers_context('МойМетод', 'МойМодуль', 0, 50)`
+        3. Получил пустой результат / ошибку
     validations:
       required: true
 
@@ -38,11 +39,20 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: server_logs
+    attributes:
+      label: Логи rlm-сервера
+      description: |
+        Вставьте релевантный фрагмент логов сервера (stderr или файл лога).
+        Запуск с подробным логированием: `rlm-bsl-server --log-level DEBUG`
+      render: text
+
   - type: input
     id: version
     attributes:
       label: Версия rlm-tools-bsl
-      placeholder: "1.4.2"
+      placeholder: "1.8.2"
     validations:
       required: true
 
@@ -55,6 +65,7 @@ body:
         - "3.11"
         - "3.12"
         - "3.13"
+        - "3.14"
     validations:
       required: true
 
