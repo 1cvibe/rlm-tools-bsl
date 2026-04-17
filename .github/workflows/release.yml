@@ -32,7 +32,7 @@ jobs:
           echo "Полный список изменений: [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/master/CHANGELOG.md)" >> /tmp/release_notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: /tmp/release_notes.md
           generate_release_notes: false
