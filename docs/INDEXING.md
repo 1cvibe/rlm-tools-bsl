@@ -229,7 +229,7 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 ## 5. Структура индекса
 
-Индекс хранится в SQLite-базе `bsl_index.db` и содержит 22 таблицы (4 основные + 17 метаданных + 1 навигационная) + виртуальную FTS5-таблицу для полнотекстового поиска:
+Индекс хранится в SQLite-базе `bsl_index.db` и содержит 26 таблиц (4 основные + 17 метаданных + 1 навигационная + 4 reference-таблицы v12) + виртуальную FTS5-таблицу для полнотекстового поиска:
 
 ### index_meta
 
@@ -237,8 +237,8 @@ $ rlm-bsl-index index drop D:\ERP\src
 
 | key                     | Описание                                                | Пример                             |
 | ----------------------- | ------------------------------------------------------- | ---------------------------------- |
-| `version`               | Версия схемы                                            | `11`                               |
-| `builder_version`       | Версия построителя                                      | `11`                               |
+| `version`               | Версия схемы                                            | `12`                               |
+| `builder_version`       | Версия построителя                                      | `12`                               |
 | `bsl_count`             | Количество .bsl файлов                                  | `23461`                            |
 | `paths_hash`            | MD5-хеш отсортированных путей                           | `6c4e5a0f0d506f67...`              |
 | `built_at`              | Unix-timestamp построения                               | `1773740509.56`                    |
@@ -685,6 +685,103 @@ LIMIT 30;
 | БГУ 2.0.105 (14K модулей) | CF | 187 217 | 66 355 | 38 586 | 82 276 | — |
 | ЕРП 2.5.7 (20K модулей) | EDT | 195 516 | 58 306 | 41 740 | 95 470 | +111 MB |
 
+### metadata_references (Level-12, v12+)
+
+Unified reverse-index всех ссылок объектов метаданных друг на друга — основа для `find_references_to_object()` (issue [#10](https://github.com/Dach-Coin/rlm-tools-bsl/issues/10)). Одна строка = одна реальная ссылка. `ref_object` хранится в канонической форме (`Catalog.X`, `Document.Y`, `DefinedType.Z`) — exact-match без LIKE по JSON.
+
+| Колонка           | Тип        | Описание                                                       | Пример                                          |
+| ----------------- | ---------- | -------------------------------------------------------------- | ----------------------------------------------- |
+| `id`              | INTEGER PK | Идентификатор                                                  | `1`                                             |
+| `source_object`   | TEXT       | Имя объекта-источника ссылки                                   | `РеализацияТоваровУслуг`                        |
+| `source_category` | TEXT       | Top-level категория источника (для category-aware DELETE)      | `Documents`                                     |
+| `ref_object`      | TEXT       | Канонический ref на целевой объект                             | `Catalog.Контрагенты`                           |
+| `ref_kind`        | TEXT       | Вид ссылки (см. перечень ниже)                                 | `attribute_type`                                |
+| `used_in`         | TEXT       | Человекочитаемый адрес                                         | `Document.X.Attribute.Контрагент.Type`          |
+| `path`            | TEXT       | Путь к XML/MDO файлу                                           | `Documents/X.xml`                               |
+| `line`            | INTEGER    | Номер строки (опционально, заполняется где дёшево)             | `123` или `null`                                |
+
+Перечень `ref_kind` (18 видов): `attribute_type`, `subsystem_content`, `exchange_plan_content`, `functional_option_content`, `event_subscription_source`, `role_rights`, `defined_type_content`, `characteristic_type`, `owner`, `based_on`, `main_form`, `list_form`, `default_object_form`, `default_list_form`, `command_parameter_type`, `predefined_characteristic_type`, `choice_parameter_link`, `link_by_type`.
+
+Индексы: `idx_mref_ref` (ref_object — основной hot path), `idx_mref_src` (source_object), `idx_mref_kind` (ref_kind), `idx_mref_category` (source_category — для category-aware DELETE при инкрементальном git fast path).
+
+**Category-aware DELETE при инкрементальном update:** при изменении файлов категории `Documents` (или любой другой) выполняется `DELETE FROM metadata_references WHERE source_category IN (changed_cats)` — записи из неизменённых категорий сохраняются. Без этого механизма наивная стратегия «полный wipe + INSERT собранных rows» теряла бы данные.
+
+**IndexReader API:**
+- `find_metadata_references(ref_object, kinds=None, limit=1000)` — основной поисковый метод (UDF `py_lower()` для кириллицы)
+- `count_metadata_references(ref_object, kinds=None)` — `{total, by_kind}` без выборки строк
+
+Ускоряет хелперы: `find_references_to_object()`.
+
+### exchange_plan_content (Level-12, v12+)
+
+Состав планов обмена (объект + признак авторегистрации) — для `find_exchange_plan_content()` без live XML-парсинга. CF: `ExchangePlans/<Name>/Ext/Content.xml`, EDT: inline в `.mdo`.
+
+| Колонка       | Тип        | Описание                            | Пример                                     |
+| ------------- | ---------- | ----------------------------------- | ------------------------------------------ |
+| `id`          | INTEGER PK | Идентификатор                       | `1`                                        |
+| `plan_name`   | TEXT       | Имя плана обмена                    | `ОбменУправлениеПредприятием`              |
+| `object_ref`  | TEXT       | Канонический ref на объект состава  | `Catalog.Номенклатура`                     |
+| `auto_record` | INTEGER    | Авторегистрация (0=Deny, 1=Allow)   | `1`                                        |
+| `path`        | TEXT       | Путь к источнику                    | `ExchangePlans/X/Ext/Content.xml`          |
+
+Индексы: `idx_epc_plan`, `idx_epc_ref`. Также все ссылки дублируются в `metadata_references` с `ref_kind='exchange_plan_content'`.
+
+### defined_types (Level-12, v12+)
+
+Раскрытие `ОпределяемыхТипов` — для `find_defined_types()`. Хранит JSON-список реальных типов.
+
+| Колонка          | Тип        | Описание                              | Пример                                |
+| ---------------- | ---------- | ------------------------------------- | ------------------------------------- |
+| `id`             | INTEGER PK | Идентификатор                         | `1`                                   |
+| `name`           | TEXT       | Имя ОпределяемогоТипа                 | `ДенежнаяСуммаНеотрицательная`        |
+| `type_refs_json` | TEXT       | JSON-массив канонических ссылок/типов | `["Number"]` или `["Catalog.X"]`      |
+| `path`           | TEXT       | Путь к XML/MDO файлу                  | `DefinedTypes/X.xml`                  |
+
+Индекс: `idx_dt_name`. Ссылочные типы из `type_refs_json` дублируются в `metadata_references` с `ref_kind='defined_type_content'`.
+
+### characteristic_types (Level-12, v12+)
+
+Список типов в составе `ChartsOfCharacteristicTypes` (План видов характеристик). Аналогична `defined_types` по структуре.
+
+| Колонка          | Тип        | Описание                              | Пример                                       |
+| ---------------- | ---------- | ------------------------------------- | -------------------------------------------- |
+| `id`             | INTEGER PK | Идентификатор                         | `1`                                          |
+| `pvh_name`       | TEXT       | Имя ПВХ                               | `ВидыСубконтоХозрасчетные`                   |
+| `type_refs_json` | TEXT       | JSON-массив канонических ссылок       | `["Catalog.X", "Catalog.Y"]`                 |
+| `path`           | TEXT       | Путь к XML/MDO файлу                  | `ChartsOfCharacteristicTypes/X/X.mdo`        |
+
+Индекс: `idx_ct_pvh`.
+
+### Замеры на реальных конфигурациях (v12, апрель 2026)
+
+**Полные сборки `index build` на двух реальных проектах ERP:**
+
+| Конфигурация | Формат | Modules | Methods | Calls    | EventSubs | SchedJobs | FuncOpts | Synonyms | Attributes | Predefined | MetaRefs | ExPlanCnt | DefTypes | CharTypes | FilePaths | DB size  | Время сборки |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ERP 2.5.20.80 | CF  | 24 055 | 617 207 | 4 897 519 | 532 | 238 | 944 | 13 340 | 73 172 | 3 849 | 148 635 | 17 944 | 553 | 16 | 106 692 | 1 392 MB | 557 с |
+| ERP 2.5.7.201 | EDT | 20 745 | 486 650 | 3 897 639 | 483 | 247 | 822 | 17 630 | 67 369 | 4 408 | 212 074 | 13 740 | 412 | 20 |  40 740 | 1 259 MB | 436 с |
+
+**Распределение `metadata_references` по `ref_kind` (топ‑10):**
+
+| ref_kind                       | CF (ERP 2.5.20) | EDT (ERP 2.5.7) |
+|--------------------------------|----------------:|----------------:|
+| `attribute_type`               |          32 891 |          37 169 |
+| `subsystem_content`            |          30 511 |          28 293 |
+| `role_rights`                  |          18 445 |          90 074 |
+| `exchange_plan_content`        |          17 944 |          13 740 |
+| `defined_type_content`         |          15 035 |          12 782 |
+| `event_subscription_source`    |          14 992 |          12 754 |
+| `functional_option_content`    |          14 557 |          12 775 |
+| `default_list_form`            |           1 603 |           1 511 |
+| `default_object_form`          |           1 190 |           1 190 |
+| `based_on`                     |             631 |             594 |
+
+Поле `line` заполнено для attribute‑level kind (~17–22% от общего числа ссылок) — `find_references_to_object` выдаёт точную позицию `<Name>X</Name>` в XML‑файле для `attribute_type`/`dimension`/`resource`/TS‑attribute. Для object‑level kind (`owner`, `based_on`, формы и т.п.) `line=None` по контракту.
+
+**Распределение по `source_category` (топ-5 на CF):** Subsystems 30 511, Roles 18 445, ExchangePlans 17 944, Documents 17 808, DefinedTypes 15 035.
+
+> **Примечание.** Доля `role_rights`-строк в `metadata_references` сильно зависит от количества ролей и числа покрываемых объектов: ERP 2.5.7 содержит больше ролей с расширенным покрытием (90K записей `role_rights` против 18K в ERP 2.5.20), что объясняет более крупный `metadata_references` на EDT при меньшем числе модулей.
+
 ## 6. Инкрементальное обновление
 
 Команда `index update` работает по следующему алгоритму:
@@ -767,10 +864,17 @@ LIMIT 30;
 | Тип изменённых файлов | Затронутые таблицы |
 |------------------------|---------------------|
 | `.bsl` | `modules`, `methods`, `calls`, `methods_fts`, `regions`, `module_headers`, `register_movements`, `extension_overrides` |
-| `.xml`/`.mdo` в `EventSubscriptions/` | `event_subscriptions` |
+| `.xml`/`.mdo` в `EventSubscriptions/` | `event_subscriptions`, `metadata_references` (source_category=EventSubscriptions) |
 | `.xml`/`.mdo` в `ScheduledJobs/` | `scheduled_jobs` |
-| `.xml`/`.mdo` в объектных категориях | `object_attributes`, `predefined_items`, `object_synonyms` (только для затронутой категории) |
-| `.xml`/`.mdo` в `Roles/` или `.rights` | `role_rights` |
+| `.xml`/`.mdo` в объектных категориях (Catalogs, Documents, …) | `object_attributes`, `predefined_items`, `object_synonyms`, `metadata_references` (category-aware DELETE по затронутым) |
+| `.xml`/`.mdo` в `Subsystems/` | `subsystem_content`, `metadata_references` (source_category=Subsystems) |
+| `.xml`/`.mdo` в `FunctionalOptions/` | `functional_options`, `metadata_references` (source_category=FunctionalOptions) |
+| `.xml`/`.mdo` в `ExchangePlans/` | `exchange_plan_content`, `metadata_references` (source_category=ExchangePlans) |
+| `.xml`/`.mdo` в `DefinedTypes/` (NEW v12) | `defined_types`, `metadata_references` (source_category=DefinedTypes) |
+| `.xml`/`.mdo` в `ChartsOfCharacteristicTypes/` | `characteristic_types`, `object_attributes`, `predefined_items`, `metadata_references` (source_category=ChartsOfCharacteristicTypes) |
+| `.xml` в `<Catalogs|Documents|…>/X/Commands/` (nested) | **родительская категория** — `metadata_references` (через `command_parameter_type`). `Commands/` НЕ top-level |
+| `.xml`/`.mdo` в `CommonCommands/` | `metadata_references` (source_category=CommonCommands) |
+| `.xml`/`.mdo` в `Roles/` или `.rights` | `role_rights`, `metadata_references` (source_category=Roles) |
 | `.form` | `form_elements` |
 
 #### Fallback на полный скан
@@ -938,6 +1042,9 @@ Git fast path использует **раздельные trigger-наборы**
 | `search_module_headers(query)`  | `SELECT` из `module_headers` (мгновенно)                            | Недоступен                              |
 | `find_attributes(name)`        | `SELECT` из `object_attributes` (мгновенно)                         | Live XML-парсинг                        |
 | `find_predefined(name)`        | `SELECT` из `predefined_items` (мгновенно)                          | Live XML-парсинг                        |
+| `find_exchange_plan_content(name)` | `SELECT` из `exchange_plan_content` (v12+, мгновенно)           | Live XML-парсинг (CF/EDT)               |
+| `find_references_to_object(obj)` | `SELECT` из `metadata_references` (v12+, мгновенно)               | Live XML-парсинг с `partial=True`       |
+| `find_defined_types(name)`     | `SELECT` из `defined_types` (v12+, мгновенно)                       | Live XML-парсинг с `partial=True`       |
 | `parse_form(object_name)`      | `SELECT` из `form_elements` (мгновенно)                             | Glob + XML-парсинг                      |
 
 ### search_methods — полнотекстовый поиск

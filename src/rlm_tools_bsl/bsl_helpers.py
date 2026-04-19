@@ -2775,6 +2775,529 @@ def make_bsl_helpers(
             "source": "live",
         }
 
+    # ── v1.9.0: find_references_to_object + find_defined_types ───────
+    # Russian → English metadata prefix map (canonical singular form)
+    _RU_META_PREFIXES: dict[str, str] = {
+        "Справочник.": "Catalog.",
+        "Документ.": "Document.",
+        "Перечисление.": "Enum.",
+        "РегистрСведений.": "InformationRegister.",
+        "РегистрНакопления.": "AccumulationRegister.",
+        "РегистрБухгалтерии.": "AccountingRegister.",
+        "РегистрРасчета.": "CalculationRegister.",
+        "ПланВидовХарактеристик.": "ChartOfCharacteristicTypes.",
+        "ПланСчетов.": "ChartOfAccounts.",
+        "ПланВидовРасчета.": "ChartOfCalculationTypes.",
+        "ПланОбмена.": "ExchangePlan.",
+        "ОпределяемыйТип.": "DefinedType.",
+        "БизнесПроцесс.": "BusinessProcess.",
+        "Задача.": "Task.",
+        "Отчет.": "Report.",
+        "Обработка.": "DataProcessor.",
+        "Константа.": "Constant.",
+        "Подсистема.": "Subsystem.",
+        "Роль.": "Role.",
+        "ОбщаяКоманда.": "CommonCommand.",
+        "ФункциональнаяОпция.": "FunctionalOption.",
+        "ПодпискаНаСобытие.": "EventSubscription.",
+    }
+
+    def _normalize_object_ref(s: str) -> tuple[str, list[str]]:
+        """Normalize input object reference to canonical form (e.g. 'Catalog.X').
+
+        Accepts Russian/English prefixes and Ref/Object/Manager/etc. forms.
+        Returns (canonical, [canonical]) — match_forms list kept short because
+        the index stores ref_object only in canonical form.
+        """
+        from rlm_tools_bsl.bsl_xml_parsers import canonicalize_type_ref as _ctr
+
+        if not s:
+            return ("", [])
+        text = s.strip()
+        # Convert Russian prefix to English (most common: "Справочник.X")
+        for ru, en in _RU_META_PREFIXES.items():
+            if text.startswith(ru):
+                text = en + text[len(ru) :]
+                break
+        # Already canonical form like "Catalog.X" passes through canonicalize unchanged.
+        canonical = _ctr(text)
+        if not canonical:
+            # Could be just a name without prefix — assume Catalog as default? No, keep as-is.
+            canonical = text
+        return canonical, [canonical]
+
+    # Priority for sorting + truncation
+    _REF_KIND_PRIORITY: dict[str, int] = {
+        "attribute_type": 0,
+        "subsystem_content": 1,
+        "exchange_plan_content": 2,
+        "functional_option_content": 3,
+        "event_subscription_source": 4,
+        "role_rights": 5,
+        "defined_type_content": 6,
+        "characteristic_type": 7,
+        "owner": 8,
+        "based_on": 9,
+        "choice_parameter_link": 10,
+        "link_by_type": 11,
+        "main_form": 12,
+        "list_form": 13,
+        "default_object_form": 14,
+        "default_list_form": 15,
+        "command_parameter_type": 16,
+        "predefined_characteristic_type": 17,
+    }
+
+    def find_references_to_object(
+        object_ref: str,
+        kinds: list[str] | None = None,
+        limit: int = 1000,
+    ) -> dict:
+        """Find all references to a metadata object (Configurator "Найти ссылки → В свойствах" analogue).
+
+        Args:
+            object_ref: e.g. 'Справочник.Контрагенты' or 'Catalog.Контрагенты'.
+            kinds: optional filter by ref_kind (see _REF_KIND_PRIORITY for the list).
+            limit: maximum references returned (default 1000).
+
+        Returns:
+            {object, references, total, truncated, partial, by_kind}.
+        """
+        canonical, _ = _normalize_object_ref(object_ref)
+        result: dict = {
+            "object": canonical,
+            "references": [],
+            "total": 0,
+            "truncated": False,
+            "partial": False,
+            "by_kind": {},
+        }
+        if not canonical or "." not in canonical:
+            return result
+
+        if idx_reader is not None:
+            # Authoritative total + by_kind FIRST (cheap GROUP BY count)
+            try:
+                counts = idx_reader.count_metadata_references(canonical, kinds=kinds)
+            except Exception:
+                counts = None
+            try:
+                # SQL already orders by ref_kind priority + path + used_in,
+                # so passing exact `limit` keeps the highest-priority refs.
+                rows = idx_reader.find_metadata_references(canonical, kinds=kinds, limit=limit)
+            except Exception:
+                rows = None
+            if rows is not None:
+                if counts is not None:
+                    result["total"] = counts["total"]
+                    result["by_kind"] = counts["by_kind"]
+                    if counts["total"] > limit:
+                        result["truncated"] = True
+                else:
+                    result["total"] = len(rows)
+                    result["by_kind"] = _count_by_kind([{"kind": r["ref_kind"]} for r in rows])
+                result["references"] = [
+                    {
+                        "used_in": r["used_in"],
+                        "path": r["path"],
+                        "line": r["line"],
+                        "kind": r["ref_kind"],
+                    }
+                    for r in rows
+                ]
+                return result
+
+        # Fallback: live scan
+        result["partial"] = True
+        all_refs = list(_live_find_references(canonical, kinds))
+        result["total"] = len(all_refs)
+        result["by_kind"] = _count_by_kind(all_refs)
+        all_refs.sort(key=lambda x: (_REF_KIND_PRIORITY.get(x["kind"], 99), x["path"], x["used_in"]))
+        if len(all_refs) > limit:
+            result["truncated"] = True
+            all_refs = all_refs[:limit]
+        result["references"] = all_refs
+        return result
+
+    def _count_by_kind(refs: list[dict]) -> dict:
+        out: dict[str, int] = {}
+        for r in refs:
+            k = r.get("kind", "")
+            out[k] = out.get(k, 0) + 1
+        return out
+
+    def _live_find_references(canonical: str, kinds: list[str] | None) -> list[dict]:
+        """Live scan fallback when metadata_references table is not available.
+
+        Walks Documents/Catalogs/Subsystems/etc., parses metadata XML on the fly.
+        """
+        from rlm_tools_bsl.bsl_xml_parsers import (
+            canonicalize_type_ref as _ctr,
+            parse_command_parameter_type as _pcpt,
+            parse_defined_type as _pdt,
+            parse_exchange_plan_content as _pep,
+            parse_metadata_xml as _pmx,
+            parse_pvh_characteristics as _ppc,
+        )
+
+        canonical_lower = canonical.lower()
+        kinds_set = set(kinds) if kinds else None
+        results: list[dict] = []
+
+        _CATEGORY_TYPE: dict[str, str] = {
+            "Documents": "Document",
+            "Catalogs": "Catalog",
+            "Enums": "Enum",
+            "InformationRegisters": "InformationRegister",
+            "AccumulationRegisters": "AccumulationRegister",
+            "AccountingRegisters": "AccountingRegister",
+            "CalculationRegisters": "CalculationRegister",
+            "ChartsOfAccounts": "ChartOfAccounts",
+            "ChartsOfCharacteristicTypes": "ChartOfCharacteristicTypes",
+            "ChartsOfCalculationTypes": "ChartOfCalculationTypes",
+            "ExchangePlans": "ExchangePlan",
+            "BusinessProcesses": "BusinessProcess",
+            "Tasks": "Task",
+            "Subsystems": "Subsystem",
+            "FunctionalOptions": "FunctionalOption",
+            "EventSubscriptions": "EventSubscription",
+            "Reports": "Report",
+            "DataProcessors": "DataProcessor",
+            "Constants": "Constant",
+            "DocumentJournals": "DocumentJournal",
+        }
+
+        scan_categories = list(_CATEGORY_TYPE.keys())
+        # CommonCommands is also a top-level category contributing refs
+        if "CommonCommands" not in scan_categories:
+            scan_categories.append("CommonCommands")
+            _CATEGORY_TYPE["CommonCommands"] = "CommonCommand"
+
+        seen_files: set[Path] = set()
+        # Object-level dedup: when same logical object is parsed via sibling .xml AND
+        # via Ext/<Type>.xml, the second pass would emit duplicate refs.
+        # Key: (used_in, kind) — the same logical reference is unambiguous regardless
+        # of source file path (in production both files have identical content).
+        emitted_keys: set[tuple[str, str]] = set()
+
+        import re as _re
+
+        def _resolve_attr_line(suffix: str, lines: list[str]) -> int | None:
+            """Same heuristic as bsl_index._line_for_ref — find <Name>X</Name> line."""
+            if not suffix:
+                return None
+            target_name: str | None = None
+            if suffix.startswith(("Attribute.", "Dimension.", "Resource.")):
+                parts = suffix.split(".")
+                if len(parts) >= 2:
+                    target_name = parts[1]
+            elif suffix.startswith("TabularSection.") and ".Attribute." in suffix:
+                after = suffix.split(".Attribute.", 1)[1]
+                target_name = after.split(".", 1)[0]
+            if not target_name:
+                return None
+            pat = _re.compile(rf"<\s*[Nn]ame\s*>{_re.escape(target_name)}<\s*/\s*[Nn]ame\s*>")
+            for idx, line in enumerate(lines, start=1):
+                if pat.search(line):
+                    return idx
+            return None
+
+        def _emit_from_xml(xml_path: Path, category: str, fallback_name: str) -> None:
+            if xml_path in seen_files:
+                return
+            seen_files.add(xml_path)
+            try:
+                content = xml_path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                return
+            try:
+                parsed = _pmx(content)
+            except Exception:
+                return
+            if not parsed:
+                return
+            obj_name = parsed.get("name") or fallback_name
+            rel = xml_path.relative_to(Path(base_path)).as_posix()
+            type_prefix = _CATEGORY_TYPE.get(category, category)
+            used_in_root = f"{type_prefix}.{obj_name}"
+            content_lines: list[str] | None = None
+            for ref in parsed.get("references", []):
+                if ref.get("ref_object", "").lower() != canonical_lower:
+                    continue
+                kind = ref.get("ref_kind", "")
+                if kinds_set is not None and kind not in kinds_set:
+                    continue
+                suffix = ref.get("used_in_suffix", "")
+                used_in = f"{used_in_root}.{suffix}" if suffix else used_in_root
+                key = (used_in, kind)
+                if key in emitted_keys:
+                    continue
+                emitted_keys.add(key)
+                if content_lines is None:
+                    content_lines = content.splitlines()
+                line = _resolve_attr_line(suffix, content_lines)
+                results.append({"used_in": used_in, "path": rel, "line": line, "kind": kind})
+
+        def _emit_command_param_refs(
+            xml_path: Path,
+            host_category: str,
+            host_object: str,
+        ) -> None:
+            """Emit command_parameter_type refs from a single Command XML/.command/.mdo.
+
+            host_category is the top-level category for source_category accounting:
+            'CommonCommands' for top-level commands, or 'Catalogs'/'Documents'/...
+            for object-nested commands.
+            host_object is the source_object label used in `used_in`:
+            command name itself for CommonCommands, parent object name otherwise.
+            """
+            if kinds_set is not None and "command_parameter_type" not in kinds_set:
+                return
+            if xml_path in seen_files:
+                return
+            seen_files.add(xml_path)
+            try:
+                content = xml_path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                return
+            try:
+                cmd_refs = _pcpt(content)
+            except Exception:
+                return
+            if not cmd_refs:
+                return
+            rel = xml_path.relative_to(Path(base_path)).as_posix()
+            for ref in cmd_refs:
+                ref_object = ref.get("ref_object", "")
+                if ref_object.lower() != canonical_lower:
+                    continue
+                cmd_name = ref.get("command_name", "") or xml_path.stem
+                if host_category == "CommonCommands":
+                    used_in = f"CommonCommand.{cmd_name}.CommandParameterType"
+                else:
+                    type_prefix = _CATEGORY_TYPE.get(host_category, host_category)
+                    used_in = f"{type_prefix}.{host_object}.Command.{cmd_name}.CommandParameterType"
+                key = (used_in, "command_parameter_type")
+                if key in emitted_keys:
+                    continue
+                emitted_keys.add(key)
+                results.append(
+                    {
+                        "used_in": used_in,
+                        "path": rel,
+                        "line": None,
+                        "kind": "command_parameter_type",
+                    }
+                )
+
+        # Walk every category: cover BOTH layouts
+        # 1) <Category>/<Object>/{Object.mdo|Ext/<Type>.xml} (Catalogs/Documents/...)
+        # 2) <Category>/<Object>.xml (top-level — Subsystems/X.xml, FunctionalOptions/X.xml,
+        #    EventSubscriptions/X.xml, CommonCommands/X.xml — plus Subsystem nesting)
+        for category in scan_categories:
+            cat_dir = Path(base_path) / category
+            if not cat_dir.is_dir():
+                continue
+
+            # Track layout-1 stems to avoid re-parsing the same logical object via
+            # the sibling layout-2 pass (Catalogs/X/ + Catalogs/X.xml — same content).
+            covered_stems: set[str] = set()
+
+            # Layout 1: object subdirectories
+            for obj_dir in cat_dir.iterdir():
+                if not obj_dir.is_dir():
+                    continue
+                obj_name = obj_dir.name
+                xml_path = None
+                mdo = obj_dir / f"{obj_name}.mdo"
+                if mdo.is_file():
+                    xml_path = mdo
+                else:
+                    sibling = obj_dir.parent / f"{obj_name}.xml"
+                    if sibling.is_file():
+                        xml_path = sibling
+                    else:
+                        ext_dir = obj_dir / "Ext"
+                        if ext_dir.is_dir():
+                            for fp in sorted(ext_dir.iterdir()):
+                                if fp.suffix.lower() == ".xml" and fp.is_file():
+                                    xml_path = fp
+                                    break
+                if xml_path is not None:
+                    _emit_from_xml(xml_path, category, obj_name)
+                    covered_stems.add(obj_name)
+
+                # Object-nested commands: <Cat>/<Obj>/Commands/<Cmd>.xml or
+                # <Cat>/<Obj>/Commands/<Cmd>/<Cmd>.command (EDT)
+                if category != "CommonCommands":
+                    cmd_dir = obj_dir / "Commands"
+                    if cmd_dir.is_dir():
+                        for cmd_entry in cmd_dir.iterdir():
+                            if cmd_entry.is_file() and cmd_entry.suffix.lower() == ".xml":
+                                _emit_command_param_refs(cmd_entry, category, obj_name)
+                            elif cmd_entry.is_dir():
+                                for cand in (
+                                    cmd_entry / f"{cmd_entry.name}.command",
+                                    cmd_entry / f"{cmd_entry.name}.mdo",
+                                ):
+                                    if cand.is_file():
+                                        _emit_command_param_refs(cand, category, obj_name)
+                                        break
+
+            # Layout 2: top-level *.xml / *.mdo files; skip files whose stem already
+            # covered by a layout-1 obj-dir to avoid duplicate refs.
+            for fp in cat_dir.rglob("*"):
+                if not fp.is_file():
+                    continue
+                if fp.suffix.lower() not in (".xml", ".mdo"):
+                    continue
+                # Skip top-level sibling already handled by layout 1.
+                if fp.parent == cat_dir and fp.stem in covered_stems:
+                    continue
+                # CommonCommands deserves command-parameter-type extraction in addition to
+                # the regular metadata parse pass.
+                if category == "CommonCommands":
+                    _emit_command_param_refs(fp, "CommonCommands", fp.stem)
+                _emit_from_xml(fp, category, fp.stem)
+
+        # ExchangePlans content
+        ep_dir = Path(base_path) / "ExchangePlans"
+        if ep_dir.is_dir() and (kinds_set is None or "exchange_plan_content" in kinds_set):
+            for plan_dir in ep_dir.iterdir():
+                if not plan_dir.is_dir():
+                    continue
+                plan_name = plan_dir.name
+                files = [plan_dir / "Ext" / "Content.xml", plan_dir / f"{plan_name}.mdo"]
+                for fp in files:
+                    if not fp.is_file():
+                        continue
+                    try:
+                        text = fp.read_text(encoding="utf-8-sig", errors="replace")
+                    except OSError:
+                        continue
+                    items = _pep(text)
+                    if not items:
+                        continue
+                    rel = fp.relative_to(Path(base_path)).as_posix()
+                    for item in items:
+                        canon = _ctr(item.get("ref", ""))
+                        if canon.lower() == canonical_lower:
+                            results.append(
+                                {
+                                    "used_in": f"ExchangePlan.{plan_name}.Content",
+                                    "path": rel,
+                                    "line": None,
+                                    "kind": "exchange_plan_content",
+                                }
+                            )
+
+        # DefinedTypes
+        dt_dir = Path(base_path) / "DefinedTypes"
+        if dt_dir.is_dir() and (kinds_set is None or "defined_type_content" in kinds_set):
+            for fp in dt_dir.iterdir():
+                paths_to_try: list[Path] = []
+                if fp.is_file() and fp.suffix.lower() == ".xml":
+                    paths_to_try.append(fp)
+                elif fp.is_dir():
+                    mdo = fp / f"{fp.name}.mdo"
+                    if mdo.is_file():
+                        paths_to_try.append(mdo)
+                for cfp in paths_to_try:
+                    try:
+                        text = cfp.read_text(encoding="utf-8-sig", errors="replace")
+                    except OSError:
+                        continue
+                    parsed_dt = _pdt(text)
+                    if not parsed_dt:
+                        continue
+                    rel = cfp.relative_to(Path(base_path)).as_posix()
+                    for type_str in parsed_dt.get("types", []):
+                        canon = _ctr(type_str)
+                        if canon.lower() == canonical_lower:
+                            results.append(
+                                {
+                                    "used_in": f"DefinedType.{parsed_dt['name']}.Type",
+                                    "path": rel,
+                                    "line": None,
+                                    "kind": "defined_type_content",
+                                }
+                            )
+
+        # ChartsOfCharacteristicTypes characteristic_types (Type list at top level)
+        # Already covered via parse_metadata_xml path above (characteristic_type kind)
+        # but parse_pvh_characteristics provides a clean list — reuse just for completeness.
+        _ = _ppc  # parse_pvh_characteristics covered indirectly via parse_metadata_xml
+        return results
+
+    def find_defined_types(name: str) -> dict:
+        """Resolve a DefinedType by name to its concrete type list.
+
+        Args:
+            name: e.g. 'Сумма' or 'ОпределяемыйТип.Сумма' or 'DefinedType.Сумма'.
+
+        Returns:
+            {name, types: list[str], path: str, partial: bool}.
+            On v11 indexes (no defined_types table) does live XML scan.
+        """
+        text = name.strip()
+        # strip prefix
+        for prefix in ("ОпределяемыйТип.", "DefinedType."):
+            if text.startswith(prefix):
+                text = text[len(prefix) :]
+                break
+        result: dict = {"name": text, "types": [], "path": "", "partial": False}
+
+        if idx_reader is not None:
+            try:
+                row = idx_reader.find_defined_type(text)
+            except Exception:
+                row = None
+            if row is not None:
+                return {"name": row["name"], "types": row["types"], "path": row["path"], "partial": False}
+
+        # Live fallback
+        from rlm_tools_bsl.bsl_xml_parsers import (
+            canonicalize_type_ref as _ctr,
+            parse_defined_type as _pdt,
+        )
+
+        result["partial"] = True
+        dt_dir = Path(base_path) / "DefinedTypes"
+        if not dt_dir.is_dir():
+            return result
+        text_lower = text.lower()
+        for fp in dt_dir.iterdir():
+            paths: list[Path] = []
+            if fp.is_file() and fp.suffix.lower() == ".xml":
+                paths.append(fp)
+            elif fp.is_dir():
+                mdo = fp / f"{fp.name}.mdo"
+                if mdo.is_file():
+                    paths.append(mdo)
+            for cfp in paths:
+                try:
+                    content = cfp.read_text(encoding="utf-8-sig", errors="replace")
+                except OSError:
+                    continue
+                parsed = _pdt(content)
+                if not parsed or parsed["name"].lower() != text_lower:
+                    continue
+                from rlm_tools_bsl.bsl_xml_parsers import _XS_TYPE_MAP, _strip_ns_prefix
+
+                canonical_types: list[str] = []
+                for type_str in parsed.get("types", []):
+                    canon = _ctr(type_str)
+                    if canon:
+                        canonical_types.append(canon)
+                        continue
+                    stripped = type_str.strip()
+                    mapped = _XS_TYPE_MAP.get(stripped) or _XS_TYPE_MAP.get(f"xs:{stripped}")
+                    canonical_types.append(mapped or _strip_ns_prefix(stripped))
+                rel = cfp.relative_to(Path(base_path)).as_posix()
+                result.update({"name": parsed["name"], "types": canonical_types, "path": rel})
+                return result
+        return result
+
     # ── Register all helpers ─────────────────────────────────────
     # Each _reg() call: name, function, signature (for strategy table),
     # category (for grouping), keywords (for help search), recipe (code example).
@@ -3270,6 +3793,41 @@ def make_bsl_helpers(
         "  content = find_exchange_plan_content('ОбменУправлениеПредприятием')\n"
         "  for item in content:\n"
         "      print(f\"  {item['ref']} auto_record={item['auto_record']}\")",
+    )
+
+    _reg(
+        "find_references_to_object",
+        find_references_to_object,
+        "find_references_to_object(object_ref, kinds=None, limit=1000) -> {object, references: [{used_in, path, line, kind}], total, truncated, partial, by_kind}",
+        "business",
+        [
+            "ссылк",
+            "references",
+            "где используется",
+            "найти ссылки",
+            "в свойствах",
+            "поиск ссылок",
+            "вхождения",
+        ],
+        "FIND REFERENCES TO OBJECT (analogue of Configurator 'Найти ссылки → В свойствах'):\n"
+        "  res = find_references_to_object('Справочник.ВидыПодарочныхСертификатов')\n"
+        "  print(f\"total={res['total']} by_kind={res['by_kind']}\")\n"
+        "  for r in res['references'][:20]:\n"
+        "      print(f\"  {r['kind']:25s} {r['used_in']} ({r['path']})\")\n"
+        "  # Filter by kind:\n"
+        "  attrs_only = find_references_to_object('Справочник.X', kinds=['attribute_type'])\n"
+        "  # On v11 indexes (no metadata_references table) — partial=True via live scan",
+    )
+
+    _reg(
+        "find_defined_types",
+        find_defined_types,
+        "find_defined_types(name) -> {name, types: list[str], path, partial}",
+        "business",
+        ["определяемый тип", "defined type", "ОпределяемыйТип"],
+        "FIND DEFINED TYPES (раскрытие ОпределяемогоТипа):\n"
+        "  dt = find_defined_types('ДенежнаяСуммаНеотрицательная')\n"
+        "  print(dt['types'])  # -> ['Number'] or ['Catalog.X', 'Document.Y', ...]",
     )
 
     _reg(

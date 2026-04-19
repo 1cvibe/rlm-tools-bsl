@@ -108,6 +108,14 @@ def _cmd_build(args: argparse.Namespace) -> None:
         print(f"  Attributes: {stats['object_attributes']}")
     if stats.get("predefined_items"):
         print(f"  Predefined: {stats['predefined_items']}")
+    if stats.get("metadata_references"):
+        print(f"  MetaRefs:   {stats['metadata_references']}")
+    if stats.get("exchange_plan_content"):
+        print(f"  ExPlanCnt:  {stats['exchange_plan_content']}")
+    if stats.get("defined_types"):
+        print(f"  DefTypes:   {stats['defined_types']}")
+    if stats.get("characteristic_types"):
+        print(f"  CharTypes:  {stats['characteristic_types']}")
     if stats.get("file_paths"):
         print(f"  FilePaths:  {stats['file_paths']}")
     print(f"  DB size:  {_fmt_size(db_size)}")
@@ -212,6 +220,14 @@ def _cmd_info(args: argparse.Namespace) -> None:
         print(f"  Attributes: {stats['object_attributes']}")
     if stats.get("predefined_items"):
         print(f"  Predefined: {stats['predefined_items']}")
+    if stats.get("metadata_references"):
+        print(f"  MetaRefs:   {stats['metadata_references']}")
+    if stats.get("exchange_plan_content"):
+        print(f"  ExPlanCnt:  {stats['exchange_plan_content']}")
+    if stats.get("defined_types"):
+        print(f"  DefTypes:   {stats['defined_types']}")
+    if stats.get("characteristic_types"):
+        print(f"  CharTypes:  {stats['characteristic_types']}")
     if stats.get("file_paths"):
         print(f"  FilePaths:  {stats['file_paths']}")
     print(f"  FTS:      {'yes' if stats.get('has_fts') else 'no'}")

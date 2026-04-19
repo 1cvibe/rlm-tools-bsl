@@ -74,6 +74,8 @@ Step 1 — DISCOVER: find what you need
   parse_object_xml(path) → attributes, tabular sections, dimensions, resources
   find_attributes('ИмяРеквизита')        → INSTANT: attribute name → type(s)
   find_predefined('ИмяПредопределённого') → INSTANT: predefined item → type(s)
+  find_references_to_object('Справочник.Имя') → все места использования объекта (analogue of "Найти ссылки → В свойствах")
+  find_defined_types('Имя')              → раскрытие ОпределяемогоТипа в список реальных типов
   parse_form(object_name) → form handlers, commands, attributes (for UI/form analysis tasks)
 
 Step 2 — READ: understand the code
@@ -255,6 +257,27 @@ _BUSINESS_RECIPES: dict[str, dict[str, list[str]]] = {
             "parse_object_xml(path) → метаданные объекта (реквизиты, ТЧ)",
         ],
     },
+    "ссылки": {
+        "compact": [
+            "find_references_to_object('Справочник.Имя') → unified reverse-index",
+            "Print res['by_kind'] и первые 20 references",
+        ],
+        "full": [
+            "res = find_references_to_object('Справочник.ВидыПодарочныхСертификатов')",
+            "print(res['by_kind'], res['total'])",
+            "Filter by kind: find_references_to_object('Справочник.Х', kinds=['attribute_type'])",
+            "Если res['partial'] — индекс старый (v11), запустить rlm_index(action='build')",
+            "Аналог конфигуратора 'Найти ссылки → В свойствах' — issue #10",
+        ],
+        "code_hint": (
+            "# Поиск всех мест использования объекта:\n"
+            "res = find_references_to_object('Справочник.ВидыПодарочныхСертификатов')\n"
+            "print(f\"total={res['total']} truncated={res['truncated']} partial={res['partial']}\")\n"
+            "print('by_kind:', res['by_kind'])\n"
+            "for r in res['references'][:20]:\n"
+            "    print(f\"  {r['kind']:25s} {r['used_in']} ({r['path']})\")"
+        ),
+    },
     "тип реквизита": {
         "compact": [
             "find_predefined('ИмяСубконто') — if asking about subconto/predefined",
@@ -290,6 +313,13 @@ _RECIPE_ALIASES: dict[str, str] = {
     "тип субконто": "тип реквизита",
     "предопределённ": "тип реквизита",
     "attribute type": "тип реквизита",
+    "references": "ссылки",
+    "where used": "ссылки",
+    "где используется": "ссылки",
+    "найти ссылки": "ссылки",
+    "поиск ссылок": "ссылки",
+    "в свойствах": "ссылки",
+    "вхождения": "ссылки",
 }
 
 _STRATEGY_IO_SECTION = """\
@@ -625,7 +655,7 @@ RLM_EXECUTE_DESCRIPTION = (
     "find_event_subscriptions, find_scheduled_jobs, find_register_movements,\n"
     "find_register_writers, analyze_document_flow, find_based_on_documents,\n"
     "find_print_forms, find_functional_options, find_roles, find_enum_values,\n"
-    "find_attributes, find_predefined.\n"
+    "find_attributes, find_predefined, find_references_to_object, find_defined_types.\n"
     "Standard: read_file, read_files, grep, grep_summary, grep_read, glob_files, tree, find_files.\n"
     "CRITICAL: grep on path='.' ALWAYS times out on large 1C configs. Use find_module() first."
 )

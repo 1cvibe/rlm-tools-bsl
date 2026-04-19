@@ -26,7 +26,7 @@ from rlm_tools_bsl.format_detector import BslFileInfo, parse_bsl_path
 
 logger = logging.getLogger(__name__)
 
-BUILDER_VERSION = 11
+BUILDER_VERSION = 12
 
 
 _active_locks: dict[str, "_BuildLock"] = {}
@@ -433,6 +433,51 @@ CREATE TABLE IF NOT EXISTS predefined_items (
 CREATE INDEX IF NOT EXISTS idx_pi_object ON predefined_items(object_name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_pi_item ON predefined_items(item_name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_pi_synonym ON predefined_items(item_synonym COLLATE NOCASE);
+
+-- Level-12 (v1.9.0): metadata references reverse-index for find_references_to_object
+CREATE TABLE IF NOT EXISTS metadata_references (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_object   TEXT NOT NULL,
+    source_category TEXT NOT NULL,
+    ref_object      TEXT NOT NULL,
+    ref_kind        TEXT NOT NULL,
+    used_in         TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    line            INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_mref_ref      ON metadata_references(ref_object);
+CREATE INDEX IF NOT EXISTS idx_mref_src      ON metadata_references(source_object);
+CREATE INDEX IF NOT EXISTS idx_mref_kind     ON metadata_references(ref_kind);
+CREATE INDEX IF NOT EXISTS idx_mref_category ON metadata_references(source_category);
+
+-- Level-12: exchange plan content (specialised — for find_exchange_plan_content fast path)
+CREATE TABLE IF NOT EXISTS exchange_plan_content (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_name   TEXT NOT NULL,
+    object_ref  TEXT NOT NULL,
+    auto_record INTEGER NOT NULL,
+    path        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_epc_plan ON exchange_plan_content(plan_name);
+CREATE INDEX IF NOT EXISTS idx_epc_ref  ON exchange_plan_content(object_ref);
+
+-- Level-12: defined types (for find_defined_types)
+CREATE TABLE IF NOT EXISTS defined_types (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    type_refs_json TEXT NOT NULL,
+    path           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dt_name ON defined_types(name);
+
+-- Level-12: characteristic types (ChartsOfCharacteristicTypes Type list)
+CREATE TABLE IF NOT EXISTS characteristic_types (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    pvh_name       TEXT NOT NULL,
+    type_refs_json TEXT NOT NULL,
+    path           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ct_pvh ON characteristic_types(pvh_name);
 """
 
 
@@ -472,7 +517,65 @@ _CATEGORY_RU: dict[str, str] = {
     "EventSubscriptions": "Подписка на событие",
     "ScheduledJobs": "Регламентное задание",
     "FunctionalOptions": "Функциональная опция",
+    "DefinedTypes": "Определяемый тип",
 }
+
+# Map: top-level category folder -> 1C metadata type singular prefix (used in `used_in`)
+_CATEGORY_TO_TYPE_PREFIX: dict[str, str] = {
+    "Documents": "Document",
+    "Catalogs": "Catalog",
+    "Enums": "Enum",
+    "InformationRegisters": "InformationRegister",
+    "AccumulationRegisters": "AccumulationRegister",
+    "AccountingRegisters": "AccountingRegister",
+    "CalculationRegisters": "CalculationRegister",
+    "ChartsOfAccounts": "ChartOfAccounts",
+    "ChartsOfCharacteristicTypes": "ChartOfCharacteristicTypes",
+    "ChartsOfCalculationTypes": "ChartOfCalculationTypes",
+    "ExchangePlans": "ExchangePlan",
+    "BusinessProcesses": "BusinessProcess",
+    "Tasks": "Task",
+    "Subsystems": "Subsystem",
+    "FunctionalOptions": "FunctionalOption",
+    "EventSubscriptions": "EventSubscription",
+    "Roles": "Role",
+    "Constants": "Constant",
+    "Reports": "Report",
+    "DataProcessors": "DataProcessor",
+    "DefinedTypes": "DefinedType",
+    "CommonCommands": "CommonCommand",
+    "DocumentJournals": "DocumentJournal",
+}
+
+# Top-level categories that contribute rows into metadata_references.
+# Used for category-aware DELETE during incremental git fast path.
+_METADATA_REFERENCES_TRIGGER_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "Documents",
+        "Catalogs",
+        "InformationRegisters",
+        "AccumulationRegisters",
+        "AccountingRegisters",
+        "CalculationRegisters",
+        "ChartsOfCharacteristicTypes",
+        "ChartsOfAccounts",
+        "ChartsOfCalculationTypes",
+        "Enums",
+        "ExchangePlans",
+        "DefinedTypes",
+        "CommonCommands",
+        "Subsystems",
+        "FunctionalOptions",
+        "EventSubscriptions",
+        "Roles",
+        "Tasks",
+        "BusinessProcesses",
+        "Constants",
+        "DocumentJournals",
+        "Reports",
+        "DataProcessors",
+    }
+)
 
 _SYNONYM_CATEGORIES: frozenset[str] = frozenset(_CATEGORY_RU.keys())
 
@@ -1293,6 +1396,10 @@ def _collect_metadata_tables(
     collect_ws: bool = True,
     collect_xdto: bool = True,
     collect_attrs_categories: set[str] | None = None,
+    collect_exchange_plans: bool = True,
+    collect_defined_types: bool = True,
+    collect_pvh_types: bool = True,
+    collect_metadata_refs_categories: set[str] | None = None,
 ) -> dict[str, list[tuple]]:
     """Scan and parse metadata XMLs selectively.
 
@@ -1301,19 +1408,28 @@ def _collect_metadata_tables(
     when it is an empty ``set()`` object_attributes/predefined_items are skipped;
     when it contains specific categories only those are scanned.
 
+    *collect_metadata_refs_categories* — same pattern for metadata_references rows;
+    None means full collection (all known top-level categories).
+
     Returns dict with keys: event_subscriptions, scheduled_jobs, functional_options,
     enum_values, subsystem_content, http_services, web_services, xdto_packages,
-    object_attributes, predefined_items.
+    object_attributes, predefined_items, metadata_references, exchange_plan_content,
+    defined_types, characteristic_types.
     Each value is a list of tuples ready for INSERT.
     """
     from rlm_tools_bsl.bsl_xml_parsers import (
+        canonicalize_type_ref,
         normalize_type_string,
+        parse_command_parameter_type,
+        parse_defined_type,
         parse_enum_xml,
         parse_event_subscription_xml,
+        parse_exchange_plan_content,
         parse_functional_option_xml,
         parse_http_service_xml,
         parse_metadata_xml,
         parse_predefined_items,
+        parse_pvh_characteristics,
         parse_scheduled_job_xml,
         parse_web_service_xml,
         parse_xdto_package_xml,
@@ -1332,7 +1448,91 @@ def _collect_metadata_tables(
         "xdto_packages": [],
         "object_attributes": [],
         "predefined_items": [],
+        "metadata_references": [],
+        "exchange_plan_content": [],
+        "defined_types": [],
+        "characteristic_types": [],
     }
+
+    # Active set of source_categories for metadata_references rows.
+    # None means: include everything from triggered set.
+    _active_ref_cats: set[str] | None = collect_metadata_refs_categories
+
+    def _ref_allowed(cat: str) -> bool:
+        if _active_ref_cats is None:
+            return cat in _METADATA_REFERENCES_TRIGGER_CATEGORIES
+        return cat in _active_ref_cats
+
+    # Match <Name>X</Name> (CF) and <name>X</name> (EDT) — case-sensitive on tag name
+    _NAME_RE_CACHE: dict[str, re.Pattern] = {}
+
+    def _name_re(name: str) -> re.Pattern:
+        pat = _NAME_RE_CACHE.get(name)
+        if pat is None:
+            pat = re.compile(rf"<\s*[Nn]ame\s*>{re.escape(name)}<\s*/\s*[Nn]ame\s*>")
+            _NAME_RE_CACHE[name] = pat
+        return pat
+
+    def _line_for_ref(ref: dict, content_lines: list[str] | None) -> int | None:
+        """Best-effort line lookup for attribute-level refs.
+
+        Looks up `<Name>AttrName</Name>` in the file content. Cheap (one regex scan
+        per attribute name). Returns None when content is unavailable or the suffix
+        does not encode an attribute name.
+        """
+        if content_lines is None:
+            return None
+        suffix = ref.get("used_in_suffix", "")
+        if not suffix:
+            return None
+        # Suffixes we can resolve: Attribute.X.Type, Dimension.X.Type, Resource.X.Type,
+        # TabularSection.TS.Attribute.X.Type
+        target_name: str | None = None
+        if suffix.startswith(("Attribute.", "Dimension.", "Resource.")):
+            parts = suffix.split(".")
+            if len(parts) >= 2:
+                target_name = parts[1]
+        elif suffix.startswith("TabularSection.") and ".Attribute." in suffix:
+            after = suffix.split(".Attribute.", 1)[1]
+            target_name = after.split(".", 1)[0]
+        if not target_name:
+            return None
+        pat = _name_re(target_name)
+        for idx, line in enumerate(content_lines, start=1):
+            if pat.search(line):
+                return idx
+        return None
+
+    def _emit_refs(
+        parsed_refs: list[dict],
+        source_object: str,
+        source_category: str,
+        rel_path: str,
+        content_lines: list[str] | None = None,
+    ) -> None:
+        """Append parsed parser-level references to result['metadata_references']."""
+        if not parsed_refs or not _ref_allowed(source_category):
+            return
+        type_prefix = _CATEGORY_TO_TYPE_PREFIX.get(source_category, source_category)
+        used_in_root = f"{type_prefix}.{source_object}"
+        for ref in parsed_refs:
+            ref_object = ref.get("ref_object", "")
+            if not ref_object:
+                continue
+            suffix = ref.get("used_in_suffix", "")
+            used_in = f"{used_in_root}.{suffix}" if suffix else used_in_root
+            line = _line_for_ref(ref, content_lines)
+            result["metadata_references"].append(
+                (
+                    source_object,
+                    source_category,
+                    ref_object,
+                    ref.get("ref_kind", ""),
+                    used_in,
+                    rel_path,
+                    line,
+                )
+            )
 
     def _read(fp: Path) -> str | None:
         try:
@@ -1376,6 +1576,22 @@ def _collect_metadata_tables(
                 rel,
             )
         )
+        # Emit metadata_references for each source type
+        if _ref_allowed("EventSubscriptions"):
+            for st in source_types:
+                canon = canonicalize_type_ref(st)
+                if canon:
+                    result["metadata_references"].append(
+                        (
+                            parsed["name"],
+                            "EventSubscriptions",
+                            canon,
+                            "event_subscription_source",
+                            f"EventSubscription.{parsed['name']}.Source",
+                            rel,
+                            None,
+                        )
+                    )
 
     # ScheduledJobs
     for fp in _glob_xml("ScheduledJobs") if collect_sj else []:
@@ -1425,6 +1641,41 @@ def _collect_metadata_tables(
                 rel,
             )
         )
+        # Emit metadata_references for each content object
+        if _ref_allowed("FunctionalOptions"):
+            for ref_str in fo_content:
+                canon = canonicalize_type_ref(ref_str)
+                if canon:
+                    result["metadata_references"].append(
+                        (
+                            parsed["name"],
+                            "FunctionalOptions",
+                            canon,
+                            "functional_option_content",
+                            f"FunctionalOption.{parsed['name']}.Content",
+                            rel,
+                            None,
+                        )
+                    )
+        # Emit reference for storage location (Constant.X / InformationRegister.X)
+        loc = parsed.get("location") or ""
+        if loc and _ref_allowed("FunctionalOptions"):
+            parts = loc.split(".")
+            if len(parts) >= 2:
+                ref_obj = ".".join(parts[:2])
+                canon = canonicalize_type_ref(ref_obj)
+                if canon:
+                    result["metadata_references"].append(
+                        (
+                            parsed["name"],
+                            "FunctionalOptions",
+                            canon,
+                            "functional_option_content",
+                            f"FunctionalOption.{parsed['name']}.Location",
+                            rel,
+                            None,
+                        )
+                    )
 
     # Enums
     for fp in _glob_xml("Enums") if collect_enums else []:
@@ -1465,6 +1716,20 @@ def _collect_metadata_tables(
                     rel,
                 )
             )
+            if _ref_allowed("Subsystems"):
+                canon = canonicalize_type_ref(obj_ref)
+                if canon:
+                    result["metadata_references"].append(
+                        (
+                            sub_name,
+                            "Subsystems",
+                            canon,
+                            "subsystem_content",
+                            f"Subsystem.{sub_name}.Content",
+                            rel,
+                            None,
+                        )
+                    )
 
     # HTTPServices
     for fp in _glob_xml("HTTPServices") if collect_http else []:
@@ -1593,6 +1858,16 @@ def _collect_metadata_tables(
 
             rel = xml_path.relative_to(base).as_posix()
 
+            # Emit metadata_references from parser (attributes, owners, based_on, forms, etc.)
+            # Pass content lines so attribute-level refs get an approximate line number.
+            _emit_refs(
+                parsed.get("references", []),
+                obj_name,
+                category,
+                rel,
+                content_lines=content.splitlines(),
+            )
+
             for attr in parsed.get("attributes", []):
                 result["object_attributes"].append(
                     (
@@ -1705,6 +1980,298 @@ def _collect_metadata_tables(
                         rel,
                     )
                 )
+                # Emit predefined_characteristic_type refs
+                if _ref_allowed(category):
+                    for type_str in item.get("types", []):
+                        canon = canonicalize_type_ref(type_str)
+                        if canon:
+                            result["metadata_references"].append(
+                                (
+                                    obj_name,
+                                    category,
+                                    canon,
+                                    "predefined_characteristic_type",
+                                    f"{_CATEGORY_TO_TYPE_PREFIX.get(category, category)}.{obj_name}.PredefinedItem.{item.get('name', '')}.Type",
+                                    rel,
+                                    None,
+                                )
+                            )
+
+    # ExchangePlans (specialised + metadata_references)
+    if collect_exchange_plans:
+        ep_dir = base / "ExchangePlans"
+        if ep_dir.is_dir():
+            for plan_dir in sorted(ep_dir.iterdir()):
+                if not plan_dir.is_dir():
+                    continue
+                plan_name = plan_dir.name
+                # CF: Ext/Content.xml; EDT: <plan>.mdo (inline content)
+                content_files: list[Path] = []
+                cf_content = plan_dir / "Ext" / "Content.xml"
+                if cf_content.is_file():
+                    content_files.append(cf_content)
+                mdo_path = plan_dir / f"{plan_name}.mdo"
+                if mdo_path.is_file():
+                    content_files.append(mdo_path)
+                for cfp in content_files:
+                    text = _read(cfp)
+                    if not text:
+                        continue
+                    items = parse_exchange_plan_content(text)
+                    if not items:
+                        continue
+                    rel = cfp.relative_to(base).as_posix()
+                    for item in items:
+                        ref_str = item.get("ref", "")
+                        ar = 1 if item.get("auto_record") else 0
+                        canon = canonicalize_type_ref(ref_str)
+                        result["exchange_plan_content"].append(
+                            (
+                                plan_name,
+                                canon or ref_str,
+                                ar,
+                                rel,
+                            )
+                        )
+                        if canon and _ref_allowed("ExchangePlans"):
+                            result["metadata_references"].append(
+                                (
+                                    plan_name,
+                                    "ExchangePlans",
+                                    canon,
+                                    "exchange_plan_content",
+                                    f"ExchangePlan.{plan_name}.Content",
+                                    rel,
+                                    None,
+                                )
+                            )
+
+    # DefinedTypes (specialised + metadata_references)
+    if collect_defined_types:
+        from rlm_tools_bsl.bsl_xml_parsers import _XS_TYPE_MAP, _strip_ns_prefix
+
+        def _normalize_dt_type(type_str: str) -> str:
+            """Canonical metadata ref OR primitive (Number/String/...) — never empty.
+
+            Handles three input shapes: "xs:decimal" (raw EDT), "decimal" (CF parser
+            already stripped the prefix), and metadata refs like "CatalogRef.X".
+            """
+            canon = canonicalize_type_ref(type_str)
+            if canon:
+                return canon
+            stripped = type_str.strip()
+            mapped = _XS_TYPE_MAP.get(stripped)
+            if mapped:
+                return mapped
+            # CF parser already stripped "xs:" — try with prefix re-attached.
+            mapped = _XS_TYPE_MAP.get(f"xs:{stripped}")
+            if mapped:
+                return mapped
+            return _strip_ns_prefix(stripped)
+
+        def _process_defined_type(text: str, rel: str) -> None:
+            parsed = parse_defined_type(text)
+            if not parsed:
+                return
+            stored_types: list[str] = []
+            for type_str in parsed.get("types", []):
+                normalized = _normalize_dt_type(type_str)
+                if normalized:
+                    stored_types.append(normalized)
+                # Only canonical metadata refs go into the reverse-index
+                canon = canonicalize_type_ref(type_str)
+                if canon and _ref_allowed("DefinedTypes"):
+                    result["metadata_references"].append(
+                        (
+                            parsed["name"],
+                            "DefinedTypes",
+                            canon,
+                            "defined_type_content",
+                            f"DefinedType.{parsed['name']}.Type",
+                            rel,
+                            None,
+                        )
+                    )
+            result["defined_types"].append((parsed["name"], json.dumps(stored_types, ensure_ascii=False), rel))
+
+        dt_dir = base / "DefinedTypes"
+        if dt_dir.is_dir():
+            for fp in sorted(dt_dir.iterdir()):
+                if fp.is_file() and fp.suffix.lower() == ".xml":
+                    # CF format: DefinedTypes/<Name>.xml
+                    text = _read(fp)
+                    if text:
+                        _process_defined_type(text, fp.relative_to(base).as_posix())
+                elif fp.is_dir():
+                    # EDT: DefinedTypes/<Name>/<Name>.mdo
+                    mdo_path = fp / f"{fp.name}.mdo"
+                    if mdo_path.is_file():
+                        text = _read(mdo_path)
+                        if text:
+                            _process_defined_type(text, mdo_path.relative_to(base).as_posix())
+
+    # ChartsOfCharacteristicTypes (specialised characteristic_types + Type refs)
+    if collect_pvh_types:
+        pvh_dir = base / "ChartsOfCharacteristicTypes"
+        if pvh_dir.is_dir():
+            for obj_dir in sorted(pvh_dir.iterdir()):
+                if not obj_dir.is_dir():
+                    continue
+                obj_name = obj_dir.name
+                # Locate metadata XML using same fallback as attributes loop
+                xml_path = None
+                # EDT
+                mdo = obj_dir / f"{obj_name}.mdo"
+                if mdo.is_file():
+                    xml_path = mdo
+                else:
+                    sibling = obj_dir.parent / f"{obj_name}.xml"
+                    if sibling.is_file():
+                        xml_path = sibling
+                    else:
+                        ext_dir = obj_dir / "Ext"
+                        if ext_dir.is_dir():
+                            for fp in sorted(ext_dir.iterdir()):
+                                if fp.suffix.lower() == ".xml" and fp.is_file():
+                                    xml_path = fp
+                                    break
+                if xml_path is None:
+                    continue
+                text = _read(xml_path)
+                if not text:
+                    continue
+                parsed_pvh = parse_pvh_characteristics(text)
+                if not parsed_pvh:
+                    continue
+                rel = xml_path.relative_to(base).as_posix()
+                canonical_refs = []
+                for type_str in parsed_pvh.get("types", []):
+                    canon = canonicalize_type_ref(type_str)
+                    if canon:
+                        canonical_refs.append(canon)
+                result["characteristic_types"].append(
+                    (parsed_pvh["pvh_name"], json.dumps(canonical_refs, ensure_ascii=False), rel)
+                )
+                # Refs already emitted via parse_metadata_xml.references for the same object;
+                # but only if ChartsOfCharacteristicTypes was processed via the attributes loop.
+                # We don't double-emit characteristic_type refs here to avoid duplicates.
+
+    # CommonCommands and per-object commands → command_parameter_type
+    if _ref_allowed("CommonCommands") or any(
+        c in (_active_ref_cats if _active_ref_cats is not None else _METADATA_REFERENCES_TRIGGER_CATEGORIES)
+        for c in (
+            "Catalogs",
+            "Documents",
+            "InformationRegisters",
+            "AccumulationRegisters",
+            "AccountingRegisters",
+            "ChartsOfCharacteristicTypes",
+            "ChartsOfAccounts",
+            "ChartsOfCalculationTypes",
+            "BusinessProcesses",
+            "Tasks",
+            "ExchangePlans",
+        )
+    ):
+        # CommonCommands
+        common_cmd_dir = base / "CommonCommands"
+        if common_cmd_dir.is_dir() and _ref_allowed("CommonCommands"):
+            for fp in sorted(common_cmd_dir.iterdir()):
+                cmd_files: list[Path] = []
+                if fp.is_file() and fp.suffix.lower() == ".xml":
+                    cmd_files.append(fp)
+                elif fp.is_dir():
+                    # EDT: <Name>/<Name>.mdo (alternative .command path)
+                    for cand in (fp / f"{fp.name}.mdo", fp / f"{fp.name}.command"):
+                        if cand.is_file():
+                            cmd_files.append(cand)
+                            break
+                for cfp in cmd_files:
+                    text = _read(cfp)
+                    if not text:
+                        continue
+                    parsed_cmds = parse_command_parameter_type(text)
+                    if not parsed_cmds:
+                        continue
+                    rel = cfp.relative_to(base).as_posix()
+                    for ref_dict in parsed_cmds:
+                        canon = ref_dict.get("ref_object", "")
+                        cmd_name = ref_dict.get("command_name", "") or fp.stem
+                        if canon:
+                            result["metadata_references"].append(
+                                (
+                                    cmd_name,
+                                    "CommonCommands",
+                                    canon,
+                                    "command_parameter_type",
+                                    f"CommonCommand.{cmd_name}.CommandParameterType",
+                                    rel,
+                                    None,
+                                )
+                            )
+
+        # Per-object commands: Catalogs/X/Commands/*.xml or Catalogs/X/Commands/Y/Y.command
+        _CMD_HOST_CATS = (
+            "Catalogs",
+            "Documents",
+            "InformationRegisters",
+            "AccumulationRegisters",
+            "AccountingRegisters",
+            "ChartsOfCharacteristicTypes",
+            "ChartsOfAccounts",
+            "ChartsOfCalculationTypes",
+            "BusinessProcesses",
+            "Tasks",
+            "ExchangePlans",
+            "Reports",
+            "DataProcessors",
+        )
+        for category in _CMD_HOST_CATS:
+            if not _ref_allowed(category):
+                continue
+            cat_dir = base / category
+            if not cat_dir.is_dir():
+                continue
+            for obj_dir in sorted(cat_dir.iterdir()):
+                if not obj_dir.is_dir():
+                    continue
+                obj_name = obj_dir.name
+                cmd_dir = obj_dir / "Commands"
+                if not cmd_dir.is_dir():
+                    continue
+                for entry in sorted(cmd_dir.iterdir()):
+                    cmd_files: list[Path] = []
+                    if entry.is_file() and entry.suffix.lower() == ".xml":
+                        cmd_files.append(entry)
+                    elif entry.is_dir():
+                        for cand in (entry / f"{entry.name}.command", entry / f"{entry.name}.mdo"):
+                            if cand.is_file():
+                                cmd_files.append(cand)
+                                break
+                    for cfp in cmd_files:
+                        text = _read(cfp)
+                        if not text:
+                            continue
+                        parsed_cmds = parse_command_parameter_type(text)
+                        if not parsed_cmds:
+                            continue
+                        rel = cfp.relative_to(base).as_posix()
+                        type_prefix = _CATEGORY_TO_TYPE_PREFIX.get(category, category)
+                        for ref_dict in parsed_cmds:
+                            canon = ref_dict.get("ref_object", "")
+                            cmd_name = ref_dict.get("command_name", "") or entry.stem
+                            if canon:
+                                result["metadata_references"].append(
+                                    (
+                                        obj_name,
+                                        category,
+                                        canon,
+                                        "command_parameter_type",
+                                        f"{type_prefix}.{obj_name}.Command.{cmd_name}.CommandParameterType",
+                                        rel,
+                                        None,
+                                    )
+                                )
 
     return result
 
@@ -1808,6 +2375,35 @@ def _insert_metadata_tables(conn: sqlite3.Connection, tables: dict[str, list[tup
             tables["predefined_items"],
         )
 
+    # Level-12: metadata_references + 3 specialised tables (v1.9.0)
+    for table in ("metadata_references", "exchange_plan_content", "defined_types", "characteristic_types"):
+        try:
+            conn.execute(f"DELETE FROM {table}")  # noqa: S608
+        except sqlite3.OperationalError:
+            pass
+    if tables.get("metadata_references"):
+        conn.executemany(
+            "INSERT INTO metadata_references "
+            "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            tables["metadata_references"],
+        )
+    if tables.get("exchange_plan_content"):
+        conn.executemany(
+            "INSERT INTO exchange_plan_content (plan_name, object_ref, auto_record, path) VALUES (?, ?, ?, ?)",
+            tables["exchange_plan_content"],
+        )
+    if tables.get("defined_types"):
+        conn.executemany(
+            "INSERT INTO defined_types (name, type_refs_json, path) VALUES (?, ?, ?)",
+            tables["defined_types"],
+        )
+    if tables.get("characteristic_types"):
+        conn.executemany(
+            "INSERT INTO characteristic_types (pvh_name, type_refs_json, path) VALUES (?, ?, ?)",
+            tables["characteristic_types"],
+        )
+
 
 def _insert_metadata_tables_selective(
     conn: sqlite3.Connection,
@@ -1830,6 +2426,9 @@ def _insert_metadata_tables_selective(
         "http_services": "HTTPServices",
         "web_services": "WebServices",
         "xdto_packages": "XDTOPackages",
+        "exchange_plan_content": "ExchangePlans",
+        "defined_types": "DefinedTypes",
+        "characteristic_types": "ChartsOfCharacteristicTypes",
     }
     _TABLE_INSERT_SQL: dict[str, str] = {
         "event_subscriptions": (
@@ -1849,6 +2448,11 @@ def _insert_metadata_tables_selective(
         "http_services": "INSERT INTO http_services (name, root_url, templates_json, file) VALUES (?, ?, ?, ?)",
         "web_services": "INSERT INTO web_services (name, namespace, operations_json, file) VALUES (?, ?, ?, ?)",
         "xdto_packages": "INSERT INTO xdto_packages (name, namespace, types_json, file) VALUES (?, ?, ?, ?)",
+        "exchange_plan_content": (
+            "INSERT INTO exchange_plan_content (plan_name, object_ref, auto_record, path) VALUES (?, ?, ?, ?)"
+        ),
+        "defined_types": "INSERT INTO defined_types (name, type_refs_json, path) VALUES (?, ?, ?)",
+        "characteristic_types": "INSERT INTO characteristic_types (pvh_name, type_refs_json, path) VALUES (?, ?, ?)",
     }
 
     for table_name, trigger_cat in _TABLE_CATEGORY_MAP.items():
@@ -1887,6 +2491,28 @@ def _insert_metadata_tables_selective(
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             tables["predefined_items"],
         )
+
+    # Category-aware DELETE for metadata_references (v1.9.0)
+    triggered_ref_cats = _METADATA_REFERENCES_TRIGGER_CATEGORIES & changed_categories
+    if triggered_ref_cats:
+        placeholders = ",".join("?" for _ in triggered_ref_cats)
+        try:
+            conn.execute(
+                f"DELETE FROM metadata_references WHERE source_category IN ({placeholders})",  # noqa: S608
+                tuple(triggered_ref_cats),
+            )
+        except sqlite3.OperationalError:
+            pass
+    if tables.get("metadata_references"):
+        try:
+            conn.executemany(
+                "INSERT INTO metadata_references "
+                "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                tables["metadata_references"],
+            )
+        except sqlite3.OperationalError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -2179,6 +2805,36 @@ def _parse_role_rights_for_index(
         for right in entry["rights"]:
             results.append((role_name, full_name, right, file_path))
     return results
+
+
+def _role_rights_to_references(
+    role_rights_rows: list[tuple[str, str, str, str]],
+) -> list[tuple]:
+    """Convert role_rights rows into metadata_references rows (one per (role, object))."""
+    from rlm_tools_bsl.bsl_xml_parsers import canonicalize_type_ref
+
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple] = []
+    for role_name, object_name, _right_name, file_path in role_rights_rows:
+        canon = canonicalize_type_ref(object_name)
+        if not canon:
+            continue
+        key = (role_name, canon)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            (
+                role_name,
+                "Roles",
+                canon,
+                "role_rights",
+                f"Role.{role_name}.Rights",
+                file_path,
+                None,
+            )
+        )
+    return out
 
 
 def _collect_role_rights(base_path: str) -> list[tuple[str, str, str, str]]:
@@ -2872,6 +3528,18 @@ class IndexBuilder:
             )
             conn.commit()
             logger.info("Role rights: %d entries from %d roles", len(role_rights), len(set(r[0] for r in role_rights)))
+            # v1.9.0: emit role_rights into metadata_references (Roles category)
+            rr_refs = _role_rights_to_references(role_rights)
+            if rr_refs:
+                try:
+                    conn.executemany(
+                        "INSERT INTO metadata_references "
+                        "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        rr_refs,
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
         # Level-4: file navigation index (.bsl/.mdo/.xml paths)
         file_paths_rows = _collect_file_paths(base_path)
@@ -3360,6 +4028,32 @@ class IndexBuilder:
                 "CREATE INDEX IF NOT EXISTS idx_pi_item ON predefined_items(item_name COLLATE NOCASE);\n"
                 "CREATE INDEX IF NOT EXISTS idx_pi_synonym ON predefined_items(item_synonym COLLATE NOCASE);\n"
             )
+            # Level-12 (v1.9.0): metadata_references + 3 specialised tables
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS metadata_references ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "source_object TEXT NOT NULL, source_category TEXT NOT NULL, "
+                "ref_object TEXT NOT NULL, ref_kind TEXT NOT NULL, "
+                "used_in TEXT NOT NULL, path TEXT NOT NULL, line INTEGER);\n"
+                "CREATE INDEX IF NOT EXISTS idx_mref_ref      ON metadata_references(ref_object);\n"
+                "CREATE INDEX IF NOT EXISTS idx_mref_src      ON metadata_references(source_object);\n"
+                "CREATE INDEX IF NOT EXISTS idx_mref_kind     ON metadata_references(ref_kind);\n"
+                "CREATE INDEX IF NOT EXISTS idx_mref_category ON metadata_references(source_category);\n"
+                "CREATE TABLE IF NOT EXISTS exchange_plan_content ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "plan_name TEXT NOT NULL, object_ref TEXT NOT NULL, "
+                "auto_record INTEGER NOT NULL, path TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_epc_plan ON exchange_plan_content(plan_name);\n"
+                "CREATE INDEX IF NOT EXISTS idx_epc_ref  ON exchange_plan_content(object_ref);\n"
+                "CREATE TABLE IF NOT EXISTS defined_types ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name TEXT NOT NULL, type_refs_json TEXT NOT NULL, path TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_dt_name ON defined_types(name);\n"
+                "CREATE TABLE IF NOT EXISTS characteristic_types ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "pvh_name TEXT NOT NULL, type_refs_json TEXT NOT NULL, path TEXT NOT NULL);\n"
+                "CREATE INDEX IF NOT EXISTS idx_ct_pvh ON characteristic_types(pvh_name);\n"
+            )
             md_tables = _collect_metadata_tables(base_path)
             _insert_metadata_tables(conn, md_tables)
             # Update meta counts for new tables
@@ -3410,6 +4104,23 @@ class IndexBuilder:
                 "INSERT INTO role_rights (role_name, object_name, right_name, file) VALUES (?, ?, ?, ?)",
                 role_rights,
             )
+        # v1.9.0: refresh role_rights subset of metadata_references
+        try:
+            conn.execute("DELETE FROM metadata_references WHERE source_category = 'Roles'")
+        except sqlite3.OperationalError:
+            pass
+        if role_rights:
+            rr_refs = _role_rights_to_references(role_rights)
+            if rr_refs:
+                try:
+                    conn.executemany(
+                        "INSERT INTO metadata_references "
+                        "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        rr_refs,
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
         # Refresh file_paths (full rebuild — cheap for 30-50K files)
         file_paths_rows = _collect_file_paths(base_path)
@@ -3736,6 +4447,7 @@ class IndexBuilder:
 
         if obj_meta_changed and has_metadata:
             attrs_cats = changed_categories & (set(_ATTR_CATEGORIES) | set(_PREDEFINED_CATEGORIES))
+            ref_cats = changed_categories & _METADATA_REFERENCES_TRIGGER_CATEGORIES
 
             md_tables = _collect_metadata_tables(
                 base_path,
@@ -3748,6 +4460,10 @@ class IndexBuilder:
                 collect_ws="WebServices" in changed_categories,
                 collect_xdto="XDTOPackages" in changed_categories,
                 collect_attrs_categories=attrs_cats,
+                collect_exchange_plans="ExchangePlans" in changed_categories,
+                collect_defined_types="DefinedTypes" in changed_categories,
+                collect_pvh_types="ChartsOfCharacteristicTypes" in changed_categories,
+                collect_metadata_refs_categories=ref_cats,
             )
             _insert_metadata_tables_selective(conn, md_tables, changed_categories)
 
@@ -3794,6 +4510,23 @@ class IndexBuilder:
                     "INSERT INTO role_rights (role_name, object_name, right_name, file) VALUES (?, ?, ?, ?)",
                     role_rights,
                 )
+            # v1.9.0: refresh role_rights subset of metadata_references
+            try:
+                conn.execute("DELETE FROM metadata_references WHERE source_category = 'Roles'")
+            except sqlite3.OperationalError:
+                pass
+            if role_rights:
+                rr_refs = _role_rights_to_references(role_rights)
+                if rr_refs:
+                    try:
+                        conn.executemany(
+                            "INSERT INTO metadata_references "
+                            "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            rr_refs,
+                        )
+                    except sqlite3.OperationalError:
+                        pass
 
         # file_paths: incremental for BSL-only, full if any meta file changed
         if any_meta_changed:
@@ -4855,6 +5588,19 @@ class IndexReader:
                 except sqlite3.Error:
                     stats[table] = 0
 
+            # Level-12 (v1.9.0): metadata_references + 3 specialised tables
+            for table in (
+                "metadata_references",
+                "exchange_plan_content",
+                "defined_types",
+                "characteristic_types",
+            ):
+                try:
+                    row = self._conn.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()  # noqa: S608
+                    stats[table] = row["cnt"] if row else 0
+                except sqlite3.Error:
+                    stats[table] = 0
+
             # Git acceleration info
             meta_row = self._conn.execute("SELECT value FROM index_meta WHERE key = 'git_head_commit'").fetchone()
             stats["git_head_commit"] = meta_row["value"] if meta_row else None
@@ -5585,6 +6331,131 @@ class IndexReader:
                     }
                 )
             return results
+
+    # Priority for ORDER BY (matches _REF_KIND_PRIORITY in bsl_helpers.py).
+    # Lower number = higher priority = surfaced first when results are truncated.
+    _REF_KIND_SQL_PRIORITY: dict[str, int] = {
+        "attribute_type": 0,
+        "subsystem_content": 1,
+        "exchange_plan_content": 2,
+        "functional_option_content": 3,
+        "event_subscription_source": 4,
+        "role_rights": 5,
+        "defined_type_content": 6,
+        "characteristic_type": 7,
+        "owner": 8,
+        "based_on": 9,
+        "choice_parameter_link": 10,
+        "link_by_type": 11,
+        "main_form": 12,
+        "list_form": 13,
+        "default_object_form": 14,
+        "default_list_form": 15,
+        "command_parameter_type": 16,
+        "predefined_characteristic_type": 17,
+    }
+
+    def find_metadata_references(
+        self,
+        ref_object: str,
+        kinds: list[str] | None = None,
+        limit: int = 1000,
+    ) -> list[dict] | None:
+        """Find all references to a metadata object via metadata_references table.
+
+        Rows are ORDER-ed by ref_kind priority (CASE WHEN), then path, then used_in,
+        so SQL-side LIMIT preserves the highest-priority kinds even if total > limit.
+
+        Args:
+            ref_object: canonical reference (e.g. "Catalog.Контрагенты"). Case-insensitive.
+            kinds: optional filter by ref_kind values; None = all.
+            limit: maximum rows to fetch (full count returned via count_metadata_references).
+
+        Returns:
+            list of dicts with keys: source_object, source_category, ref_object,
+            ref_kind, used_in, path, line. Or None if metadata_references table
+            is missing (caller should fall back to live scan).
+        """
+        # Build CASE WHEN expression for kind-priority ORDER BY (must be safe-list)
+        case_clauses = " ".join(f"WHEN '{k}' THEN {p}" for k, p in self._REF_KIND_SQL_PRIORITY.items())
+        priority_expr = f"(CASE ref_kind {case_clauses} ELSE 99 END)"
+
+        with self._lock:
+            try:
+                conditions = ["py_lower(ref_object) = py_lower(?)"]
+                params: list = [ref_object]
+                if kinds:
+                    placeholders = ",".join("?" for _ in kinds)
+                    conditions.append(f"ref_kind IN ({placeholders})")
+                    params.extend(kinds)
+                where = " AND ".join(conditions)
+                sql = (
+                    "SELECT source_object, source_category, ref_object, ref_kind, "
+                    "used_in, path, line FROM metadata_references "
+                    f"WHERE {where} "  # noqa: S608
+                    f"ORDER BY {priority_expr}, path, used_in "
+                    "LIMIT ?"
+                )
+                params.append(limit)
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return None
+            return [
+                {
+                    "source_object": r["source_object"],
+                    "source_category": r["source_category"],
+                    "ref_object": r["ref_object"],
+                    "ref_kind": r["ref_kind"],
+                    "used_in": r["used_in"],
+                    "path": r["path"],
+                    "line": r["line"],
+                }
+                for r in rows
+            ]
+
+    def count_metadata_references(
+        self,
+        ref_object: str,
+        kinds: list[str] | None = None,
+    ) -> dict | None:
+        """Return {'total': int, 'by_kind': {kind: count}} or None if table missing."""
+        with self._lock:
+            try:
+                conditions = ["py_lower(ref_object) = py_lower(?)"]
+                params: list = [ref_object]
+                if kinds:
+                    placeholders = ",".join("?" for _ in kinds)
+                    conditions.append(f"ref_kind IN ({placeholders})")
+                    params.extend(kinds)
+                where = " AND ".join(conditions)
+                rows = self._conn.execute(
+                    f"SELECT ref_kind, COUNT(*) AS cnt FROM metadata_references "  # noqa: S608
+                    f"WHERE {where} GROUP BY ref_kind",
+                    params,
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+            by_kind = {r["ref_kind"]: r["cnt"] for r in rows}
+            return {"total": sum(by_kind.values()), "by_kind": by_kind}
+
+    def find_defined_type(self, name: str) -> dict | None:
+        """Look up a DefinedType by name. Returns {name, types: list[str], path}
+        or None if table missing or not found."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT name, type_refs_json, path FROM defined_types WHERE py_lower(name) = py_lower(?)",
+                    (name,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+            if row is None:
+                return None
+            try:
+                types = json.loads(row["type_refs_json"])
+            except (ValueError, TypeError):
+                types = []
+            return {"name": row["name"], "types": types, "path": row["path"]}
 
     def close(self) -> None:
         """Close the database connection."""

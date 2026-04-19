@@ -151,6 +151,143 @@ def normalize_type_string(raw: str) -> str:
     return json.dumps(normalized, ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# Reference type canonicalization (v1.9.0)
+# ---------------------------------------------------------------------------
+
+# Map: 1C type-form suffix -> canonical metadata category (singular)
+_REF_TYPE_SUFFIXES: dict[str, str] = {
+    "Ref": "",
+    "Object": "",
+    "Manager": "",
+    "List": "",
+    "Selection": "",
+    "RecordSet": "",
+    "RecordKey": "",
+    "RecordManager": "",
+    "Record": "",
+    "MetadataObject": "",
+}
+
+# Map: 1C type-form prefix -> canonical metadata category
+_REF_CANONICAL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("CatalogRef.", "Catalog."),
+    ("CatalogObject.", "Catalog."),
+    ("CatalogManager.", "Catalog."),
+    ("CatalogList.", "Catalog."),
+    ("CatalogSelection.", "Catalog."),
+    ("DocumentRef.", "Document."),
+    ("DocumentObject.", "Document."),
+    ("DocumentManager.", "Document."),
+    ("DocumentList.", "Document."),
+    ("DocumentSelection.", "Document."),
+    ("EnumRef.", "Enum."),
+    ("EnumManager.", "Enum."),
+    ("EnumList.", "Enum."),
+    ("InformationRegisterRecordSet.", "InformationRegister."),
+    ("InformationRegisterRecordKey.", "InformationRegister."),
+    ("InformationRegisterManager.", "InformationRegister."),
+    ("InformationRegisterRecordManager.", "InformationRegister."),
+    ("InformationRegisterList.", "InformationRegister."),
+    ("InformationRegisterSelection.", "InformationRegister."),
+    ("AccumulationRegisterRecordSet.", "AccumulationRegister."),
+    ("AccumulationRegisterRecordKey.", "AccumulationRegister."),
+    ("AccumulationRegisterManager.", "AccumulationRegister."),
+    ("AccumulationRegisterList.", "AccumulationRegister."),
+    ("AccountingRegisterRecordSet.", "AccountingRegister."),
+    ("AccountingRegisterRecordKey.", "AccountingRegister."),
+    ("AccountingRegisterManager.", "AccountingRegister."),
+    ("AccountingRegisterList.", "AccountingRegister."),
+    ("CalculationRegisterRecordSet.", "CalculationRegister."),
+    ("CalculationRegisterRecordKey.", "CalculationRegister."),
+    ("CalculationRegisterManager.", "CalculationRegister."),
+    ("CalculationRegisterList.", "CalculationRegister."),
+    ("ChartOfAccountsRef.", "ChartOfAccounts."),
+    ("ChartOfAccountsObject.", "ChartOfAccounts."),
+    ("ChartOfAccountsManager.", "ChartOfAccounts."),
+    ("ChartOfAccountsList.", "ChartOfAccounts."),
+    ("ChartOfAccountsSelection.", "ChartOfAccounts."),
+    ("ChartOfCharacteristicTypesRef.", "ChartOfCharacteristicTypes."),
+    ("ChartOfCharacteristicTypesObject.", "ChartOfCharacteristicTypes."),
+    ("ChartOfCharacteristicTypesManager.", "ChartOfCharacteristicTypes."),
+    ("ChartOfCharacteristicTypesList.", "ChartOfCharacteristicTypes."),
+    ("ChartOfCharacteristicTypesSelection.", "ChartOfCharacteristicTypes."),
+    ("ChartOfCalculationTypesRef.", "ChartOfCalculationTypes."),
+    ("ChartOfCalculationTypesObject.", "ChartOfCalculationTypes."),
+    ("ChartOfCalculationTypesManager.", "ChartOfCalculationTypes."),
+    ("ChartOfCalculationTypesList.", "ChartOfCalculationTypes."),
+    ("ExchangePlanRef.", "ExchangePlan."),
+    ("ExchangePlanObject.", "ExchangePlan."),
+    ("ExchangePlanManager.", "ExchangePlan."),
+    ("ExchangePlanList.", "ExchangePlan."),
+    ("ExchangePlanSelection.", "ExchangePlan."),
+    ("BusinessProcessRef.", "BusinessProcess."),
+    ("BusinessProcessObject.", "BusinessProcess."),
+    ("BusinessProcessManager.", "BusinessProcess."),
+    ("BusinessProcessList.", "BusinessProcess."),
+    ("TaskRef.", "Task."),
+    ("TaskObject.", "Task."),
+    ("TaskManager.", "Task."),
+    ("TaskList.", "Task."),
+    ("ConstantManager.", "Constant."),
+    ("ConstantValueManager.", "Constant."),
+    ("DefinedType.", "DefinedType."),
+)
+
+
+def canonicalize_type_ref(type_str: str) -> str:
+    """Convert 1C reference type form to canonical metadata reference.
+
+    Examples:
+        "cfg:CatalogRef.Контрагенты"   -> "Catalog.Контрагенты"
+        "DocumentObject.Заказ"          -> "Document.Заказ"
+        "EnumRef.СтавкиНДС"             -> "Enum.СтавкиНДС"
+        "DefinedType.Сумма"             -> "DefinedType.Сумма"
+        "xs:string"                     -> "" (not a metadata reference)
+        "String"                        -> "" (primitive type)
+    """
+    if not type_str:
+        return ""
+    s = _strip_ns_prefix(type_str.strip())
+    if not s or "." not in s:
+        return ""
+    for prefix, canonical in _REF_CANONICAL_PREFIXES:
+        if s.startswith(prefix):
+            return canonical + s[len(prefix) :]
+    # Already canonical form like "Catalog.X"?
+    head = s.split(".", 1)[0]
+    if head in {
+        "Catalog",
+        "Document",
+        "Enum",
+        "InformationRegister",
+        "AccumulationRegister",
+        "AccountingRegister",
+        "CalculationRegister",
+        "ChartOfAccounts",
+        "ChartOfCharacteristicTypes",
+        "ChartOfCalculationTypes",
+        "ExchangePlan",
+        "BusinessProcess",
+        "Task",
+        "Constant",
+        "DefinedType",
+        "Subsystem",
+        "Role",
+        "FunctionalOption",
+        "EventSubscription",
+        "ScheduledJob",
+        "CommonModule",
+        "CommonForm",
+        "CommonCommand",
+        "Report",
+        "DataProcessor",
+        "DocumentJournal",
+    }:
+        return s
+    return ""
+
+
 def _cf_parse_attributes(parent, ns: dict = _NS_CF) -> list[dict]:
     """Parse CF <Attribute> elements under parent."""
     attrs = []
@@ -166,6 +303,16 @@ def _cf_parse_attributes(parent, ns: dict = _NS_CF) -> list[dict]:
             }
         )
     return attrs
+
+
+def _ref_each(raw: str):
+    """Iterate canonical refs found in a comma-separated raw type string."""
+    if not raw:
+        return
+    for part in raw.split(","):
+        canon = canonicalize_type_ref(part)
+        if canon:
+            yield canon
 
 
 def _parse_cf_xml(root) -> dict:
@@ -208,6 +355,8 @@ def _parse_cf_xml(root) -> dict:
         "synonym": _cf_find_synonym(props, ns) if props is not None else "",
     }
 
+    references: list[dict] = []
+
     # In CF format, Attribute/TabularSection/Dimension/Resource elements
     # can be either direct children of meta_el OR inside <ChildObjects>.
     child_objects = meta_el.find("md:ChildObjects", ns)
@@ -216,6 +365,15 @@ def _parse_cf_xml(root) -> dict:
     attributes = _cf_parse_attributes(search_el, ns)
     if attributes:
         result["attributes"] = attributes
+        for attr in attributes:
+            for canon in _ref_each(attr.get("type", "")):
+                references.append(
+                    {
+                        "ref_object": canon,
+                        "ref_kind": "attribute_type",
+                        "used_in_suffix": f"Attribute.{attr.get('name', '')}.Type",
+                    }
+                )
 
     tab_sections = []
     for ts_el in search_el.findall("md:TabularSection", ns):
@@ -227,6 +385,15 @@ def _parse_cf_xml(root) -> dict:
         ts_search_el = ts_child_objects if ts_child_objects is not None else ts_el
         ts_attrs = _cf_parse_attributes(ts_search_el, ns)
         tab_sections.append({"name": ts_name, "synonym": ts_synonym, "attributes": ts_attrs})
+        for ts_attr in ts_attrs:
+            for canon in _ref_each(ts_attr.get("type", "")):
+                references.append(
+                    {
+                        "ref_object": canon,
+                        "ref_kind": "attribute_type",
+                        "used_in_suffix": f"TabularSection.{ts_name}.Attribute.{ts_attr.get('name', '')}.Type",
+                    }
+                )
     if tab_sections:
         result["tabular_sections"] = tab_sections
 
@@ -234,13 +401,23 @@ def _parse_cf_xml(root) -> dict:
     for dim_el in search_el.findall("md:Dimension", ns):
         dim_props = dim_el.find("md:Properties", ns)
         if dim_props is not None:
+            dim_name = _xml_find_text(dim_props, "md:Name", ns)
+            dim_type = _cf_parse_type(dim_props, ns)
             dimensions.append(
                 {
-                    "name": _xml_find_text(dim_props, "md:Name", ns),
+                    "name": dim_name,
                     "synonym": _cf_find_synonym(dim_props, ns),
-                    "type": _cf_parse_type(dim_props, ns),
+                    "type": dim_type,
                 }
             )
+            for canon in _ref_each(dim_type):
+                references.append(
+                    {
+                        "ref_object": canon,
+                        "ref_kind": "attribute_type",
+                        "used_in_suffix": f"Dimension.{dim_name}.Type",
+                    }
+                )
     if dimensions:
         result["dimensions"] = dimensions
 
@@ -248,13 +425,23 @@ def _parse_cf_xml(root) -> dict:
     for res_el in search_el.findall("md:Resource", ns):
         res_props = res_el.find("md:Properties", ns)
         if res_props is not None:
+            res_name = _xml_find_text(res_props, "md:Name", ns)
+            res_type = _cf_parse_type(res_props, ns)
             resources.append(
                 {
-                    "name": _xml_find_text(res_props, "md:Name", ns),
+                    "name": res_name,
                     "synonym": _cf_find_synonym(res_props, ns),
-                    "type": _cf_parse_type(res_props, ns),
+                    "type": res_type,
                 }
             )
+            for canon in _ref_each(res_type):
+                references.append(
+                    {
+                        "ref_object": canon,
+                        "ref_kind": "attribute_type",
+                        "used_in_suffix": f"Resource.{res_name}.Type",
+                    }
+                )
     if resources:
         result["resources"] = resources
 
@@ -267,6 +454,96 @@ def _parse_cf_xml(root) -> dict:
                     items.append(item.text.strip())
             if items:
                 result["content"] = items
+                # Subsystem content references
+                if meta_tag == "Subsystem":
+                    for ref in items:
+                        canon = canonicalize_type_ref(ref)
+                        if canon:
+                            references.append(
+                                {
+                                    "ref_object": canon,
+                                    "ref_kind": "subsystem_content",
+                                    "used_in_suffix": "Content",
+                                }
+                            )
+
+        # Owners (Catalog/ChartOfCharacteristicTypes).
+        # Real CF stores owners as <xr:Item xsi:type="xr:MDObjectRef">Catalog.X</xr:Item>;
+        # synthetic CF samples sometimes use <v8:Type>CatalogRef.X</v8:Type>. Handle both.
+        owners_el = props.find("md:Owners", ns)
+        if owners_el is not None:
+            for t in owners_el.findall("v8:Type", ns):
+                if t.text:
+                    canon = canonicalize_type_ref(t.text.strip())
+                    if canon:
+                        references.append({"ref_object": canon, "ref_kind": "owner", "used_in_suffix": "Owners"})
+            for item in owners_el.findall("xr:Item", ns):
+                if item.text:
+                    canon = canonicalize_type_ref(item.text.strip())
+                    if canon:
+                        references.append({"ref_object": canon, "ref_kind": "owner", "used_in_suffix": "Owners"})
+
+        # BasedOn (Document)
+        based_on_el = props.find("md:BasedOn", ns)
+        if based_on_el is not None:
+            for t in based_on_el.findall("v8:Type", ns):
+                if t.text:
+                    canon = canonicalize_type_ref(t.text.strip())
+                    if canon:
+                        references.append({"ref_object": canon, "ref_kind": "based_on", "used_in_suffix": "BasedOn"})
+            # Sometimes BasedOn contains direct text ref (Item names)
+            for item in based_on_el.findall("xr:Item", ns):
+                if item.text:
+                    canon = canonicalize_type_ref(item.text.strip())
+                    if canon:
+                        references.append({"ref_object": canon, "ref_kind": "based_on", "used_in_suffix": "BasedOn"})
+
+        # Default forms (DefaultObjectForm/DefaultListForm/DefaultChoiceForm)
+        for form_kind, tag in (
+            ("default_object_form", "md:DefaultObjectForm"),
+            ("default_list_form", "md:DefaultListForm"),
+            ("main_form", "md:MainForm"),
+            ("list_form", "md:ListForm"),
+        ):
+            form_text = _xml_find_text(props, tag, ns)
+            if form_text:
+                # Form ref like "Catalog.X.Form.ФормаЭлемента" — treat the whole thing as a ref but
+                # reduce to just the object reference (Catalog.X) so it points to that object.
+                # The form-level ref here means: this object designates form Y.
+                # For find_references_to_object we only want the object as ref, not the form name.
+                # But we also want a separate reference if the form belongs to ANOTHER object.
+                parts = form_text.split(".")
+                if len(parts) >= 2:
+                    ref_obj = ".".join(parts[:2])  # "Catalog.X"
+                    canon = canonicalize_type_ref(ref_obj)
+                    if canon:
+                        references.append(
+                            {
+                                "ref_object": canon,
+                                "ref_kind": form_kind,
+                                "used_in_suffix": f"{tag.split(':')[-1]}={form_text}",
+                            }
+                        )
+
+        # ChartsOfCharacteristicTypes Type list
+        type_el = props.find("md:Type", ns)
+        if type_el is not None and meta_tag in ("ChartOfCharacteristicTypes", "Constant"):
+            for t in type_el.findall("v8:Type", ns):
+                if t.text:
+                    canon = canonicalize_type_ref(t.text.strip())
+                    if canon:
+                        references.append(
+                            {
+                                "ref_object": canon,
+                                "ref_kind": "characteristic_type"
+                                if meta_tag == "ChartOfCharacteristicTypes"
+                                else "attribute_type",
+                                "used_in_suffix": "Type",
+                            }
+                        )
+
+    if references:
+        result["references"] = references
 
     return result
 
@@ -336,9 +613,20 @@ def _parse_mdo_xml(root) -> dict:
         "synonym": _mdo_find_synonym(root),
     }
 
+    references: list[dict] = []
+
     attributes = _mdo_parse_attributes(root)
     if attributes:
         result["attributes"] = attributes
+        for attr in attributes:
+            for canon in _ref_each(attr.get("type", "")):
+                references.append(
+                    {
+                        "ref_object": canon,
+                        "ref_kind": "attribute_type",
+                        "used_in_suffix": f"Attribute.{attr.get('name', '')}.Type",
+                    }
+                )
 
     # Tabular sections: <tabularSections>
     tab_sections = []
@@ -347,13 +635,23 @@ def _parse_mdo_xml(root) -> dict:
         if local != "tabularSections":
             continue
         ts_attrs = _mdo_parse_attributes(ch)
+        ts_name = _xml_direct_text(ch, "name")
         tab_sections.append(
             {
-                "name": _xml_direct_text(ch, "name"),
+                "name": ts_name,
                 "synonym": _mdo_find_synonym(ch),
                 "attributes": ts_attrs,
             }
         )
+        for ts_attr in ts_attrs:
+            for canon in _ref_each(ts_attr.get("type", "")):
+                references.append(
+                    {
+                        "ref_object": canon,
+                        "ref_kind": "attribute_type",
+                        "used_in_suffix": f"TabularSection.{ts_name}.Attribute.{ts_attr.get('name', '')}.Type",
+                    }
+                )
     if tab_sections:
         result["tabular_sections"] = tab_sections
 
@@ -363,13 +661,23 @@ def _parse_mdo_xml(root) -> dict:
         local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
         if local != "dimensions":
             continue
+        dim_name = _xml_direct_text(ch, "name")
+        dim_type = _mdo_parse_type(ch)
         dimensions.append(
             {
-                "name": _xml_direct_text(ch, "name"),
+                "name": dim_name,
                 "synonym": _mdo_find_synonym(ch),
-                "type": _mdo_parse_type(ch),
+                "type": dim_type,
             }
         )
+        for canon in _ref_each(dim_type):
+            references.append(
+                {
+                    "ref_object": canon,
+                    "ref_kind": "attribute_type",
+                    "used_in_suffix": f"Dimension.{dim_name}.Type",
+                }
+            )
     if dimensions:
         result["dimensions"] = dimensions
 
@@ -379,13 +687,23 @@ def _parse_mdo_xml(root) -> dict:
         local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
         if local != "resources":
             continue
+        res_name = _xml_direct_text(ch, "name")
+        res_type = _mdo_parse_type(ch)
         resources.append(
             {
-                "name": _xml_direct_text(ch, "name"),
+                "name": res_name,
                 "synonym": _mdo_find_synonym(ch),
-                "type": _mdo_parse_type(ch),
+                "type": res_type,
             }
         )
+        for canon in _ref_each(res_type):
+            references.append(
+                {
+                    "ref_object": canon,
+                    "ref_kind": "attribute_type",
+                    "used_in_suffix": f"Resource.{res_name}.Type",
+                }
+            )
     if resources:
         result["resources"] = resources
 
@@ -397,6 +715,17 @@ def _parse_mdo_xml(root) -> dict:
             content_items.append(ch.text.strip())
     if content_items:
         result["content"] = content_items
+        if meta_tag == "Subsystem":
+            for ref in content_items:
+                canon = canonicalize_type_ref(ref)
+                if canon:
+                    references.append(
+                        {
+                            "ref_object": canon,
+                            "ref_kind": "subsystem_content",
+                            "used_in_suffix": "Content",
+                        }
+                    )
 
     # Forms, commands, templates — list names
     forms = []
@@ -416,6 +745,69 @@ def _parse_mdo_xml(root) -> dict:
         result["commands"] = commands
     if templates:
         result["templates"] = templates
+
+    # MDO direct refs: owners, basedOn, mainForm/listForm/defaultObjectForm/defaultListForm
+    for tag, ref_kind in (
+        ("owners", "owner"),
+        ("basedOn", "based_on"),
+    ):
+        for ch in root:
+            local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+            if local == tag and ch.text:
+                canon = canonicalize_type_ref(ch.text.strip())
+                if canon:
+                    references.append(
+                        {
+                            "ref_object": canon,
+                            "ref_kind": ref_kind,
+                            "used_in_suffix": tag.capitalize(),
+                        }
+                    )
+
+    for tag, ref_kind in (
+        ("defaultObjectForm", "default_object_form"),
+        ("defaultListForm", "default_list_form"),
+        ("mainForm", "main_form"),
+        ("listForm", "list_form"),
+    ):
+        text = _xml_direct_text(root, tag)
+        if text:
+            parts = text.split(".")
+            if len(parts) >= 2:
+                ref_obj = ".".join(parts[:2])
+                canon = canonicalize_type_ref(ref_obj)
+                if canon:
+                    references.append(
+                        {
+                            "ref_object": canon,
+                            "ref_kind": ref_kind,
+                            "used_in_suffix": f"{tag}={text}",
+                        }
+                    )
+
+    # ChartOfCharacteristicTypes <type><types>...</types></type>
+    if meta_tag in ("ChartOfCharacteristicTypes", "Constant"):
+        for ch in root:
+            local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+            if local != "type":
+                continue
+            for t in ch:
+                t_local = t.tag.split("}")[-1] if "}" in t.tag else t.tag
+                if t_local == "types" and t.text:
+                    canon = canonicalize_type_ref(t.text.strip())
+                    if canon:
+                        references.append(
+                            {
+                                "ref_object": canon,
+                                "ref_kind": "characteristic_type"
+                                if meta_tag == "ChartOfCharacteristicTypes"
+                                else "attribute_type",
+                                "used_in_suffix": "Type",
+                            }
+                        )
+
+    if references:
+        result["references"] = references
 
     return result
 
@@ -1397,6 +1789,222 @@ def parse_exchange_plan_content(xml_content: str) -> list[dict]:
     if _NS_EP_CF in xml_content or "ExchangePlanContent" in xml_content:
         return _parse_cf_exchange_plan_content(xml_content)
     return []
+
+
+# ---------------------------------------------------------------------------
+# DefinedType / ChartOfCharacteristicTypes / Command parameter parsers (v1.9.0)
+# ---------------------------------------------------------------------------
+
+
+def parse_defined_type(xml_content: str) -> dict | None:
+    """Parse DefinedType XML / .mdo. Returns {name, types: list[str], path: not set}.
+
+    Auto-detects CF or EDT format by namespace.
+    Each type is canonicalized via canonicalize_type_ref where applicable;
+    primitives ("xs:string", "String") are kept as-is in the raw list (filtered
+    when written into metadata_references).
+    """
+    if not xml_content:
+        return None
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    root_ns = ""
+    if "}" in root.tag:
+        root_ns = root.tag.split("}")[0].lstrip("{")
+
+    name = ""
+    types: list[str] = []
+
+    if _MDO_NS_URI in root_ns:
+        # EDT: root IS DefinedType
+        root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+        if root_tag != "DefinedType":
+            return None
+        name = _xml_direct_text(root, "name")
+        for ch in root:
+            local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+            if local != "type":
+                continue
+            for t in ch:
+                t_local = t.tag.split("}")[-1] if "}" in t.tag else t.tag
+                if t_local == "types" and t.text:
+                    types.append(t.text.strip())
+    else:
+        # CF: <MetaDataObject><DefinedType><Properties><Name>X<Type>...
+        ns = _NS_CF
+        dt_el = root.find("md:DefinedType", ns)
+        if dt_el is None:
+            for child in root:
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if tag == "DefinedType":
+                    dt_el = child
+                    break
+        if dt_el is None:
+            return None
+        props = dt_el.find("md:Properties", ns)
+        if props is None:
+            for ch in dt_el:
+                if ch.tag.endswith("Properties"):
+                    props = ch
+                    break
+        if props is None:
+            return None
+        name = _xml_find_text(props, "md:Name", ns)
+        type_el = props.find("md:Type", ns)
+        if type_el is not None:
+            for t in type_el.findall("v8:Type", ns):
+                if t.text:
+                    types.append(_strip_ns_prefix(t.text.strip()))
+
+    if not name:
+        return None
+    return {"name": name, "types": types}
+
+
+def parse_pvh_characteristics(xml_content: str) -> dict | None:
+    """Parse ChartOfCharacteristicTypes XML / .mdo for the Type list.
+
+    Returns {pvh_name, types: list[str]}.
+    """
+    if not xml_content:
+        return None
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return None
+
+    root_ns = ""
+    if "}" in root.tag:
+        root_ns = root.tag.split("}")[0].lstrip("{")
+
+    name = ""
+    types: list[str] = []
+
+    if _MDO_NS_URI in root_ns:
+        root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+        if root_tag != "ChartOfCharacteristicTypes":
+            return None
+        name = _xml_direct_text(root, "name")
+        for ch in root:
+            local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+            if local != "type":
+                continue
+            for t in ch:
+                t_local = t.tag.split("}")[-1] if "}" in t.tag else t.tag
+                if t_local == "types" and t.text:
+                    types.append(t.text.strip())
+    else:
+        ns = _NS_CF
+        pvh_el = root.find("md:ChartOfCharacteristicTypes", ns)
+        if pvh_el is None:
+            for child in root:
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if tag == "ChartOfCharacteristicTypes":
+                    pvh_el = child
+                    break
+        if pvh_el is None:
+            return None
+        props = pvh_el.find("md:Properties", ns)
+        if props is None:
+            for ch in pvh_el:
+                if ch.tag.endswith("Properties"):
+                    props = ch
+                    break
+        if props is None:
+            return None
+        name = _xml_find_text(props, "md:Name", ns)
+        type_el = props.find("md:Type", ns)
+        if type_el is not None:
+            for t in type_el.findall("v8:Type", ns):
+                if t.text:
+                    types.append(_strip_ns_prefix(t.text.strip()))
+
+    if not name:
+        return None
+    return {"pvh_name": name, "types": types}
+
+
+def parse_command_parameter_type(xml_content: str) -> list[dict]:
+    """Parse Command XML / .command for CommandParameterType refs.
+
+    Returns list of dicts: [{ref_object, command_name}].
+    """
+    if not xml_content:
+        return []
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError:
+        return []
+
+    root_ns = ""
+    if "}" in root.tag:
+        root_ns = root.tag.split("}")[0].lstrip("{")
+
+    results: list[dict] = []
+
+    if _MDO_NS_URI in root_ns:
+        root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+        # EDT top-level commands are <CommonCommand>; object-nested are <Command>.
+        if root_tag not in ("Command", "CommonCommand"):
+            return []
+        cmd_name = _xml_direct_text(root, "name")
+        # commandParameterType / parameterType
+        for ch in root:
+            local = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+            if local not in ("commandParameterType", "parameterType"):
+                continue
+            for t in ch:
+                t_local = t.tag.split("}")[-1] if "}" in t.tag else t.tag
+                if t_local == "types" and t.text:
+                    canon = canonicalize_type_ref(t.text.strip())
+                    if canon:
+                        results.append({"ref_object": canon, "command_name": cmd_name})
+    else:
+        ns = _NS_CF
+        # Real CF wraps top-level commands in <CommonCommand>; object-nested in <Command>.
+        cmd_el = None
+        for tag_name in ("md:CommonCommand", "md:Command"):
+            cmd_el = root.find(tag_name, ns)
+            if cmd_el is not None:
+                break
+        if cmd_el is None:
+            for child in root:
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if tag in ("CommonCommand", "Command"):
+                    cmd_el = child
+                    break
+        if cmd_el is None:
+            return []
+        props = cmd_el.find("md:Properties", ns)
+        if props is None:
+            for ch in cmd_el:
+                if ch.tag.endswith("Properties"):
+                    props = ch
+                    break
+        if props is None:
+            return []
+        cmd_name = _xml_find_text(props, "md:Name", ns)
+        for tag_name in ("md:CommandParameterType", "md:ParameterType"):
+            type_el = props.find(tag_name, ns)
+            if type_el is None:
+                continue
+            # Object refs: <v8:Type>cfg:CatalogRef.X</v8:Type>
+            for t in type_el.findall("v8:Type", ns):
+                if t.text:
+                    canon = canonicalize_type_ref(t.text.strip())
+                    if canon:
+                        results.append({"ref_object": canon, "command_name": cmd_name})
+            # DefinedType refs: <v8:TypeSet>cfg:DefinedType.X</v8:TypeSet>
+            for ts in type_el.findall("v8:TypeSet", ns):
+                if ts.text:
+                    canon = canonicalize_type_ref(ts.text.strip())
+                    if canon:
+                        results.append({"ref_object": canon, "command_name": cmd_name})
+
+    return results
 
 
 _NS_RIGHTS_VERSIONS = [

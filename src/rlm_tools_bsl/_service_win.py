@@ -64,6 +64,10 @@ class RlmWindowsService(win32serviceutil.ServiceFramework):
         env_file = cfg.get("env_file")
         if env_file and pathlib.Path(env_file).exists():
             _load_env_file(env_file, env)
+        # Force line-buffered stdout/stderr in the subprocess so log records
+        # (which go to stderr via basicConfig and get redirected here) appear
+        # in server.log immediately, not in 4-8 KB block-buffered chunks.
+        env.setdefault("PYTHONUNBUFFERED", "1")
 
         log_dir = _config_path().parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)

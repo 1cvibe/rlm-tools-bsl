@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.9.0] — 2026-04-19
+
+### Добавлено
+- **`find_references_to_object()`** ([#10](https://github.com/Dach-Coin/rlm-tools-bsl/issues/10)) — поиск всех ссылок на объект метаданных (аналог конфигуратора «Найти ссылки → В свойствах»). Покрывает 18 видов ссылок: `attribute_type`, `subsystem_content`, `exchange_plan_content`, `functional_option_content`, `event_subscription_source`, `role_rights`, `defined_type_content`, `characteristic_type`, `owner`, `based_on`, `main_form`, `list_form`, `default_object_form`, `default_list_form`, `command_parameter_type`, `predefined_characteristic_type` и др. Принимает русские/английские префиксы и Ref/Object/Manager-формы. Возвращает `{object, references, total, truncated, partial, by_kind}`.
+- **`find_defined_types()`** — раскрытие `ОпределяемогоТипа` в список реальных типов (Catalog.X, Number и т.п.).
+- **Индекс v12** — 4 новые таблицы: `metadata_references` (unified reverse-index, ~180K строк на ERP), `exchange_plan_content`, `defined_types`, `characteristic_types`. Category-aware DELETE для `metadata_references` при инкрементальном git fast path — сохраняет записи из неизменённых категорий.
+- **Парсеры**: `canonicalize_type_ref()`, `parse_defined_type()`, `parse_pvh_characteristics()`, `parse_command_parameter_type()`. `parse_metadata_xml()` дополнен полем `references` (CF и EDT, паритет).
+- **`DefinedTypes`** — добавлено в `_CATEGORY_RU` (отсутствовало в v11).
+- Знание-база: новый рецепт `«ссылки»` (алиасы: references, where used, где используется, найти ссылки, поиск ссылок, в свойствах, вхождения).
+
+### Обратная совместимость
+- v12 требует rebuild (`rlm_index(action='build')`) или `update` — штатный `force_full_scan` при version mismatch автоматически наполнит новые таблицы.
+- На индексе v11 `find_references_to_object` работает через live-fallback с `partial=true` (медленнее, но корректно).
+- Все существующие `find_*`, `search`, `analyze_*`, `parse_*` — без изменений API. `parse_metadata_xml` добавляет поле `references`, существующие поля не трогаются.
+
 ## [1.8.2] — 2026-04-11
 
 ### Исправлено

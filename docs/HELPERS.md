@@ -52,7 +52,9 @@
 - `find_http_services(name='')` — HTTP-сервисы (REST API) конфигурации. Извлекает имя, корневой URL, шаблоны URL с HTTP-методами и обработчиками. CF и EDT форматы. Поддерживает фильтрацию по имени (LIKE)
 - `find_web_services(name='')` — веб-сервисы SOAP. Извлекает имя, namespace, операции с параметрами, типами возврата и процедурами-обработчиками. CF и EDT форматы
 - `find_xdto_packages(name='')` — XDTO-пакеты (контракты данных). Метаданные (имя, namespace) для обоих форматов. Типы (objectType/valueType с properties) — только для EDT (из `Package.xdto`). Для CF типы бинарные (`Package.bin`) — `types=[]`
-- `find_exchange_plan_content(name)` — состав плана обмена: какие объекты входят и с каким режимом авторегистрации (Allow/Deny). CF: `Ext/Content.xml`, EDT: inline в `.mdo`. Всегда fallback (нет индексной таблицы)
+- `find_exchange_plan_content(name)` — состав плана обмена: какие объекты входят и с каким режимом авторегистрации (Allow/Deny). CF: `Ext/Content.xml`, EDT: inline в `.mdo`. **При наличии SQLite-индекса v12+** — мгновенный ответ из таблицы `exchange_plan_content`. Без индекса — live XML-парсинг
+- `find_references_to_object(object_ref, kinds=None, limit=1000)` — **аналог конфигуратора «Найти ссылки → В свойствах»** (issue [#10](https://github.com/Dach-Coin/rlm-tools-bsl/issues/10)). Поиск всех мест использования объекта метаданных. Покрывает 18 видов ссылок: `attribute_type`, `subsystem_content`, `exchange_plan_content`, `functional_option_content`, `event_subscription_source`, `role_rights`, `defined_type_content`, `characteristic_type`, `owner`, `based_on`, `main_form`, `list_form`, `default_object_form`, `default_list_form`, `command_parameter_type`, `predefined_characteristic_type` и др. Принимает русские (`Справочник.X`) и английские (`Catalog.X`) префиксы, Ref/Object/Manager-формы; в БД хранится канонический `Catalog.X`. **При наличии SQLite-индекса v12+** — мгновенный ответ из unified reverse-index таблицы `metadata_references`. На v11 — live XML-фолбэк с `partial=True`. Возвращает `{object, references: [{used_in, path, line, kind}], total, truncated, partial, by_kind}`. Поле `line` опционально (заполняется только где дёшево)
+- `find_defined_types(name)` — раскрытие `ОпределяемогоТипа` в список реальных типов (`Catalog.X`, `Number` и т.п.). **При наличии SQLite-индекса v12+** — мгновенный ответ из таблицы `defined_types`. Без индекса — live XML-парсинг (CF: `DefinedTypes/X.xml`, EDT: `DefinedTypes/X/X.mdo`). Возвращает `{name, types: list[str], path, partial}`
 
 ## LLM-хелперы
 
@@ -91,7 +93,9 @@ Raw API фабрик `make_helpers()`/`make_bsl_helpers()` не затронут
 | `find_http_services(name)`         | `SELECT` из `http_services`                        | Glob + XML-парсинг          |
 | `find_web_services(name)`          | `SELECT` из `web_services`                         | Glob + XML-парсинг          |
 | `find_xdto_packages(name)`         | `SELECT` из `xdto_packages`                        | Glob + XML-парсинг          |
-| `find_exchange_plan_content(name)` | — (нет индексной таблицы)                          | Glob + XML-парсинг          |
+| `find_exchange_plan_content(name)` | `SELECT` из `exchange_plan_content` (v12+)         | Glob + XML-парсинг          |
+| `find_references_to_object(obj)`   | `SELECT` из `metadata_references` (v12+)           | Live XML-парсинг (partial)  |
+| `find_defined_types(name)`         | `SELECT` из `defined_types` (v12+)                 | Live XML-парсинг (partial)  |
 | `search(query, scope, limit)`      | Делегирует в индексированные поисковики             | `[]`                        |
 | `search_methods(query)`            | FTS5 (BM25)                                        | Недоступен                  |
 | `search_objects(query)`            | `SELECT` из `object_synonyms` с UDF `py_lower()`   | Недоступен                  |

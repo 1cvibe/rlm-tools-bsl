@@ -3,7 +3,7 @@
 [![CI](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml/badge.svg)](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/rlm-tools-bsl.svg)](https://pypi.org/project/rlm-tools-bsl/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Coverage](https://img.shields.io/badge/coverage-79%25-yellow.svg)]()
+[![Coverage](https://img.shields.io/badge/coverage-78%25-yellow.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 MCP-сервер для токен-эффективного анализа кодовых баз 1С (BSL).
@@ -85,6 +85,9 @@ chmod +x simple-install.sh && ./simple-install.sh
 
 > **Все сценарии развёртывания и пример настройки с нуля:**
 > **[docs/QUICKSTART.md](docs/QUICKSTART.md)**
+>
+> **Часто задаваемые вопросы (расширения CFE, пароли, Docker, расход токенов, несколько проектов):**
+> **[docs/FAQ.md](docs/FAQ.md)**
 
 ---
 
@@ -151,7 +154,7 @@ RLM не конкурирует с RAG. Это разные инструмент
 
 ## Когда НЕ использовать
 
-- Нужен **полный** граф зависимостей всех объектов конфигурации — для этого нужен RAG/графовый MCP с предварительной индексацией. Для точечного анализа конкретного объекта встроенный хелпер `find_callers_context` строит граф вызовов на лету
+- Нужен **полный** граф зависимостей всех объектов конфигурации — для этого нужен RAG/графовый MCP с предварительной индексацией. Для точечного анализа конкретного объекта `find_callers_context` строит граф **BSL-вызовов** на лету, а `find_references_to_object` (v1.9.0, аналог конфигуратора «Найти ссылки → В свойствах») мгновенно показывает все **ссылки на объект метаданных** из 18 разных источников (реквизиты, подсистемы, планы обмена, функциональные опции, владельцы, ОпределяемыеТипы, роли, команды и т.д.). `find_defined_types` раскрывает `ОпределяемыйТип` в список реальных типов
 - Нужен семантический поиск по описаниям объектов — rlm-tools-bsl ищет по файлам и именам, не по эмбеддингам
 - Нечёткие недетерминированные вопросы («как работает бюджетирование в ЕРП», «как работают ячеистые склады в УТ») — для этого нужен полноценный RAG
 
@@ -192,7 +195,7 @@ rlm_start(project="My Config", query="find module...")
 
 ## Как работает (под капотом)
 
-Пять MCP-инструментов (`rlm_projects`, `rlm_index`, `rlm_start` → `rlm_execute` → `rlm_end`), песочница с **51 хелпером**, сессионные кэши, таймауты, безопасность, пример построения графа вызовов на крупной конфигурации (23K+ файлов) — **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+Пять MCP-инструментов (`rlm_projects`, `rlm_index`, `rlm_start` → `rlm_execute` → `rlm_end`), песочница с **53 хелперами**, сессионные кэши, таймауты, безопасность, пример построения графа вызовов на крупной конфигурации (23K+ файлов) — **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
 Полный список хелперов — **[docs/HELPERS.md](docs/HELPERS.md)** | Совместное использование с RAG — **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#совместное-использование-с-rag)**
 

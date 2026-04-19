@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+import sys
 import threading
 import time
 from typing import Annotated, Literal
@@ -176,7 +177,7 @@ def _resolve_path_map(path: str) -> str:
     """Translate host filesystem path to container path using RLM_PATH_MAP.
 
     RLM_PATH_MAP format: "host_prefix:container_prefix"
-    Example: "D:/MyDEV/Repo:/repos"
+    Example: "C:/work/sources:/repos" (Windows host → Linux container)
 
     Handles Windows backslashes and case-insensitive prefix matching.
     Returns the original path if no mapping matches.
@@ -1587,6 +1588,17 @@ def _warmup_imports():
 def main():
     global session_manager
     from rlm_tools_bsl._config import load_project_env
+
+    # Line-buffered stdio so log lines (basicConfig → stderr) reach the
+    # service log file immediately, not in 4-8 KB block-buffered chunks.
+    # Belt-and-braces with PYTHONUNBUFFERED in _service_win.py — only one of
+    # them needs to work. Has no effect when stdio is already line-buffered
+    # (interactive tty) or unbuffered.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, OSError):
+            pass
 
     load_project_env()
 

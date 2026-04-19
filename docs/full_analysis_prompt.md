@@ -840,7 +840,7 @@ This prompt verifies the 2 new helpers from v1.7.0 (`find_attributes`, `find_pre
 |--------|---------------|
 | object_attributes_count | 38,000–73,000 |
 | predefined_items_count | 2,000–4,500 |
-| builder_version | 11 |
+| builder_version | 12 |
 | Attributes of РеализацияТоваровУслуг | 200–250 (attributes + ts_attributes across all ТЧ) |
 | Predefined of ВидыСубконтоХозрасчетные | 50–80 |
 | find_attributes('Организация') hits | 470–500+ (capped at 500, across all categories) |
@@ -849,3 +849,177 @@ This prompt verifies the 2 new helpers from v1.7.0 (`find_attributes`, `find_pre
 | Categories covered | Documents, Catalogs, InformationRegisters, AccumulationRegisters, ChartsOfCharacteristicTypes, AccountingRegisters |
 | DB size overhead | +25–35 MB (+3–4%) |
 | Build time overhead | +30–45s |
+
+---
+
+# Where-Used Analysis Prompt — E2E Test for v1.9.0 `find_references_to_object`
+
+Use this prompt to verify the new reverse-index helper added in v1.9.0
+(аналог конфигуратора «Найти ссылки → В свойствах», issue [#10](https://github.com/Dach-Coin/rlm-tools-bsl/issues/10)).
+Replace `Справочник.ВидыПодарочныхСертификатов` with your target object and `<path>` with the real path.
+
+---
+
+## Prompt
+
+```
+Мне нужно найти все места использования справочника ВидыПодарочныхСертификатов в конфигурации ERP.
+Путь: <путь к каталогу исходников 1С>
+
+Используй ТОЛЬКО MCP rlm-tools-bsl. Начни с help('references').
+
+Нужно:
+- Полный список ссылок с разбивкой по видам (by_kind)
+- Отдельно: типы реквизитов других объектов (kinds=['attribute_type'])
+- Отдельно: состав подсистем / планов обмена / функциональных опций
+- Отдельно: владельцы (если есть), ввод на основании, связи по типу
+- По каждой ссылке — путь и строка в XML (если доступна)
+- Если partial=True — сообщи, что индекс устарел и нужен rebuild (rlm_index(action='build'))
+- Сравни с тем, что показал бы конфигуратор в окне «Найти ссылки (В свойствах)»
+
+Дай итоговую сводку: total, truncated, partial, by_kind. Сохрани отчёт своими инструментами.
+
+## ВАЖНЫЕ ПРАВИЛА
+1. Один rlm_execute должен батчить связанные find_references_to_object вызовы.
+2. В конце вызови rlm_end.
+```
+
+---
+
+## What it covers
+
+Покрывает 18 видов ссылок (`ref_kind`):
+
+| `ref_kind`                       | Источник                                                              |
+|----------------------------------|------------------------------------------------------------------------|
+| `attribute_type`                 | Тип реквизита/измерения/ресурса/колонки ТЧ другого объекта            |
+| `subsystem_content`              | Объект в составе подсистемы                                           |
+| `exchange_plan_content`          | Объект в составе плана обмена                                         |
+| `functional_option_content`      | Объект в составе функциональной опции                                 |
+| `event_subscription_source`      | Источник подписки на событие                                          |
+| `role_rights`                    | Право в роли                                                          |
+| `defined_type_content`           | Тип в составе ОпределяемогоТипа                                       |
+| `characteristic_type`            | Тип в составе ПВХ                                                     |
+| `owner`                          | Владелец справочника                                                  |
+| `based_on`                       | Документ-основание                                                    |
+| `main_form` / `list_form`        | MainForm / ListForm                                                    |
+| `default_object_form` / `default_list_form` | DefaultObjectForm / DefaultListForm                          |
+| `command_parameter_type`         | Тип параметра команды (объектной или CommonCommands)                  |
+| `predefined_characteristic_type` | Тип у предопределённого вида характеристики                           |
+| `choice_parameter_link`          | ChoiceParameterLinks (зарезервировано)                                |
+| `link_by_type`                   | LinkByType (зарезервировано)                                          |
+
+## Expected results (v1.9.0, ERP 24K+ files)
+
+| Metric | Expected |
+|--------|----------|
+| `find_references_to_object('Справочник.ВидыПодарочныхСертификатов')` total | ≥ 47 (target 51 per issue #10) |
+| `by_kind` keys | 6+ different kinds |
+| Время первого вызова с индексом v12 | < 500 ms (target < 200 ms) |
+| `partial` на индексе v12 | `false` |
+| `partial` на индексе v11 (legacy) | `true`, live-fallback с тем же набором ссылок |
+| `metadata_references` size on ERP | ~150–250K rows (~20–35 MB) |
+| Build time overhead vs v11 | +30–60 sec на ERP (~+5%) |
+
+---
+
+# Reverse-Index Coverage Audit Prompt — E2E Test for v1.9.0 reverse-index breadth
+
+Данный промпт нагружает **новый reverse-index** (`metadata_references`) шире чем точечный where-used: проходит по нескольким kinds сразу, проверяет раскрытие `ОпределяемогоТипа` и поведение `partial` flag. Используется для:
+1. валидации новых kinds после фиксов парсера CF Owners (`xr:Item`) и `parse_command_parameter_type` (`<CommonCommand>` + `<v8:TypeSet>`);
+2. регрессионной проверки `find_defined_types()` (примитивы должны сохраняться);
+3. **проверки live-fallback** на проектах без индекса (или старого v11) — `partial=True` должно работать корректно.
+
+Замените `<путь>` на путь к вашим исходникам 1С.
+
+---
+
+## Prompt
+
+```
+Мне нужно провести аудит покрытия reverse-index новой возможности «Найти ссылки → В свойствах»
+для конфигурации <проект>.
+Путь: <путь к каталогу исходников 1С>
+
+Используй ТОЛЬКО MCP rlm-tools-bsl. Начни с help('references').
+
+Сделай:
+
+1. **Состояние индекса** — выполни search('') или get_index_info() и сообщи:
+   - builder_version (12 = новый, 11 = старый, нет = индекс отсутствует)
+   - размер metadata_references (если есть)
+   - формат проекта (CF/EDT)
+
+2. **Top-objects по числу ссылок** — найди один объект с большим числом ссылок (используй
+   распространённые типа Catalog.Контрагенты, Catalog.Номенклатура, Catalog.Организации,
+   Catalog.ФизическиеЛица). Для выбранного объекта:
+   - find_references_to_object(...) → выведи total, partial, by_kind
+   - первые 10 ссылок с указанием kind и used_in
+   - проверь, что partial=False на индексе v12, partial=True на v11/без индекса
+
+3. **DefinedType chain** — найди один ОпределяемыйТип. Сначала search('ОпределяемыйТип') или
+   find_module — определи имя. Затем:
+   - find_defined_types('ИмяТипа') → выведи раскрытый список types
+   - проверь, что **примитивы** (Number, String, Boolean, Date) если они есть — НЕ потеряны
+     (regression для CF: в первой v1.9.0 сборке примитивы дропались на indexed path)
+   - find_references_to_object('DefinedType.ИмяТипа') → где этот ОпределяемыйТип используется
+
+4. **Кросс-kinds покрытие** — для одного объекта (Catalog.Организации или аналога)
+   собери find_references_to_object и проверь, что в by_kind присутствуют как минимум 4
+   разных kind из списка: attribute_type, subsystem_content, exchange_plan_content,
+   functional_option_content, role_rights, defined_type_content, owner, based_on,
+   command_parameter_type. Сообщи, какие kinds есть и каких НЕ оказалось.
+
+5. **Owner-references regression** — для CF-проекта:
+   попробуй найти владельца хотя бы одного подчинённого справочника. Используй фильтр
+   kinds=['owner']. Если результат пустой и проект — CF, это потенциально регрессия фикса
+   парсера xr:Item (issue v1.9.0 round-2). Сообщи об этом.
+
+6. **CommandParameterType coverage** — попробуй фильтр kinds=['command_parameter_type'] на
+   произвольном объекте, который часто фигурирует в CommonCommands (например ExchangePlan.Х
+   или DefinedType.Y). Если в проекте есть CommonCommands и результат 0 — потенциальная
+   регрессия фикса <CommonCommand>+<v8:TypeSet>.
+
+7. **Truncation/priority** — если total > limit (по умолчанию 1000), вызови с limit=10 и
+   проверь, что:
+   - truncated=True
+   - возвращённые 10 ссылок относятся к высокоприоритетным kind (attribute_type,
+     subsystem_content, exchange_plan_content) — это проверка SQL ORDER BY priority
+
+Дай итоговую сводку:
+- Всего total ссылок проанализировано (по всем шагам)
+- Покрытые kinds (по всем объектам)
+- partial=True/False для каждого вызова
+- Любые подозрения на регрессию (нулевые результаты там где их быть не должно)
+
+В конце ОБЯЗАТЕЛЬНО вызови rlm_end. Сохрани отчёт своими инструментами в текущий каталог.
+```
+
+---
+
+## What it covers
+
+| Шаг | Хелпер | Что проверяет |
+|-----|--------|---------------|
+| 1 | `get_index_info`/`search` | Версия индекса, размер metadata_references |
+| 2 | `find_references_to_object` | total, by_kind, partial, базовая выдача |
+| 3 | `find_defined_types`, `find_references_to_object` | DefinedType раскрытие, примитивы, обратные ссылки |
+| 4 | `find_references_to_object` (без kinds) | Кросс-kind coverage (≥4 разных) |
+| 5 | `find_references_to_object(kinds=['owner'])` | Регрессия CF Owners (`xr:Item` парсер) |
+| 6 | `find_references_to_object(kinds=['command_parameter_type'])` | Регрессия CF CommonCommand parser |
+| 7 | `find_references_to_object(limit=10)` | SQL ORDER BY priority — truncation сохраняет приоритет |
+
+## Expected results
+
+| Сценарий | partial | total | by_kind | Особое |
+|----------|---------|-------|---------|--------|
+| Новый индекс v12 (CF/EDT) | `False` | 100s–1000s | ≥4 kinds | owner и command_parameter_type ≠ 0 на CF |
+| Старый индекс v11 | `True` (live fallback) | сравнимо | ≥4 kinds | сошлись с v12 (с точностью до line) |
+| Без индекса | `True` (live fallback) | сравнимо | ≥4 kinds | dummy `seen_objects` дедуп должен исключить дубли |
+| Truncation `limit=10` | — | оригинал ≥ 10 | первые 10 — высокоприоритетные | `truncated=True`, `by_kind` отражает полный набор |
+
+**Regression checks** (если что-то из перечисленного провалится — это баг, требующий фикса):
+- CF индекс с 0 owner refs → `xr:Item` парсер сломан
+- CF индекс с 0 command_parameter_type refs (при наличии CommonCommands) → `<CommonCommand>` или `<v8:TypeSet>` парсинг сломан
+- DefinedType с потерянными примитивами → indexed path в `_normalize_dt_type` сломан
+- Дубли ссылок при `partial=True` на проекте с одновременным sibling+Ext layout → `seen_objects` дедуп сломан

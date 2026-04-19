@@ -13,10 +13,10 @@
 - **`sandbox.py`** — Sandbox (exec Python в изолированном окружении с хелперами) → `helpers`, `bsl_helpers`
 
 ### BSL-логика
-- **`bsl_helpers.py`** — 51 хелпер-функция для анализа BSL/1С (регистрируются через `_reg()`) → `format_detector`, `bsl_knowledge`, `cache`, `bsl_xml_parsers`
-- **`bsl_knowledge.py`** — стратегия анализа, бизнес-рецепты, WORKFLOW, INDEX TIPS → _(нет внутренних зависимостей)_
-- **`bsl_index.py`** — SQLite-индекс (22 таблицы, IndexBuilder, IndexReader, FTS5) → `bsl_knowledge`, `cache`, `format_detector`
-- **`bsl_xml_parsers.py`** — парсеры XML-метаданных 1С (CF и EDT форматы) → `format_detector`
+- **`bsl_helpers.py`** — 53 хелпер-функции для анализа BSL/1С (регистрируются через `_reg()`), включая `find_references_to_object` и `find_defined_types` (v1.9.0) → `format_detector`, `bsl_knowledge`, `cache`, `bsl_xml_parsers`
+- **`bsl_knowledge.py`** — стратегия анализа, 9 бизнес-рецептов (включая «ссылки»), WORKFLOW, INDEX TIPS → _(нет внутренних зависимостей)_
+- **`bsl_index.py`** — SQLite-индекс v12 (26 таблиц + FTS5: core×4, metadata×17, navigation×1, references×4 — `metadata_references`, `exchange_plan_content`, `defined_types`, `characteristic_types`), IndexBuilder, IndexReader, git fast path → `bsl_knowledge`, `cache`, `format_detector`
+- **`bsl_xml_parsers.py`** — парсеры XML-метаданных 1С (CF и EDT форматы): `parse_metadata_xml` (с полем `references` для reverse-index), `canonicalize_type_ref`, `parse_defined_type`, `parse_pvh_characteristics`, `parse_command_parameter_type` → `format_detector`
 
 ### Детектирование формата
 - **`format_detector.py`** — определение CF/EDT, парсинг путей BSL-файлов → _(нет внутренних зависимостей)_
