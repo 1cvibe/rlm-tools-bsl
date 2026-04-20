@@ -1,5 +1,9 @@
 # rlm-tools-bsl
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Dach-Coin/rlm-tools-bsl/master/docs/assets/rlm-tools-bsl-cover.png" alt="rlm-tools-bsl — мастерская для AI-агентов, работающих с 1С" width="720">
+</p>
+
 [![CI](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml/badge.svg)](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/rlm-tools-bsl.svg)](https://pypi.org/project/rlm-tools-bsl/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
