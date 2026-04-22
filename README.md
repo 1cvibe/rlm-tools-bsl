@@ -25,6 +25,8 @@ PowerShell -ExecutionPolicy Bypass -File .\simple-install-from-pip.ps1
 
 Скрипт установит пакет из PyPI, зарегистрирует Windows-службу, запустит сервер и проверит health. Повторный запуск — обновление до последней версии.
 
+> **Если служба не запускается** (ошибка 1053 и т.п.) — см. [Диагностика Windows-службы](docs/INSTALL.md#диагностика-windows-службы).
+
 **Linux — установка + systemd-служба одной командой:**
 
 ```bash

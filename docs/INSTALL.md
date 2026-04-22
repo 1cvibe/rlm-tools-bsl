@@ -376,6 +376,46 @@ rlm-tools-bsl service uninstall
 
 Конфиг службы сохраняется в `~/.config/rlm-tools-bsl/service.json`. Если `.env` не указан — сервис стартует без него (все параметры берутся из переменных окружения, заданных системно).
 
+### Диагностика Windows-службы
+
+Если служба не запускается или `rlm-tools-bsl service start` падает с ошибкой `1053` («Служба не ответила на запрос своевременно»), запустите диагностический скрипт **[diagnose-service-win.ps1](../diagnose-service-win.ps1)** (PowerShell от имени администратора).
+
+**Если репозиторий склонирован** (`git clone`) — из корня репо:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\diagnose-service-win.ps1
+```
+
+**Если поставлено из PyPI** (без клона репо) — скачать и запустить одной строкой:
+
+```powershell
+irm https://raw.githubusercontent.com/Dach-Coin/rlm-tools-bsl/master/diagnose-service-win.ps1 -OutFile diagnose-service-win.ps1
+PowerShell -ExecutionPolicy Bypass -File .\diagnose-service-win.ps1
+```
+
+Для глубокой диагностики (запустит `pythonservice.exe -debug` на 5 с и захватит реальный stderr импорта):
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\diagnose-service-win.ps1 -RunDebug
+```
+
+Скрипт собирает в `.\tmp\diagnose\diagnose-<timestamp>\` (и архивирует в одноименный `.zip` рядом) все, что нужно для разбора инцидента:
+
+- версии Windows, PowerShell, Python, `uv`, `pywin32`, `rlm-tools-bsl` и полный `uv pip list` окружения службы;
+- состояние службы (`sc query`, `sc qc`, `sc qfailure`, `Get-Service`) и её ветку реестра `HKLM\...\Services\rlm-tools-bsl` — `ImagePath`, `Environment` (`PYTHONPATH`, `RLM_CONFIG_FILE`);
+- `ImagePath` → фактический путь к `pythonservice.exe`, наличие требуемых DLL рядом с ним (`python3.dll`, `python3XX.dll`, `pywintypes*.dll`, `pythoncom*.dll`), содержимое `site-packages\pywin32_system32\` и результат `win32serviceutil.LocatePythonServiceExe()`;
+- проверку импорта `rlm_tools_bsl`, `rlm_tools_bsl._service_win`, `win32service` / `win32serviceutil` / `win32event` через Python из окружения службы;
+- содержимое `~/.config/rlm-tools-bsl/service.json` и последние 500 строк `server.log`;
+- записи Windows Event Log (Application и System → Service Control Manager) за последние 3 дня по `pythonservice` / `rlm-tools-bsl`.
+
+Параметры:
+
+- `-OutDir <путь>` — каталог для выгрузки (по умолчанию `.\tmp\diagnose`);
+- `-EventLogDays <N>` — глубина сканирования Event Log в днях (по умолчанию 3);
+- `-RunDebug` — дополнительно запустить `pythonservice.exe -debug rlm-tools-bsl` на 5 секунд, чтобы поймать ошибки импорта/старта в stderr (требует админа, кратко занимает порт сервиса).
+
+Скрипт **не читает** `.env`-файлы и не дампит переменные окружения. `server.log` может содержать пути к вашему 1С-проекту — просмотрите выгрузку перед публикацией. Получившийся `diagnose-<timestamp>.zip` приложите к [новому issue](https://github.com/Dach-Coin/rlm-tools-bsl/issues/new).
+
 ### Обновление до новой версии
 
 **Рекомендуемый способ** (от администратора):
