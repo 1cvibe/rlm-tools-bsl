@@ -899,15 +899,31 @@ class IndexStatus(Enum):
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
-def get_index_dir(base_path: str) -> Path:
-    """Return the directory for storing indexes.
+def get_index_dir_root() -> Path:
+    """Return the root directory under which per-project BSL index folders live.
 
     Respects RLM_INDEX_DIR env variable; defaults to ~/.cache/rlm-tools-bsl/.
+
+    Note: BSL index directories (containing ``bsl_index.db``) are **not**
+    subject to automatic cleanup by ``cleanup_stale_cache()``. Indexes are
+    expensive to build and are managed manually via
+    ``rlm_index(action='drop')``. Use RLM_INDEX_DIR to isolate indexes on a
+    separate partition if needed.
     """
     env_dir = os.environ.get("RLM_INDEX_DIR")
     if env_dir:
         return Path(env_dir)
     return Path.home() / ".cache" / "rlm-tools-bsl"
+
+
+def get_index_dir(base_path: str) -> Path:
+    """Return the directory for storing BSL indexes.
+
+    Respects RLM_INDEX_DIR env variable; defaults to ~/.cache/rlm-tools-bsl/.
+    Not affected by RLM_CONFIG_FILE — index storage is orthogonal to the
+    cache/config/logs layout and is never auto-cleaned.
+    """
+    return get_index_dir_root()
 
 
 def _migrate_old_index_db(index_dir: Path) -> str:

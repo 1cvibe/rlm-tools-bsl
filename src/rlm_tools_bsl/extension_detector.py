@@ -182,6 +182,86 @@ def _local_tag(tag: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def resolve_config_root(base_path: str) -> tuple[str, list[ExtensionInfo]]:
+    """Resolve a 1C-configuration root from a container-style path.
+
+    Contract (issue #11):
+
+    1. If ``base_path/Configuration.xml`` exists → CF-root, return as-is.
+    2. If ``base_path/Configuration/Configuration.mdo`` exists → EDT-root, return as-is.
+    3. Otherwise scan direct subdirectories only (depth = 1, no wrapper
+       recursion like ``_detect_single``). For each subdir parse
+       ``Configuration.xml`` or ``Configuration.mdo`` if present.
+
+    Selection rules for MAIN candidates in direct subdirectories:
+
+    * 0 MAIN → return ``base_path`` unchanged (no candidates).
+    * 1 MAIN → return that subdir as effective path.
+    * Multiple MAIN → if exactly one is named ``cf`` (case-insensitive), use it
+      as tie-breaker. Otherwise return ``base_path`` and the full list of
+      candidates; caller decides whether to fail-fast.
+
+    The heuristic deliberately does **not** reuse ``_detect_single`` because
+    that function recurses through wrapper-dirs (level+1). Here we need an
+    exact depth-1 contract.
+    """
+    try:
+        base = Path(base_path)
+        if not base.is_dir():
+            return (base_path, [])
+
+        # Step 1 — direct CF root
+        if (base / "Configuration.xml").is_file():
+            return (base_path, [])
+
+        # Step 2 — direct EDT root
+        if (base / "Configuration" / "Configuration.mdo").is_file():
+            return (base_path, [])
+
+        # Step 3 — scan direct subdirectories only
+        try:
+            entries = list(base.iterdir())
+        except OSError:
+            return (base_path, [])
+
+        main_candidates: list[ExtensionInfo] = []
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            if entry.name in _SKIP_DIRS or entry.name.startswith("."):
+                continue
+
+            info: ExtensionInfo | None = None
+            sub_xml = entry / "Configuration.xml"
+            if sub_xml.is_file():
+                info = _parse_config_xml(str(sub_xml), str(entry))
+            else:
+                sub_mdo = entry / "Configuration" / "Configuration.mdo"
+                if sub_mdo.is_file():
+                    info = _parse_config_mdo(str(sub_mdo), str(entry))
+
+            if info is not None and info.role == ConfigRole.MAIN:
+                main_candidates.append(info)
+
+        if len(main_candidates) == 0:
+            return (base_path, [])
+        if len(main_candidates) == 1:
+            return (main_candidates[0].path, main_candidates)
+
+        # Multiple MAINs — try `cf` tie-breaker
+        cf_matches = [c for c in main_candidates if Path(c.path).name.lower() == "cf"]
+        if len(cf_matches) == 1:
+            return (cf_matches[0].path, main_candidates)
+
+        # Ambiguous — caller decides what to do
+        return (base_path, main_candidates)
+    except OSError:
+        return (base_path, [])
+
+
 def _detect_single(directory: str) -> ExtensionInfo | None:
     """Detect whether *directory* is a 1C configuration (main or extension).
 

@@ -298,11 +298,21 @@ class ProjectRegistry:
     # ------------------------------------------------------------------
 
     def is_path_registered(self, path: str) -> bool:
-        resolved = str(Path(path).resolve())
+        from rlm_tools_bsl._paths import canonicalize_path
+        from rlm_tools_bsl.extension_detector import resolve_config_root
+
+        def _norm(raw: str) -> str:
+            # Two-step: preserve existing canonical semantics (relative/backslash/
+            # resolve/mapped-drive), then apply cf-root normalization on top.
+            canonical = canonicalize_path(raw)
+            effective, _candidates = resolve_config_root(canonical)
+            return effective
+
+        resolved = _norm(path)
         with self._lock:
             projects = self._ensure_loaded()
         for p in projects:
-            if str(Path(p["path"]).resolve()) == resolved:
+            if _norm(p["path"]) == resolved:
                 return True
         return False
 

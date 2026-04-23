@@ -17,12 +17,34 @@ from pathlib import Path
 
 
 def _resolve_path(raw: str) -> str:
-    """Resolve and validate a base path argument."""
-    p = Path(raw).resolve()
-    if not p.is_dir():
-        print(f"Error: directory not found: {p}", file=sys.stderr)
+    """Resolve, validate and cf-normalize a base path argument.
+
+    Mirrors the MCP-side ``_normalize_and_validate_path``: a container-style
+    path (``src/`` containing ``src/cf/``) is normalized onto the
+    configuration root so CLI-built and MCP-built indexes always share the
+    same hash directory.
+    """
+    from rlm_tools_bsl._paths import canonicalize_path
+    from rlm_tools_bsl.extension_detector import resolve_config_root
+
+    canonical = canonicalize_path(raw)
+    if not Path(canonical).is_dir():
+        print(f"Error: directory not found: {raw}", file=sys.stderr)
         sys.exit(1)
-    return str(p)
+
+    effective, candidates = resolve_config_root(canonical)
+    if len(candidates) > 1 and effective == canonical:
+        print(
+            f"Error: multiple main configurations found under {canonical}. "
+            "Point <path> at a specific configuration root, or rename one of the "
+            "direct subdirectories to 'cf' to use it as the primary.",
+            file=sys.stderr,
+        )
+        for c in candidates:
+            print(f"  - {c.path}", file=sys.stderr)
+        sys.exit(1)
+
+    return effective
 
 
 def _fmt_size(size_bytes: int) -> str:

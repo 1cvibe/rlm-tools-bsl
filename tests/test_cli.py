@@ -6,8 +6,66 @@ import os
 import subprocess
 import sys
 import textwrap
+from argparse import Namespace
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+_CF_MAIN_XML_FOR_CLI = textwrap.dedent("""\
+    <?xml version="1.0" encoding="UTF-8"?>
+    <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+        <Configuration uuid="00000000-0000-0000-0000-000000000001">
+            <Properties>
+                <Name>Main</Name>
+                <NamePrefix/>
+            </Properties>
+        </Configuration>
+    </MetaDataObject>
+""")
+
+
+def test_cli_resolve_path_normalizes_container(tmp_path):
+    """Codex Medium: CLI must cf-normalize container paths (src → src/cf)."""
+    from rlm_tools_bsl.cli import _resolve_path
+
+    src = tmp_path / "src"
+    cf = src / "cf"
+    cf.mkdir(parents=True)
+    (cf / "Configuration.xml").write_text(_CF_MAIN_XML_FOR_CLI, encoding="utf-8")
+
+    resolved = _resolve_path(str(src))
+    assert Path(resolved) == cf.resolve()
+
+
+def test_cli_resolve_path_fails_fast_on_ambiguous_main(tmp_path, capsys):
+    """Multiple MAIN without cf tie-breaker → CLI exits non-zero with candidate list."""
+    from rlm_tools_bsl.cli import _resolve_path
+
+    src = tmp_path / "src"
+    for name in ("main1", "main2"):
+        sub = src / name
+        sub.mkdir(parents=True)
+        (sub / "Configuration.xml").write_text(_CF_MAIN_XML_FOR_CLI, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _resolve_path(str(src))
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "multiple main configurations" in err.lower()
+
+
+def test_cli_resolve_path_passes_through_cf_root(tmp_path):
+    """Direct cf-root path is unchanged (backward compatibility)."""
+    from rlm_tools_bsl.cli import _resolve_path
+
+    cf = tmp_path / "cf"
+    cf.mkdir()
+    (cf / "Configuration.xml").write_text(_CF_MAIN_XML_FOR_CLI, encoding="utf-8")
+
+    resolved = _resolve_path(str(cf))
+    assert Path(resolved) == cf.resolve()
 
 
 @pytest.fixture()
@@ -141,3 +199,407 @@ class TestCliDrop:
         assert result.returncode == 0
         db_files = list(idx_dir.rglob("bsl_index.db"))
         assert len(db_files) == 0
+
+
+# ---------------------------------------------------------------------------
+# Direct (in-process) tests — these DO count towards coverage.
+# The subprocess-based tests above verify end-to-end CLI behaviour but
+# coverage collectors only see this parent process.
+# ---------------------------------------------------------------------------
+
+
+# --- _fmt_size / _fmt_age ---------------------------------------------------
+
+
+def test_fmt_size_bytes():
+    from rlm_tools_bsl.cli import _fmt_size
+
+    assert _fmt_size(0) == "0 B"
+    assert _fmt_size(512) == "512 B"
+    assert _fmt_size(1023) == "1023 B"
+
+
+def test_fmt_size_kb():
+    from rlm_tools_bsl.cli import _fmt_size
+
+    assert _fmt_size(1024) == "1.0 KB"
+    assert _fmt_size(2048) == "2.0 KB"
+    assert _fmt_size(1024 * 1024 - 1) == "1024.0 KB"
+
+
+def test_fmt_size_mb():
+    from rlm_tools_bsl.cli import _fmt_size
+
+    assert _fmt_size(1024 * 1024) == "1.0 MB"
+    assert _fmt_size(10 * 1024 * 1024) == "10.0 MB"
+
+
+def test_fmt_age_seconds():
+    from rlm_tools_bsl.cli import _fmt_age
+
+    assert _fmt_age(0) == "0s ago"
+    assert _fmt_age(30) == "30s ago"
+    assert _fmt_age(59.4) == "59s ago"
+
+
+def test_fmt_age_minutes():
+    from rlm_tools_bsl.cli import _fmt_age
+
+    assert _fmt_age(60) == "1m ago"
+    assert _fmt_age(3599) == "60m ago"
+
+
+def test_fmt_age_hours():
+    from rlm_tools_bsl.cli import _fmt_age
+
+    assert _fmt_age(3600) == "1.0h ago"
+    assert _fmt_age(86399) == "24.0h ago"
+
+
+def test_fmt_age_days():
+    from rlm_tools_bsl.cli import _fmt_age
+
+    assert _fmt_age(86400) == "1.0d ago"
+    assert _fmt_age(7 * 86400) == "7.0d ago"
+
+
+# --- _resolve_path additional coverage --------------------------------------
+
+
+_EDT_MAIN_MDO = textwrap.dedent("""\
+    <?xml version="1.0" encoding="UTF-8"?>
+    <mdclass:Configuration xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"
+                           uuid="00000000-0000-0000-0000-000000000003">
+        <name>Main</name>
+    </mdclass:Configuration>
+""")
+
+
+def test_cli_resolve_path_edt_container(tmp_path):
+    """CLI must resolve an EDT container to the src-level root."""
+    from rlm_tools_bsl.cli import _resolve_path
+
+    src = tmp_path / "src"
+    (src / "Configuration").mkdir(parents=True)
+    (src / "Configuration" / "Configuration.mdo").write_text(_EDT_MAIN_MDO, encoding="utf-8")
+
+    resolved = _resolve_path(str(tmp_path))
+    assert Path(resolved) == src.resolve()
+
+
+def test_cli_resolve_path_missing_dir(tmp_path, capsys):
+    """Nonexistent path → exit 1 with a clear message."""
+    from rlm_tools_bsl.cli import _resolve_path
+
+    missing = tmp_path / "does_not_exist"
+    with pytest.raises(SystemExit) as excinfo:
+        _resolve_path(str(missing))
+    assert excinfo.value.code == 1
+    assert "directory not found" in capsys.readouterr().err.lower()
+
+
+# --- _cmd_* direct calls (builders mocked) ---------------------------------
+
+
+def _make_cmd_args(**overrides) -> Namespace:
+    """Build argparse.Namespace for any _cmd_* with sensible defaults."""
+    defaults = {
+        "path": None,
+        "no_calls": False,
+        "no_metadata": False,
+        "no_fts": False,
+        "no_synonyms": False,
+    }
+    defaults.update(overrides)
+    return Namespace(**defaults)
+
+
+@pytest.fixture()
+def _cli_cf_project(tmp_path, monkeypatch):
+    """Minimal CF-root project with a Configuration.xml so _resolve_path accepts it."""
+    (tmp_path / "Configuration.xml").write_text(_CF_MAIN_XML_FOR_CLI, encoding="utf-8")
+    idx_dir = tmp_path / "_index"
+    idx_dir.mkdir()
+    monkeypatch.setenv("RLM_INDEX_DIR", str(idx_dir))
+    return tmp_path, idx_dir
+
+
+def _mock_db(tmp_path, db_size: int = 1234) -> MagicMock:
+    """Return a MagicMock emulating a Path to bsl_index.db."""
+    db = MagicMock(spec=Path)
+    real_db = tmp_path / "bsl_index.db"
+    real_db.write_bytes(b"x" * db_size)
+    db.exists.return_value = True
+    db.stat.return_value = real_db.stat()
+    db.__str__.return_value = str(real_db)
+    db.parent = real_db.parent
+    db.unlink = real_db.unlink
+    return db
+
+
+def _stats_fixture() -> dict:
+    return {
+        "builder_version": 12,
+        "config_name": "TestCfg",
+        "config_version": "1.0",
+        "source_format": "cf",
+        "modules": 10,
+        "methods": 50,
+        "calls": 300,
+        "exports": 20,
+        "event_subscriptions": 1,
+        "scheduled_jobs": 0,
+        "functional_options": 2,
+        "object_synonyms": 15,
+        "object_attributes": 100,
+        "predefined_items": 5,
+        "metadata_references": 50,
+        "exchange_plan_content": 0,
+        "defined_types": 0,
+        "characteristic_types": 0,
+        "file_paths": 0,
+        "has_metadata": True,
+        "has_fts": True,
+        "has_synonyms": True,
+        "git_accelerated": False,
+        "git_head_commit": None,
+        "built_at": 1000.0,
+    }
+
+
+def test_cmd_build_happy_path(_cli_cf_project, capsys):
+    """_cmd_build calls IndexBuilder, prints stats, does not exit."""
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+
+    with (
+        patch("rlm_tools_bsl.bsl_index.IndexBuilder") as BuilderMock,
+        patch("rlm_tools_bsl.bsl_index.IndexReader") as ReaderMock,
+    ):
+        builder = BuilderMock.return_value
+        builder.build.return_value = _mock_db(project_path)
+        reader = ReaderMock.return_value
+        reader.get_statistics.return_value = _stats_fixture()
+
+        cli._cmd_build(args)
+
+    out = capsys.readouterr().out
+    assert "Index built" in out
+    assert "Modules" in out
+    assert "Methods" in out
+    builder.build.assert_called_once()
+
+
+def test_cmd_build_runtime_error(_cli_cf_project, capsys):
+    """IndexBuilder.build raising RuntimeError → exit 1."""
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+
+    with patch("rlm_tools_bsl.bsl_index.IndexBuilder") as BuilderMock:
+        BuilderMock.return_value.build.side_effect = RuntimeError("bsl parser exploded")
+        with pytest.raises(SystemExit) as excinfo:
+            cli._cmd_build(args)
+
+    assert excinfo.value.code == 1
+    assert "bsl parser exploded" in capsys.readouterr().err
+
+
+def test_cmd_update_happy_path(_cli_cf_project, capsys):
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+
+    fake_db = _mock_db(project_path)
+
+    with (
+        patch("rlm_tools_bsl.bsl_index.IndexBuilder") as BuilderMock,
+        patch("rlm_tools_bsl.bsl_index.get_index_db_path", return_value=fake_db),
+        patch("rlm_tools_bsl.bsl_index.IndexReader") as ReaderMock,
+    ):
+        BuilderMock.return_value.update.return_value = {"added": 2, "changed": 1, "removed": 0}
+        ReaderMock.return_value.get_statistics.return_value = _stats_fixture()
+
+        cli._cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "Updated in" in out
+    assert "Added:   2" in out
+    assert "Changed: 1" in out
+    assert "Removed: 0" in out
+
+
+def test_cmd_update_no_index(_cli_cf_project, capsys):
+    """Update without a pre-built index → exit 1 with hint."""
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+
+    fake_db = MagicMock(spec=Path)
+    fake_db.exists.return_value = False
+
+    with patch("rlm_tools_bsl.bsl_index.get_index_db_path", return_value=fake_db):
+        with pytest.raises(SystemExit) as excinfo:
+            cli._cmd_update(args)
+
+    assert excinfo.value.code == 1
+    assert "index not found" in capsys.readouterr().err.lower()
+
+
+def test_cmd_update_runtime_error(_cli_cf_project, capsys):
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+    fake_db = _mock_db(project_path)
+
+    with (
+        patch("rlm_tools_bsl.bsl_index.get_index_db_path", return_value=fake_db),
+        patch("rlm_tools_bsl.bsl_index.IndexBuilder") as BuilderMock,
+    ):
+        BuilderMock.return_value.update.side_effect = RuntimeError("update exploded")
+        with pytest.raises(SystemExit) as excinfo:
+            cli._cmd_update(args)
+
+    assert excinfo.value.code == 1
+    assert "update exploded" in capsys.readouterr().err
+
+
+def test_cmd_info_happy_path(_cli_cf_project, capsys):
+    from rlm_tools_bsl import cli
+    from rlm_tools_bsl.bsl_index import IndexStatus
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+    fake_db = _mock_db(project_path)
+
+    with (
+        patch("rlm_tools_bsl.bsl_index.get_index_db_path", return_value=fake_db),
+        patch("rlm_tools_bsl.bsl_index.IndexReader") as ReaderMock,
+        patch("rlm_tools_bsl.bsl_index.check_index_strict", return_value=IndexStatus.FRESH),
+    ):
+        ReaderMock.return_value.get_statistics.return_value = _stats_fixture()
+        cli._cmd_info(args)
+
+    out = capsys.readouterr().out
+    assert "Index:" in out
+    assert "fresh" in out
+    assert "Modules:" in out
+
+
+def test_cmd_info_missing(_cli_cf_project, capsys):
+    """info on a project without an index → prints 'Index not found' and exits 0."""
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+    fake_db = MagicMock(spec=Path)
+    fake_db.exists.return_value = False
+    fake_db.__str__.return_value = str(project_path / "bsl_index.db")
+
+    with patch("rlm_tools_bsl.bsl_index.get_index_db_path", return_value=fake_db):
+        with pytest.raises(SystemExit) as excinfo:
+            cli._cmd_info(args)
+
+    assert excinfo.value.code == 0
+    assert "Index not found" in capsys.readouterr().out
+
+
+def test_cmd_drop_happy_path(_cli_cf_project, capsys, tmp_path):
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+
+    db_parent = tmp_path / "idx-hash"
+    db_parent.mkdir()
+    real_db = db_parent / "bsl_index.db"
+    real_db.write_bytes(b"x" * 2048)
+
+    with patch("rlm_tools_bsl.bsl_index.get_index_db_path", return_value=real_db):
+        cli._cmd_drop(args)
+
+    out = capsys.readouterr().out
+    assert "Index dropped" in out
+    assert not real_db.exists()
+    # Parent removed since it became empty
+    assert not db_parent.exists()
+
+
+def test_cmd_drop_missing(_cli_cf_project, capsys):
+    """drop on a project without an index prints a message and returns (exit 0)."""
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+    args = _make_cmd_args(path=str(project_path))
+    fake_db = MagicMock(spec=Path)
+    fake_db.exists.return_value = False
+
+    with patch("rlm_tools_bsl.bsl_index.get_index_db_path", return_value=fake_db):
+        cli._cmd_drop(args)  # no SystemExit
+
+    assert "Index not found, nothing to drop." in capsys.readouterr().out
+
+
+# --- main() -----------------------------------------------------------------
+
+
+def test_main_no_args_prints_help(monkeypatch, capsys):
+    """Bare `rlm-bsl-index` prints help and exits 0."""
+    from rlm_tools_bsl import cli
+
+    monkeypatch.setattr(sys, "argv", ["rlm-bsl-index"])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 0
+    assert "usage:" in capsys.readouterr().out.lower()
+
+
+def test_main_index_no_subcommand_prints_index_help(monkeypatch, capsys):
+    """`rlm-bsl-index index` without a subcommand prints index help and exits 0."""
+    from rlm_tools_bsl import cli
+
+    monkeypatch.setattr(sys, "argv", ["rlm-bsl-index", "index"])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out.lower()
+    # argparse emits subcommand names in the help output
+    assert "build" in out and "update" in out and "info" in out and "drop" in out
+
+
+def test_main_version_flag(monkeypatch, capsys):
+    """`--version` prints package version and exits 0."""
+    from rlm_tools_bsl import cli
+
+    monkeypatch.setattr(sys, "argv", ["rlm-bsl-index", "--version"])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 0
+    assert "rlm-bsl-index" in capsys.readouterr().out.lower()
+
+
+def test_main_dispatches_build(_cli_cf_project, monkeypatch, capsys):
+    """`main()` routes `index build <path>` through _cmd_build."""
+    from rlm_tools_bsl import cli
+
+    project_path, _ = _cli_cf_project
+
+    with (
+        patch("rlm_tools_bsl.bsl_index.IndexBuilder") as BuilderMock,
+        patch("rlm_tools_bsl.bsl_index.IndexReader") as ReaderMock,
+    ):
+        BuilderMock.return_value.build.return_value = _mock_db(project_path)
+        ReaderMock.return_value.get_statistics.return_value = _stats_fixture()
+
+        monkeypatch.setattr(sys, "argv", ["rlm-bsl-index", "index", "build", str(project_path)])
+        # Keep load_project_env as no-op so we don't touch real env
+        with patch("rlm_tools_bsl._config.load_project_env", lambda: None):
+            cli.main()
+
+    assert "Index built" in capsys.readouterr().out

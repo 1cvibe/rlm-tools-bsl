@@ -23,6 +23,7 @@ from rlm_tools_bsl.extension_detector import (
     ConfigRole,
     detect_extension_context,
     find_extension_overrides,
+    resolve_config_root,
 )
 from rlm_tools_bsl.bsl_knowledge import (
     EFFORT_LEVELS,
@@ -140,85 +141,57 @@ def _cleanup_expired_resources() -> None:
                     pass
 
 
-def _resolve_mapped_drive(path: str) -> str | None:
-    """Resolve mapped drive letter to UNC path via Windows registry.
+from rlm_tools_bsl._paths import (
+    _resolve_mapped_drive,
+    _resolve_path_map,
+    canonicalize_path as _canonicalize_path,
+)
 
-    Services in Session 0 cannot see interactive session drive mappings.
-    This reads HKEY_USERS\\<SID>\\Network\\<letter>\\RemotePath instead.
+
+def _normalize_and_validate_path(raw_path: str) -> tuple[str, str | None]:
+    """Canonicalize + resolve config-root.
+
+    Returns ``(effective_path, error_json)`` — if ``error_json`` is non-None
+    it's a pre-serialized JSON error response to return directly to the caller
+    (non-existent directory, or ambiguous MAIN candidates without a ``cf``
+    tie-breaker).
     """
-    if os.name != "nt" or len(path) < 2 or path[1] != ":":
-        return None
-    drive_letter = path[0].upper()
-    try:
-        import winreg
+    canonical = _canonicalize_path(raw_path)
+    if not os.path.isdir(canonical):
+        hint = ""
+        if len(raw_path) >= 2 and raw_path[1] == ":" and not os.path.isdir(raw_path[:3]):
+            hint = (
+                f" (drive {raw_path[:2]} is not accessible to this process; "
+                "use UNC path like \\\\server\\share\\... instead)"
+            )
+        return (
+            canonical,
+            json.dumps(
+                {"error": f"Directory not found: {raw_path}{hint}"},
+                ensure_ascii=False,
+            ),
+        )
 
-        i = 0
-        while True:
-            try:
-                sid = winreg.EnumKey(winreg.HKEY_USERS, i)
-            except OSError:
-                break
-            i += 1
-            if sid.startswith(".") or sid.endswith("_Classes"):
-                continue
-            try:
-                with winreg.OpenKey(winreg.HKEY_USERS, f"{sid}\\Network\\{drive_letter}") as key:
-                    remote_path, _ = winreg.QueryValueEx(key, "RemotePath")
-                    if remote_path:
-                        return remote_path + path[2:]
-            except OSError:
-                continue
-    except Exception:
-        pass
-    return None
+    effective, candidates = resolve_config_root(canonical)
+    # Ambiguous: multiple MAINs, no cf-tie-breaker ⇒ `resolve_config_root`
+    # returned the container path unchanged along with the candidate list.
+    if len(candidates) > 1 and effective == canonical:
+        return (
+            canonical,
+            json.dumps(
+                {
+                    "error": (
+                        f"Multiple main configurations found under {canonical}. "
+                        "Point 'path' at a specific configuration root, or rename one "
+                        "of the direct subdirectories to 'cf' to use it as the primary."
+                    ),
+                    "main_candidates": [{"name": c.name, "path": c.path} for c in candidates],
+                },
+                ensure_ascii=False,
+            ),
+        )
 
-
-def _resolve_path_map(path: str) -> str:
-    """Translate host filesystem path to container path using RLM_PATH_MAP.
-
-    RLM_PATH_MAP format: "host_prefix:container_prefix"
-    Example: "C:/work/sources:/repos" (Windows host → Linux container)
-
-    Handles Windows backslashes and case-insensitive prefix matching.
-    Returns the original path if no mapping matches.
-    """
-    mapping = os.environ.get("RLM_PATH_MAP", "")
-    if not mapping:
-        return path
-    # Split on last ":" to handle Windows drive letters (e.g. "D:/foo:/repos")
-    # Find the separator: scan from the end for ":" that is not at position 1 (drive letter)
-    sep_idx = mapping.rfind(":")
-    if sep_idx <= 0:
-        return path
-    # Handle edge case: "D:/foo:/bar" — rfind gives the right split
-    host_prefix = mapping[:sep_idx]
-    container_prefix = mapping[sep_idx + 1 :]
-    if not host_prefix or not container_prefix:
-        return path
-
-    # Normalize separators for comparison
-    path_normalized = path.replace("\\", "/")
-    host_normalized = host_prefix.replace("\\", "/").rstrip("/")
-
-    # Case-insensitive prefix match (Windows paths) with boundary check
-    if path_normalized.lower().startswith(host_normalized.lower()):
-        remainder = path_normalized[len(host_normalized) :]
-        if remainder and not remainder.startswith("/"):
-            return path  # not a true directory boundary match
-        return container_prefix.rstrip("/") + remainder
-
-    return path
-
-
-def _canonicalize_path(raw_path: str) -> str:
-    """Canonicalize path exactly as _rlm_index does: path_map → resolve → mapped drive fallback."""
-    mapped = _resolve_path_map(raw_path)
-    resolved = str(pathlib.Path(mapped).resolve())
-    if not os.path.isdir(resolved):
-        unc = _resolve_mapped_drive(mapped)
-        if unc:
-            resolved = str(pathlib.Path(unc).resolve())
-    return resolved
+    return (effective, None)
 
 
 # --- Background build jobs (MCP async fire-and-forget) ---
@@ -328,14 +301,19 @@ def _rlm_start(
             )
         # exact or substring -- OK
         path = matches[0]["path"]
-    else:
-        # path is provided -- check if registered, hint if not
-        path = _resolve_path_map(path)
+
+    # Shared normalization: path_map → resolve → mapped drive → cf-root
+    resolved, error_json = _normalize_and_validate_path(path)
+    if error_json is not None:
+        return error_json
+
+    if project is None:
+        # path was provided directly — register-hint check (after cf-normalization)
         from rlm_tools_bsl.projects import get_registry
 
         try:
             reg = get_registry()
-            if not reg.is_path_registered(path):
+            if not reg.is_path_registered(resolved):
                 project_hint = (
                     "This path is not in the project registry. "
                     "Register it with rlm_projects(action='add', name='...', path='...') "
@@ -345,24 +323,6 @@ def _rlm_start(
             pass  # non-critical
 
     logger.info("rlm_start: path=%s effort=%s include_metadata=%s", path, effort, include_metadata)
-
-    resolved = str(pathlib.Path(path).resolve())
-    if not os.path.isdir(resolved):
-        # Try resolving mapped drive via registry (Windows service in Session 0)
-        unc_path = _resolve_mapped_drive(path)
-        if unc_path:
-            resolved = str(pathlib.Path(unc_path).resolve())
-        if not os.path.isdir(resolved):
-            hint = ""
-            if len(path) >= 2 and path[1] == ":" and not os.path.isdir(path[:3]):
-                hint = (
-                    f" (drive {path[:2]} is not accessible to this process; "
-                    "use UNC path like \\\\server\\share\\... instead)"
-                )
-            return json.dumps(
-                {"error": f"Directory not found: {path}{hint}"},
-                ensure_ascii=False,
-            )
 
     effort_config = EFFORT_LEVELS.get(effort, EFFORT_LEVELS["medium"])
     if max_llm_calls is None:
@@ -380,6 +340,13 @@ def _rlm_start(
         )
     except RuntimeError as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    try:
+        from rlm_tools_bsl.cache import touch_project_cache
+
+        touch_project_cache(resolved)
+    except Exception as exc:
+        logger.debug("rlm_start: touch_project_cache failed: %s", exc)
 
     session = session_manager.get(session_id)
     if not session:
@@ -605,6 +572,7 @@ def _rlm_start(
 
     response: dict = {
         "session_id": session_id,
+        "resolved_path": resolved,
         "warnings": ext_context.warnings,
         "config_format": format_info.format_label,
         "extension_context": {
@@ -824,7 +792,19 @@ def _rlm_end(session_id: str) -> str:
 @mcp.tool()
 async def rlm_start(
     query: Annotated[str, Field(description="What you want to find or analyze in the BSL codebase")],
-    path: Annotated[str | None, Field(description="Absolute path to the 1C BSL codebase directory")] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Absolute path to a 1C configuration root, or to a parent container "
+                "directory that holds the main configuration in a direct subdirectory "
+                "(alongside optional extension subdirectories). The main configuration "
+                "root is auto-detected; if multiple main configs are found in direct "
+                "subdirectories without one named 'cf', an error listing the candidates "
+                "is returned."
+            )
+        ),
+    ] = None,
     project: Annotated[str | None, Field(description="Project name from the registry (alternative to path)")] = None,
     effort: Annotated[
         str,
@@ -921,7 +901,18 @@ async def rlm_projects(
         Field(description="Action to perform on the project registry"),
     ],
     name: Annotated[str | None, Field(description="Project name (required for add/remove/rename/update)")] = None,
-    path: Annotated[str | None, Field(description="Absolute filesystem path to 1C sources (required for add)")] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Absolute filesystem path to a 1C configuration root, or to a parent "
+                "container directory with the main configuration in a direct subdirectory "
+                "(required for 'add'). Auto-detection of the main configuration mirrors "
+                "rlm_start; if multiple candidates exist without a 'cf' subdirectory, "
+                "an error is returned."
+            )
+        ),
+    ] = None,
     description: Annotated[str | None, Field(description="Optional project description")] = None,
     new_name: Annotated[str | None, Field(description="New name for rename action")] = None,
     password: Annotated[
@@ -1120,6 +1111,15 @@ def _rlm_projects(
         if action == "list":
             return json.dumps({"projects": reg.list_projects()}, ensure_ascii=False)
 
+        # For add/update: validate container-style paths by running the same
+        # normalization as rlm_start/rlm_index. Save the original path as given
+        # by the user (post path_map/mapped-drive translation only) so users see
+        # their own path in rlm_projects list.
+        if action in ("add", "update") and path:
+            _effective, err_json = _normalize_and_validate_path(path)
+            if err_json is not None:
+                return err_json
+
         if action == "add":
             if not name:
                 return json.dumps({"error": "name is required for 'add'"}, ensure_ascii=False)
@@ -1167,7 +1167,17 @@ async def rlm_index(
         Literal["build", "update", "info", "drop"],
         Field(description="Action to perform on the index"),
     ],
-    path: Annotated[str | None, Field(description="Root path to 1C configuration sources")] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Absolute path to a 1C configuration root, or to a parent container "
+                "directory that holds the main configuration in a direct subdirectory. "
+                "The main configuration is auto-detected; multiple candidates without a "
+                "direct 'cf' subdirectory return an error listing the candidates."
+            )
+        ),
+    ] = None,
     project: Annotated[str | None, Field(description="Project name from the registry")] = None,
     no_calls: Annotated[bool, Field(description="Skip call graph (build only)")] = False,
     no_metadata: Annotated[bool, Field(description="Skip L2 metadata (build only)")] = False,
@@ -1268,7 +1278,9 @@ async def rlm_index(
         # Password correct — proceed with project (not path)
 
         if action in ("build", "update"):
-            resolved_path = _canonicalize_path(matches[0]["path"])
+            resolved_path, err_json = _normalize_and_validate_path(matches[0]["path"])
+            if err_json is not None:
+                return err_json
             job_key = resolved_path
 
             with _build_jobs_lock:
@@ -1350,7 +1362,9 @@ async def rlm_index(
             )
 
         if action == "drop":
-            resolved_path = _canonicalize_path(matches[0]["path"])
+            resolved_path, err_json = _normalize_and_validate_path(matches[0]["path"])
+            if err_json is not None:
+                return err_json
             with _build_jobs_lock:
                 job = _build_jobs.get(resolved_path)
                 if job and job["status"] == "building":
@@ -1386,6 +1400,7 @@ def _rlm_index(
 ) -> str:
     from rlm_tools_bsl.projects import RegistryCorruptedError, get_registry
     from rlm_tools_bsl.bsl_index import IndexBuilder, IndexReader, get_index_db_path
+    from rlm_tools_bsl.cache import touch_project_cache
 
     # --- Resolve path ---
     if path is None and project is None:
@@ -1415,9 +1430,9 @@ def _rlm_index(
         path = matches[0]["path"]
         resolved_project_name = matches[0]["name"]
 
-    resolved = _canonicalize_path(path)
-    if not os.path.isdir(resolved):
-        return json.dumps({"error": f"Path not found: {path}"}, ensure_ascii=False)
+    resolved, err_json = _normalize_and_validate_path(path)
+    if err_json is not None:
+        return err_json
 
     try:
         if action == "build":
@@ -1431,6 +1446,10 @@ def _rlm_index(
                 build_synonyms=not no_synonyms,
             )
             elapsed = time.monotonic() - t0
+            try:
+                touch_project_cache(resolved)
+            except Exception as exc:
+                logger.debug("rlm_index build: touch_project_cache failed: %s", exc)
             result = {
                 "action": "build",
                 "path": resolved,
@@ -1446,6 +1465,10 @@ def _rlm_index(
             builder = IndexBuilder()
             delta = builder.update(resolved)
             elapsed = time.monotonic() - t0
+            try:
+                touch_project_cache(resolved)
+            except Exception as exc:
+                logger.debug("rlm_index update: touch_project_cache failed: %s", exc)
             result = {"action": "update", "path": resolved, "elapsed_seconds": round(elapsed, 1), **delta}
             if resolved_project_name:
                 result["project"] = resolved_project_name
@@ -1488,6 +1511,10 @@ def _rlm_index(
             db_path = get_index_db_path(resolved)
             if not db_path.exists():
                 return json.dumps({"error": "Index not found", "path": resolved}, ensure_ascii=False)
+            try:
+                touch_project_cache(resolved)
+            except Exception as exc:
+                logger.debug("rlm_index info: touch_project_cache failed: %s", exc)
             reader = IndexReader(str(db_path))
             try:
                 stats = reader.get_statistics()
@@ -1669,6 +1696,29 @@ def main():
             getattr(mcp.settings, "host", "?"),
             getattr(mcp.settings, "port", "?"),
         )
+
+    # One-shot per server start: clean up stale project caches. Only runs for
+    # actual server startup (stdio or streamable-http) — not for --version or
+    # `service` sub-commands, which are short-lived utilities.
+    try:
+        from rlm_tools_bsl.cache import cleanup_stale_cache
+
+        stats = cleanup_stale_cache()
+        if stats.get("disabled"):
+            logger.info("cleanup_stale_cache: disabled (RLM_CACHE_MAX_AGE_DAYS<=0)")
+        else:
+            logger.info(
+                "cleanup_stale_cache: legacy_markers_written=%d scanned=%d removed=%d bytes_freed=%d cache_root=%s",
+                stats.get("legacy_markers_written", 0),
+                stats.get("scanned", 0),
+                stats.get("removed", 0),
+                stats.get("bytes_freed", 0),
+                stats.get("cache_root", "?"),
+            )
+            for err in stats.get("errors", [])[:5]:
+                logger.warning("cleanup_stale_cache: %s", err)
+    except Exception as exc:
+        logger.warning("cleanup_stale_cache failed: %s", exc)
 
     threading.Thread(target=_warmup_imports, daemon=True).start()
     mcp.run(transport=args.transport)
