@@ -421,6 +421,50 @@ PowerShell -ExecutionPolicy Bypass -File .\diagnose-service-win.ps1 -RunDebug
 
 Скрипт **не читает** `.env`-файлы и не дампит переменные окружения. `server.log` может содержать пути к вашему 1С-проекту — просмотрите выгрузку перед публикацией. Получившийся `diagnose-<timestamp>.zip` приложите к [новому issue](https://github.com/Dach-Coin/rlm-tools-bsl/issues/new).
 
+### Установка не проходит или служба грузит старую версию — dangling temp-папки
+
+**Симптомы:**
+- `uv tool install` или `pip install` пишет в логе `warning: Ignoring dangling temporary directory: ~lm_tools_bsl-1.X.X.dist-info`;
+- после явного апгрейда служба продолжает запускаться на старой версии (`rlm-tools-bsl --version` ≠ ожидаемой);
+- `rlm-tools-bsl --version` падает с `ImportError` или `ModuleNotFoundError` после, казалось бы, успешной установки.
+
+**Причина.** При прерывании `uv` / `pip` install (Ctrl+C, kill процесса, BSOD во время атомарного rename'а) в `site-packages` могут остаться tilde-prefix временные каталоги:
+```
+~rlm_tools_bsl/                          # незавершённый rename целевой папки
+~rlm_tools_bsl-1.8.0.dist-info/          # незавершённый rename метаданных
+~lm_tools_bsl-1.8.0.dist-info/           # rename упал ещё раньше — потеряна "r"
+~-m_tools_bsl-1.8.0.dist-info/           # самая ранняя стадия
+```
+Python `importlib` их не подхватывает (имена с `~` или `-` игнорируются), `uv` печатает warning и пропускает, но **они занимают место и в редких случаях могут спровоцировать конфликт версий** при последующих апгрейдах.
+
+**Где искать.** Папка зависит от способа установки Python:
+
+| Способ установки Python | Путь к `site-packages` |
+|---|---|
+| Python.org installer (per-user) | `%LOCALAPPDATA%\Programs\Python\PythonXY\Lib\site-packages\` |
+| Python.org installer (system-wide) | `C:\Program Files\PythonXY\Lib\site-packages\` |
+| Python launcher / `pythoncore` (например через uv-managed Python) | `%LOCALAPPDATA%\Python\pythoncore-X.Y-XX\Lib\site-packages\` |
+| Microsoft Store Python | `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.X.X_*\LocalCache\local-packages\PythonXX\site-packages\` |
+
+Точный путь — спросить у самого Python:
+```powershell
+python -c "import site; print(site.getsitepackages()[0])"
+```
+
+**Очистка (PowerShell от имени администратора).** Подставить путь из команды выше в `$sp`:
+
+```powershell
+$sp = "<вывод предыдущей команды>"
+Get-ChildItem -Path $sp -Filter "~*tools_bsl*" -Force `
+    | ForEach-Object { Write-Host "Removing: $($_.FullName)"; Remove-Item -Recurse -Force $_.FullName }
+Get-ChildItem -Path $sp -Filter "~-m_tools_bsl*" -Force `
+    | ForEach-Object { Write-Host "Removing: $($_.FullName)"; Remove-Item -Recurse -Force $_.FullName }
+```
+
+После очистки повторите установку через `simple-install.ps1` или `simple-install-from-pip.ps1` — текущие версии скриптов уже включают `uv cache clean rlm-tools-bsl` и cleanup штатных `*rlm_tools_bsl*` артефактов; tilde-prefix варианты выше нужно удалять вручную.
+
+**Профилактика.** Не прерывайте `uv tool install` / `pip install` через Ctrl+C во время фазы `Installed N packages` — лучше дождаться завершения. На Windows с антивирусом, который сканирует записываемые файлы, install-операция может занять 5-30 секунд, это нормально.
+
 ### Обновление до новой версии
 
 **Рекомендуемый способ** (от администратора):
