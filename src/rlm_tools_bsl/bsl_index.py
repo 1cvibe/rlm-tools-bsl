@@ -6,6 +6,7 @@ The index is stored on disk and supports incremental updates.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -902,28 +903,139 @@ class IndexStatus(Enum):
 def get_index_dir_root() -> Path:
     """Return the root directory under which per-project BSL index folders live.
 
-    Respects RLM_INDEX_DIR env variable; defaults to ~/.cache/rlm-tools-bsl/.
+    Precedence (mirrors :func:`rlm_tools_bsl.cache._cache_base`):
+
+    1. ``RLM_INDEX_DIR`` set → that path verbatim (explicit user override).
+    2. ``RLM_CONFIG_FILE`` set → ``dirname(RLM_CONFIG_FILE)/index``. Fixes the
+       Windows-service LocalSystem case where ``Path.home()`` resolves to
+       ``system32/config/systemprofile``. Index lives under a dedicated
+       ``index/`` subdir (not under ``cache/``) so cache cleanup never touches
+       index data.
+    3. Fallback → ``~/.cache/rlm-tools-bsl``.
 
     Note: BSL index directories (containing ``bsl_index.db``) are **not**
     subject to automatic cleanup by ``cleanup_stale_cache()``. Indexes are
-    expensive to build and are managed manually via
-    ``rlm_index(action='drop')``. Use RLM_INDEX_DIR to isolate indexes on a
-    separate partition if needed.
+    expensive to build and are managed manually via ``rlm_index(action='drop')``.
     """
     env_dir = os.environ.get("RLM_INDEX_DIR")
     if env_dir:
         return Path(env_dir)
+    config_override = os.environ.get("RLM_CONFIG_FILE")
+    if config_override:
+        return Path(config_override).parent / "index"
     return Path.home() / ".cache" / "rlm-tools-bsl"
 
 
 def get_index_dir(base_path: str) -> Path:
     """Return the directory for storing BSL indexes.
 
-    Respects RLM_INDEX_DIR env variable; defaults to ~/.cache/rlm-tools-bsl/.
-    Not affected by RLM_CONFIG_FILE — index storage is orthogonal to the
-    cache/config/logs layout and is never auto-cleaned.
+    Resolves through :func:`get_index_dir_root` — see its docstring for the
+    full precedence chain (RLM_INDEX_DIR → dirname(RLM_CONFIG_FILE)/index →
+    home fallback). Index storage is never auto-cleaned.
     """
     return get_index_dir_root()
+
+
+def migrate_legacy_index_root() -> int:
+    """One-shot: migrate per-hash index subdirs from the legacy root.
+
+    When ``RLM_CONFIG_FILE`` is set (Windows-service LocalSystem case fixed in
+    v1.9.2), :func:`get_index_dir_root` returns a path different from the
+    legacy ``~/.cache/rlm-tools-bsl``. Already-built indexes still live there
+    and would otherwise be silently abandoned. This helper moves each subdir
+    that contains ``bsl_index.db`` or ``method_index.db`` to the new root.
+
+    Triggered only when ``RLM_INDEX_DIR`` is unset (otherwise the user
+    explicitly chose a path and we do not touch anything). Idempotent:
+    repeated calls are NOOP because the legacy dir is empty after the first
+    successful run, or the target already exists.
+
+    Returns the number of subdirectories successfully moved.
+    """
+    if os.environ.get("RLM_INDEX_DIR"):
+        return 0
+
+    legacy_root = Path.home() / ".cache" / "rlm-tools-bsl"
+    new_root = get_index_dir_root()
+
+    try:
+        if legacy_root.resolve() == new_root.resolve():
+            return 0
+    except OSError:
+        if legacy_root == new_root:
+            return 0
+
+    if not legacy_root.exists() or not legacy_root.is_dir():
+        return 0
+
+    moved = 0
+    try:
+        entries = list(legacy_root.iterdir())
+    except OSError as exc:
+        logger.warning("migrate_legacy_index_root: cannot list %s: %s", legacy_root, exc)
+        return 0
+
+    for sub in entries:
+        try:
+            if not sub.is_dir():
+                continue
+            has_index = (sub / "bsl_index.db").exists() or (sub / "method_index.db").exists()
+            if not has_index:
+                continue
+            target = new_root / sub.name
+            if target.exists():
+                logger.warning(
+                    "migrate_legacy_index_root: target already exists, skipping: %s",
+                    target,
+                )
+                continue
+            new_root.mkdir(parents=True, exist_ok=True)
+            try:
+                sub.rename(target)
+            except PermissionError as exc:
+                logger.warning(
+                    "migrate_legacy_index_root: permission denied, skipping %s: %s",
+                    sub,
+                    exc,
+                )
+                continue
+            except OSError as exc:
+                # Cross-device rename (errno 18 on POSIX, 17 on some Windows
+                # configurations) → fall back to copy+remove via shutil.move.
+                if exc.errno in (errno.EXDEV, 17):
+                    try:
+                        shutil.move(str(sub), str(target))
+                    except Exception as exc2:
+                        logger.warning(
+                            "migrate_legacy_index_root: shutil.move failed for %s -> %s: %s",
+                            sub,
+                            target,
+                            exc2,
+                        )
+                        continue
+                else:
+                    logger.warning(
+                        "migrate_legacy_index_root: rename failed for %s -> %s: %s",
+                        sub,
+                        target,
+                        exc,
+                    )
+                    continue
+            logger.warning(
+                "migrate_legacy_index_root: moved %s -> %s",
+                sub,
+                target,
+            )
+            moved += 1
+        except Exception as exc:
+            logger.warning(
+                "migrate_legacy_index_root: unexpected error for %s: %s",
+                sub,
+                exc,
+            )
+            continue
+
+    return moved
 
 
 def _migrate_old_index_db(index_dir: Path) -> str:

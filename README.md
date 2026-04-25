@@ -7,7 +7,7 @@
 [![CI](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml/badge.svg)](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/rlm-tools-bsl.svg)](https://pypi.org/project/rlm-tools-bsl/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen.svg)](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-81%25-brightgreen.svg)](https://github.com/Dach-Coin/rlm-tools-bsl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 MCP-сервер для токен-эффективного анализа кодовых баз 1С (BSL).
@@ -58,7 +58,7 @@ cd rlm-tools-bsl
 PowerShell -ExecutionPolicy Bypass -File .\simple-install.ps1
 ```
 
-Обновление: `git pull` → `PowerShell -ExecutionPolicy Bypass -File .\reinstall-service.ps1`
+Скрипт идемпотентен: повторный запуск после `git pull` останавливает службу, очищает stale-артефакты, пересобирает пакет и перезапускает сервер.
 
 #### Linux
 

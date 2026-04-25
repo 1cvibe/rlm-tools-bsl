@@ -173,9 +173,12 @@ rlm_projects(action="add", name="ERP", path="D:/Repos/1c/erp/src/cf", password="
 Индекс ускоряет работу хелперов на больших конфигурациях. Строится через MCP-тул из AI-клиента:
 
 ```
-rlm_index(action="build", project="ERP")  # → {"started": true} (фон)
-rlm_index(action="info", project="ERP")   # → build_status: "building"|"done"
+rlm_index(action="build", project="ERP")                       # → {"approval_required": true, ...}
+rlm_index(action="build", project="ERP", confirm="<password>")  # → {"started": true} (фон)
+rlm_index(action="info",  project="ERP")                       # → build_status: "building"|"done"
 ```
+
+`build`/`update`/`drop` через MCP требуют пароль проекта (`confirm=<пароль>`); без него возвращается `approval_required`. Подробнее — [INDEXING.md](INDEXING.md#пароль-проекта-для-управления-индексами).
 
 Или через CLI (синхронно):
 ```bash
@@ -199,6 +202,8 @@ MCP-сервер запускается **после** завершения об
 | Исходники 1С | `/repos/` | `REPOS_ROOT` (read-only) |
 
 Оба тома включены по умолчанию — реестр проектов и индексы переживают `docker compose down && up`.
+
+> **Важно (v1.9.2+):** SQLite-индексы лежат в `~/.cache/rlm-tools-bsl/` **только если `RLM_CONFIG_FILE` не задан** (что верно для дефолтного `docker-compose.example.yml`). Если вы задаёте `RLM_CONFIG_FILE` без `RLM_INDEX_DIR`, индексы уедут в `dirname(RLM_CONFIG_FILE)/index/` (по умолчанию это volume `rlm-config`) — медленнее, смешивается с конфигом. Рекомендация: либо НЕ задавайте `RLM_CONFIG_FILE` в Docker, либо явно установите `RLM_INDEX_DIR=/home/rlm/.cache/rlm-tools-bsl`, чтобы индексы остались в volume `rlm-index-cache`.
 
 **7. Обновление и откат:**
 
@@ -422,16 +427,16 @@ PowerShell -ExecutionPolicy Bypass -File .\diagnose-service-win.ps1 -RunDebug
 
 ```bash
 git pull
-PowerShell -ExecutionPolicy Bypass -File .\reinstall-service.ps1
+PowerShell -ExecutionPolicy Bypass -File .\simple-install.ps1
 ```
 
-Скрипт автоматически:
-1. Остановит и удалит службу
+`simple-install.ps1` — единый идемпотентный скрипт для первичной установки и для апгрейда. Автоматически:
+1. Остановит и удалит существующую службу (если она зарегистрирована)
 2. Очистит stale-артефакты предыдущих установок (dangling dist-info, user site-packages, каталог dist/)
-3. Очистит кэш uv и пересоберет пакет (`uv tool install`)
+3. Очистит кэш uv и пересоберёт пакет (`uv tool install`)
 4. Обновит глобальный Python, используемый службой (`uv pip install`)
 5. Установит и запустит службу
-6. Проверит health и выведет версию
+6. Проверит `/health` и выведет версию
 
 **Без службы** (только CLI):
 
@@ -443,7 +448,7 @@ uv tool install ".[service]" --force --reinstall
 
 Проверьте версию: `rlm-tools-bsl --version`, `rlm-bsl-index --version`
 
-> **Важно:** Не используйте `pip install -e .` для обновления — это может установить пакет в неправильное окружение Python и сломать службу. Всегда используйте `uv tool install` или `reinstall-service.ps1`.
+> **Важно:** Не используйте `pip install -e .` для обновления — это может установить пакет в неправильное окружение Python и сломать службу. Всегда используйте `uv tool install` или `simple-install.ps1`.
 
 ## 5. (Опционально) Построить SQLite-индекс
 

@@ -16,6 +16,23 @@ import time
 from pathlib import Path
 
 
+def _maybe_migrate_legacy_index_root() -> None:
+    """Best-effort one-shot migration of legacy index directories.
+
+    Runs at the start of every CLI subcommand so that direct CLI invocations
+    after a v1.9.1→v1.9.2 upgrade pick up indexes that still live under the
+    legacy ``~/.cache/rlm-tools-bsl`` (e.g. when the user was running as a
+    Windows service before). Idempotent NOOP afterwards.
+    """
+    try:
+        from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+
+        migrate_legacy_index_root()
+    except Exception:
+        # Migration is opportunistic — never block CLI work on it.
+        pass
+
+
 def _resolve_path(raw: str) -> str:
     """Resolve, validate and cf-normalize a base path argument.
 
@@ -75,6 +92,7 @@ def _fmt_age(seconds: float) -> str:
 def _cmd_build(args: argparse.Namespace) -> None:
     from rlm_tools_bsl.bsl_index import IndexBuilder
 
+    _maybe_migrate_legacy_index_root()
     base_path = _resolve_path(args.path)
     build_calls = not args.no_calls
     build_metadata = not args.no_metadata
@@ -147,6 +165,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
 def _cmd_update(args: argparse.Namespace) -> None:
     from rlm_tools_bsl.bsl_index import IndexBuilder, get_index_db_path
 
+    _maybe_migrate_legacy_index_root()
     base_path = _resolve_path(args.path)
     db_path = get_index_db_path(base_path)
 
@@ -191,6 +210,7 @@ def _cmd_info(args: argparse.Namespace) -> None:
     )
     from rlm_tools_bsl.cache import _paths_hash
 
+    _maybe_migrate_legacy_index_root()
     base_path = _resolve_path(args.path)
     db_path = get_index_db_path(base_path)
 
@@ -272,6 +292,7 @@ def _cmd_info(args: argparse.Namespace) -> None:
 def _cmd_drop(args: argparse.Namespace) -> None:
     from rlm_tools_bsl.bsl_index import get_index_db_path
 
+    _maybe_migrate_legacy_index_root()
     base_path = _resolve_path(args.path)
     db_path = get_index_db_path(base_path)
 

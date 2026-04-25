@@ -55,11 +55,20 @@ if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
 fi
 
 # --- Step 1: Stop and uninstall existing service if running ---
+# Prepend uv tool bin to PATH so an existing installation is detected even when
+# the shell hasn't been re-sourced since the last `uv tool update-shell`.
+UV_BIN_DIR="$(uv tool dir --bin 2>/dev/null || true)"
+if [ -n "$UV_BIN_DIR" ] && [ -d "$UV_BIN_DIR" ]; then
+    export PATH="$UV_BIN_DIR:$PATH"
+fi
+
 if command -v rlm-tools-bsl &>/dev/null; then
     echo ""
     echo "=== Existing installation detected -- upgrading ==="
-    rlm-tools-bsl service stop 2>/dev/null && echo "Service stopped." || echo "Service was not running (OK)."
-    rlm-tools-bsl service uninstall 2>/dev/null && echo "Service uninstalled." || echo "Service was not installed (OK)."
+    rlm-tools-bsl service stop 2>/dev/null && echo "Service stopped." \
+        || echo "Service was not running (OK)."
+    rlm-tools-bsl service uninstall 2>/dev/null && echo "Service uninstalled." \
+        || echo "Service was not installed (OK)."
     echo ""
     echo "=== Step 1: Upgrade rlm-tools-bsl from PyPI ==="
 else
@@ -67,11 +76,26 @@ else
     echo "=== Step 1: Install rlm-tools-bsl from PyPI ==="
 fi
 
+# Safety net for orphaned systemd --user units.
+if command -v systemctl &>/dev/null; then
+    systemctl --user disable --now rlm-tools-bsl.service 2>/dev/null || true
+    systemctl --user daemon-reload 2>/dev/null || true
+fi
+
 UV_EXTRA_ARGS=()
 if [ "${UV_NATIVE_TLS:-}" = "true" ]; then
     UV_EXTRA_ARGS+=("--native-tls")
 fi
-uv tool install "rlm-tools-bsl[service]" --force --upgrade "${UV_EXTRA_ARGS[@]}"
+
+# Force a fresh wheel pull from PyPI.
+uv cache clean rlm-tools-bsl 2>/dev/null || true
+
+if ! uv tool install "rlm-tools-bsl[service]" --force --reinstall --upgrade "${UV_EXTRA_ARGS[@]}"; then
+    echo "ERROR: uv tool install failed."
+    echo "If you see TLS certificate errors (corporate proxy), retry with:"
+    echo "  UV_NATIVE_TLS=true ./simple-install-from-pip.sh"
+    exit 1
+fi
 
 # Ensure rlm-tools-bsl is in PATH for this session
 if ! command -v rlm-tools-bsl &>/dev/null; then
@@ -100,15 +124,17 @@ echo "=== Step 4: Verify ==="
 echo "Waiting for server to start..."
 sleep 3
 
-URL="http://${BIND_HOST}:${PORT}/mcp"
-echo "Checking $URL ..."
+# /health is lightweight (no MCP session); /mcp is the real endpoint shown in config.
+HEALTH_URL="http://${BIND_HOST}:${PORT}/health"
+MCP_URL="http://${BIND_HOST}:${PORT}/mcp"
+echo "Checking $HEALTH_URL ..."
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL" 2>/dev/null || true)
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$HEALTH_URL" 2>/dev/null || true)
 
 if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then
     echo "Server is responding (HTTP $HTTP_CODE). OK."
 else
-    echo "WARN: Server is not responding at $URL"
+    echo "WARN: Server is not responding at $HEALTH_URL"
     echo "Check status: rlm-tools-bsl service status"
     exit 1
 fi
@@ -120,7 +146,8 @@ echo " Done! HTTP MCP server is running."
 echo "========================================"
 echo ""
 echo "Version:  $(rlm-tools-bsl --version 2>&1)"
-echo "Endpoint: $URL"
+echo "Endpoint: $MCP_URL"
+echo "Health:   $HEALTH_URL"
 echo ""
 echo "Add to .claude.json / mcp.json:"
 echo ""
@@ -129,7 +156,7 @@ cat <<EOFCFG
   "mcpServers": {
     "rlm-tools-bsl": {
       "type": "http",
-      "url": "$URL"
+      "url": "$MCP_URL"
     }
   }
 }

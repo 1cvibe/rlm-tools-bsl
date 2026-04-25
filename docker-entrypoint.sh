@@ -40,6 +40,21 @@ else
     fi
 fi
 
+# --- 2.5. One-shot migration of legacy index directories (v1.9.2+) ---
+# When RLM_CONFIG_FILE points outside ~/.cache/rlm-tools-bsl, move existing
+# per-project index dirs from the legacy home location into the new root so
+# step 3 (auto-update) can find them. NOOP for default Docker (no
+# RLM_CONFIG_FILE) and when RLM_INDEX_DIR is set explicitly.
+python -c "
+try:
+    from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+    n = migrate_legacy_index_root()
+    if n:
+        print(f'Migrated {n} legacy index dirs', flush=True)
+except Exception as e:
+    print(f'WARNING: legacy index migration failed: {e}', flush=True)
+" || true
+
 # --- 3. Update indexes for registered projects ---
 echo "Checking registered projects for index updates..."
 

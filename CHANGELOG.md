@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.9.2] — 2026-04-25
+
+### Исправлено
+- **Расположение индекса при установке как Windows-служба** — `get_index_dir_root()` теперь учитывает `RLM_CONFIG_FILE` (зеркально к `_cache_base()` из v1.9.1): при service-install без явного `RLM_INDEX_DIR` индексы пишутся в `dirname(RLM_CONFIG_FILE)/index/`, а не в `system32/config/systemprofile/.cache/rlm-tools-bsl/` (LocalSystem). Прежнее обещание docstring «orthogonal to RLM_CONFIG_FILE» отменено
+- **Авто-миграция legacy-индексов** — новая функция `migrate_legacy_index_root()`: при первом старте v1.9.2 каждая папка с `bsl_index.db` или `method_index.db`, лежащая в `~/.cache/rlm-tools-bsl/<hash>/`, переезжает в новый root. Идемпотентна, безопасна для desktop-юзеров (`legacy == new` → NOOP), не трогает индексы при заданном `RLM_INDEX_DIR`. Вызывается из server.py (startup), docker-entrypoint.sh (перед auto-update индексов) и cli.py (`build`/`update`/`info`/`drop`)
+
+### Изменено
+- **Объединение source-инсталлятора** — `simple-install.ps1` и `reinstall-service.ps1` (Windows, source) слиты в один идемпотентный `simple-install.ps1`. Подходит и для первичной установки, и для апгрейда (повторный запуск после `git pull`). Включает cleanup stale dist-info в global+user site-packages, `uv cache clean`, `--force --reinstall`, обновление глобального Python (для pythonservice.exe), верификация через `/health` (без открытия MCP-сессии)
+- **Унификация cleanup-логики во всех install-скриптах** — `simple-install-from-pip.ps1` (Windows, PyPI), `simple-install.sh` (Linux, source), `simple-install-from-pip.sh` (Linux, PyPI) приведены к общему стандарту. Все четыре скрипта на upgrade теперь делают: остановку и uninstall существующей службы (best-effort, идемпотентно для fresh install), `uv cache clean rlm-tools-bsl`, `uv tool install --force --reinstall` (для PyPI-вариантов дополнительно `--upgrade`), верификацию через `/health` (вместо `/mcp`, не создаёт лишнюю MCP-сессию). Все четыре скрипта прокидывают `uv tool dir --bin` в PATH **до** проверки существующей установки (иначе при свежей PowerShell-сессии или после `uv tool update-shell` без re-source шелла существующая служба не определилась бы и stop/uninstall был пропущен). Linux-варианты дополнительно страхуются `systemctl --user disable --now rlm-tools-bsl.service` + `daemon-reload` от orphaned-юнитов. Windows-варианты дополнительно чистят stale `*rlm_tools_bsl*` из global+user site-packages (специфика pythonservice.exe, который грузится из глобального Python)
+- **Документация** — `docs/INDEXING.md`, `docs/ENV_REFERENCE.md`, `docs/INSTALL.md` обновлены с новой precedence chain и Docker-рекомендациями (для Docker с `RLM_CONFIG_FILE` явно задавать `RLM_INDEX_DIR=/home/rlm/.cache/rlm-tools-bsl`, иначе индексы уедут в volume `rlm-config` вместо `rlm-index-cache`)
+
 ## [1.9.0] — 2026-04-19
 
 ### Добавлено

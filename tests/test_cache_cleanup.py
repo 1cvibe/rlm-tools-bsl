@@ -94,11 +94,14 @@ def test_cache_base_respects_rlm_config_file(tmp_path, monkeypatch):
 
 def test_cache_base_fallback_when_no_rlm_config_file(tmp_path, monkeypatch):
     """Without RLM_CONFIG_FILE, _cache_base() falls back to ~/.cache/rlm-tools-bsl."""
+    import pathlib
+
     monkeypatch.delenv("RLM_CONFIG_FILE", raising=False)
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
-    monkeypatch.setenv("USERPROFILE", str(fake_home))  # Windows Path.home()
-    monkeypatch.setenv("HOME", str(fake_home))  # POSIX Path.home()
+    # Override the autouse Path.home patch from conftest.py with this test's
+    # own fake_home (setenv USERPROFILE/HOME does not override setattr).
+    monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
 
     assert _cache_base() == fake_home / ".cache" / "rlm-tools-bsl"
 

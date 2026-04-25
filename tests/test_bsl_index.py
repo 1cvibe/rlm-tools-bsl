@@ -1200,6 +1200,219 @@ class TestPathHelpers:
         assert result.name == "method_index.db"
 
 
+# =====================================================================
+# get_index_dir_root() precedence + legacy migration (v1.9.2)
+# =====================================================================
+
+
+@pytest.fixture
+def _isolated_home(monkeypatch, tmp_path):
+    """Redirect ``Path.home()`` and clear RLM_INDEX_DIR / RLM_CONFIG_FILE.
+
+    Critical for migration tests: ``migrate_legacy_index_root`` reads
+    ``Path.home() / ".cache" / "rlm-tools-bsl"`` and would otherwise touch the
+    developer's real index directory. Patching ``Path.home`` directly is the
+    most robust approach (no OS-specific env-var dance).
+    """
+    import pathlib
+
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("RLM_INDEX_DIR", raising=False)
+    monkeypatch.delenv("RLM_CONFIG_FILE", raising=False)
+    return fake_home
+
+
+class TestIndexDirRootPrecedence:
+    """Precedence: RLM_INDEX_DIR > RLM_CONFIG_FILE > home fallback."""
+
+    def test_index_dir_root_respects_rlm_config_file(self, _isolated_home, monkeypatch, tmp_path):
+        """Without RLM_INDEX_DIR, RLM_CONFIG_FILE drives the root → dirname/index."""
+        from rlm_tools_bsl.bsl_index import get_index_dir_root
+
+        config_file = tmp_path / "service.json"
+        config_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(config_file))
+        monkeypatch.delenv("RLM_INDEX_DIR", raising=False)
+
+        assert get_index_dir_root() == tmp_path / "index"
+
+    def test_index_dir_root_rlm_index_dir_wins(self, _isolated_home, monkeypatch, tmp_path):
+        """When both env are set, RLM_INDEX_DIR (explicit override) wins."""
+        from rlm_tools_bsl.bsl_index import get_index_dir_root
+
+        config_file = tmp_path / "service.json"
+        config_file.write_text("{}", encoding="utf-8")
+        explicit_dir = tmp_path / "explicit_index"
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(config_file))
+        monkeypatch.setenv("RLM_INDEX_DIR", str(explicit_dir))
+
+        assert get_index_dir_root() == explicit_dir
+
+    def test_index_dir_root_default_when_no_env(self, _isolated_home):
+        """Both env unset → ~/.cache/rlm-tools-bsl (home fallback)."""
+        from pathlib import Path
+
+        from rlm_tools_bsl.bsl_index import get_index_dir_root
+
+        assert get_index_dir_root() == Path.home() / ".cache" / "rlm-tools-bsl"
+
+
+class TestIndexDirMigration:
+    """One-shot migration of legacy ~/.cache/rlm-tools-bsl/<hash>/ subdirs."""
+
+    @staticmethod
+    def _legacy_root(home):
+        return home / ".cache" / "rlm-tools-bsl"
+
+    @staticmethod
+    def _new_root(tmp_path):
+        config_dir = tmp_path / "service-cfg"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir, config_dir / "service.json"
+
+    def test_migrate_legacy_index_root_moves_db_subdirs_only(self, _isolated_home, monkeypatch, tmp_path):
+        """Move only subdirs containing bsl_index.db / method_index.db."""
+        from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+
+        legacy = self._legacy_root(_isolated_home)
+        legacy.mkdir(parents=True)
+        # hash1 has bsl_index.db → migrate
+        (legacy / "hash1").mkdir()
+        (legacy / "hash1" / "bsl_index.db").write_bytes(b"db1")
+        (legacy / "hash1" / "bsl_index.lock").write_bytes(b"")
+        # hash2 has method_index.db (legacy name) → migrate
+        (legacy / "hash2").mkdir()
+        (legacy / "hash2" / "method_index.db").write_bytes(b"db2")
+        # hash3 has only file_index.json → NOT a real index, leave alone
+        (legacy / "hash3").mkdir()
+        (legacy / "hash3" / "file_index.json").write_text("{}")
+        # loose file at root → leave alone
+        (legacy / "loose_file.txt").write_text("x")
+
+        config_dir, config_file = self._new_root(tmp_path)
+        config_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(config_file))
+
+        moved = migrate_legacy_index_root()
+
+        assert moved == 2
+        new_root = config_dir / "index"
+        assert (new_root / "hash1" / "bsl_index.db").read_bytes() == b"db1"
+        assert (new_root / "hash2" / "method_index.db").read_bytes() == b"db2"
+        # Source for migrated dirs is gone
+        assert not (legacy / "hash1").exists()
+        assert not (legacy / "hash2").exists()
+        # Non-index leftovers remain
+        assert (legacy / "hash3" / "file_index.json").exists()
+        assert (legacy / "loose_file.txt").exists()
+
+    def test_migrate_legacy_index_root_idempotent(self, _isolated_home, monkeypatch, tmp_path):
+        """Second call returns 0 without error."""
+        from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+
+        legacy = self._legacy_root(_isolated_home)
+        legacy.mkdir(parents=True)
+        (legacy / "hashX").mkdir()
+        (legacy / "hashX" / "bsl_index.db").write_bytes(b"x")
+
+        config_dir, config_file = self._new_root(tmp_path)
+        config_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(config_file))
+
+        first = migrate_legacy_index_root()
+        second = migrate_legacy_index_root()
+
+        assert first == 1
+        assert second == 0
+        assert (config_dir / "index" / "hashX" / "bsl_index.db").exists()
+
+    def test_migrate_legacy_index_root_skip_when_target_exists(self, _isolated_home, monkeypatch, tmp_path):
+        """If new_root/<hash> already exists, do not overwrite."""
+        from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+
+        legacy = self._legacy_root(_isolated_home)
+        legacy.mkdir(parents=True)
+        (legacy / "hashY").mkdir()
+        (legacy / "hashY" / "bsl_index.db").write_bytes(b"old")
+
+        config_dir, config_file = self._new_root(tmp_path)
+        config_file.write_text("{}", encoding="utf-8")
+        new_root = config_dir / "index"
+        (new_root / "hashY").mkdir(parents=True)
+        (new_root / "hashY" / "bsl_index.db").write_bytes(b"new")
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(config_file))
+
+        moved = migrate_legacy_index_root()
+
+        assert moved == 0
+        # Target untouched (still "new")
+        assert (new_root / "hashY" / "bsl_index.db").read_bytes() == b"new"
+        # Source remains in legacy (we did not delete it)
+        assert (legacy / "hashY" / "bsl_index.db").read_bytes() == b"old"
+
+    def test_migrate_legacy_index_root_noop_when_RLM_INDEX_DIR_set(self, _isolated_home, monkeypatch, tmp_path):
+        """If RLM_INDEX_DIR is set the user chose explicitly — do not touch legacy."""
+        from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+
+        legacy = self._legacy_root(_isolated_home)
+        legacy.mkdir(parents=True)
+        (legacy / "hashZ").mkdir()
+        (legacy / "hashZ" / "bsl_index.db").write_bytes(b"z")
+
+        config_dir, config_file = self._new_root(tmp_path)
+        config_file.write_text("{}", encoding="utf-8")
+        explicit = tmp_path / "explicit_idx"
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(config_file))
+        monkeypatch.setenv("RLM_INDEX_DIR", str(explicit))
+
+        moved = migrate_legacy_index_root()
+
+        assert moved == 0
+        # Legacy untouched
+        assert (legacy / "hashZ" / "bsl_index.db").exists()
+        # Nothing created at new_root or explicit
+        assert not (config_dir / "index").exists()
+        assert not explicit.exists()
+
+    def test_migrate_legacy_index_root_noop_when_legacy_eq_new(self, _isolated_home, monkeypatch):
+        """Desktop install: legacy_root == new_root → NOOP, no errors."""
+        from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+
+        legacy = self._legacy_root(_isolated_home)
+        legacy.mkdir(parents=True)
+        (legacy / "hashD").mkdir()
+        (legacy / "hashD" / "bsl_index.db").write_bytes(b"d")
+
+        # No RLM_CONFIG_FILE → new_root is also ~/.cache/rlm-tools-bsl
+        monkeypatch.delenv("RLM_CONFIG_FILE", raising=False)
+        monkeypatch.delenv("RLM_INDEX_DIR", raising=False)
+
+        moved = migrate_legacy_index_root()
+
+        assert moved == 0
+        assert (legacy / "hashD" / "bsl_index.db").exists()
+
+    def test_migrate_legacy_index_root_noop_when_legacy_missing(self, _isolated_home, monkeypatch, tmp_path):
+        """Fresh install: legacy_root never created → NOOP."""
+        from rlm_tools_bsl.bsl_index import migrate_legacy_index_root
+
+        config_dir, config_file = self._new_root(tmp_path)
+        config_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("RLM_CONFIG_FILE", str(config_file))
+
+        # Legacy root does NOT exist (no .cache/rlm-tools-bsl created)
+        legacy = self._legacy_root(_isolated_home)
+        assert not legacy.exists()
+
+        moved = migrate_legacy_index_root()
+
+        assert moved == 0
+
+
 # ---------------------------------------------------------------------------
 # Helper for resolving pathlib.Path from base_path string
 # ---------------------------------------------------------------------------

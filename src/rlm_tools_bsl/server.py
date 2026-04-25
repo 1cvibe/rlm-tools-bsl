@@ -1697,6 +1697,25 @@ def main():
             getattr(mcp.settings, "port", "?"),
         )
 
+    # One-shot per server start: migrate legacy index directories from the
+    # pre-v1.9.2 home-based location into the new RLM_CONFIG_FILE-aware root.
+    # NOOP for desktop installs and Docker (legacy_root == new_root).
+    try:
+        from rlm_tools_bsl.bsl_index import (
+            get_index_dir_root,
+            migrate_legacy_index_root,
+        )
+
+        moved = migrate_legacy_index_root()
+        if moved:
+            logger.info(
+                "migrate_legacy_index_root: migrated_legacy_index_dirs=%d to=%s",
+                moved,
+                get_index_dir_root(),
+            )
+    except Exception as exc:
+        logger.warning("migrate_legacy_index_root failed: %s", exc)
+
     # One-shot per server start: clean up stale project caches. Only runs for
     # actual server startup (stdio or streamable-http) — not for --version or
     # `service` sub-commands, which are short-lived utilities.

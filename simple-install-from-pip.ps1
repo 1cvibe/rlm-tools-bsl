@@ -74,6 +74,17 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+# --- Early PATH prepend: ensure uv tool bin dir is visible in this session ---
+# Otherwise an existing rlm-tools-bsl installation may not be detected (and
+# stop/uninstall would be skipped), even though `uv tool install` placed the
+# binary in `uv tool dir --bin` long ago. Prepend BEFORE the existence check.
+$uvBinDirEarly = (& uv tool dir --bin 2>$null)
+if ($uvBinDirEarly -and (Test-Path $uvBinDirEarly)) {
+    if (($env:PATH -split ';') -notcontains $uvBinDirEarly) {
+        $env:PATH = "$uvBinDirEarly;$env:PATH"
+    }
+}
+
 # --- Step 1: Stop and uninstall existing service if running ---
 $isUpdate = $false
 if (Get-Command rlm-tools-bsl -ErrorAction SilentlyContinue) {
@@ -101,19 +112,40 @@ if ($isUpdate) {
     Write-Host "=== Step 1: Install rlm-tools-bsl from PyPI ===" -ForegroundColor Cyan
 }
 
-$uvInstallArgs = @("tool", "install", "rlm-tools-bsl[service]", "--force", "--upgrade")
+# Cleanup stale dist-info / .pth from global+user site-packages.
+# Windows pythonservice.exe loads from global Python's site-packages, so a
+# stale dist-info silently shadows the new wheel.
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+$exePath = if ($pythonCmd) { $pythonCmd.Source } else { "python" }
+$globalSitePackages = & $exePath -c "import site; print(site.getsitepackages()[0])" 2>$null
+$userSitePackages = & $exePath -c "import site; print(site.getusersitepackages())" 2>$null
+
+foreach ($sp in @($globalSitePackages, $userSitePackages)) {
+    if (-not $sp -or -not (Test-Path $sp)) { continue }
+    Get-ChildItem -Path $sp -Directory -Filter "*rlm_tools_bsl*" -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "  Removing stale: $($_.FullName)" -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $_.FullName
+    }
+    Get-ChildItem -Path $sp -File -Filter "*rlm_tools_bsl*" -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "  Removing stale: $($_.FullName)" -ForegroundColor Yellow
+        Remove-Item -Force $_.FullName
+    }
+}
+
+# Force a fresh wheel pull from PyPI.
+& uv cache clean rlm-tools-bsl
+
+$uvInstallArgs = @("tool", "install", "rlm-tools-bsl[service]", "--force", "--reinstall", "--upgrade")
 if ($NativeTls) { $uvInstallArgs += "--native-tls" }
 & uv @uvInstallArgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Installation failed. If you see TLS certificate errors, re-run with -NativeTls flag."
+    Write-Error "Installation failed. If you see TLS certificate errors, re-run with -NativeTls flag. For corporate networks behind a proxy that replaces TLS certificates, -NativeTls makes uv use system trust store."
     exit 1
 }
 
 # Also update the global Python that the Windows service uses.
 # shutil.which() in _service_win.py finds this exe, not the uv tool one.
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-$globalExe = if ($pythonCmd) { $pythonCmd.Source } else { "" }
-$globalPython = if ($globalExe) { & $globalExe -c "import sys; print(sys.executable)" 2>$null } else { "" }
+$globalPython = if ($exePath) { & $exePath -c "import sys; print(sys.executable)" 2>$null } else { "" }
 if ($globalPython -and (Test-Path $globalPython)) {
     Write-Host "Updating global Python package ($globalPython)..." -ForegroundColor Cyan
     $uvPipArgs = @("pip", "install", "rlm-tools-bsl", "--upgrade", "--python", $globalPython)
@@ -167,19 +199,21 @@ Write-Host ""
 Write-Host "=== Step 4: Verify ===" -ForegroundColor Cyan
 Write-Host "Waiting for server to start (watchdog may need up to 10s)..."
 
-$url = "http://${BindHost}:${Port}/mcp"
+# /health is lightweight (does not create an MCP session), /mcp is the real endpoint.
+$healthUrl = "http://${BindHost}:${Port}/health"
+$mcpUrl = "http://${BindHost}:${Port}/mcp"
 $ok = $false
 for ($attempt = 1; $attempt -le 4; $attempt++) {
     Start-Sleep -Seconds 3
     try {
-        $response = Invoke-WebRequest -Uri $url -Method GET -TimeoutSec 5 -ErrorAction Stop
-        Write-Host "Server is responding (HTTP $($response.StatusCode)). OK." -ForegroundColor Green
+        $response = Invoke-WebRequest -Uri $healthUrl -Method GET -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        Write-Host "Server responding (HTTP $($response.StatusCode)). OK." -ForegroundColor Green
         $ok = $true
         break
     } catch {
         if ($null -ne $_.Exception.Response) {
             $code = [int]$_.Exception.Response.StatusCode
-            Write-Host "Server is responding (HTTP $code). OK." -ForegroundColor Green
+            Write-Host "Server responding (HTTP $code). OK." -ForegroundColor Green
             $ok = $true
             break
         }
@@ -190,8 +224,9 @@ for ($attempt = 1; $attempt -le 4; $attempt++) {
 }
 
 if (-not $ok) {
-    Write-Warning "Server is not responding at $url after 4 attempts"
+    Write-Warning "Server not responding at $healthUrl after 4 attempts"
     Write-Warning "Check status: rlm-tools-bsl service status"
+    Write-Warning "Logs:         ~/.config/rlm-tools-bsl/logs/server.log"
     exit 1
 }
 
@@ -201,11 +236,12 @@ Write-Host " Done! HTTP MCP server is running." -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Version:  $(& rlm-tools-bsl --version 2>&1)"
-Write-Host "Endpoint: $url"
+Write-Host "Endpoint: $mcpUrl"
+Write-Host "Health:   $healthUrl"
 Write-Host ""
 Write-Host "Add to .claude.json / mcp.json:"
 Write-Host ""
-Write-Host "{`n  `"mcpServers`": {`n    `"rlm-tools-bsl`": {`n      `"type`": `"http`",`n      `"url`": `"$url`"`n    }`n  }`n}"
+Write-Host "{`n  `"mcpServers`": {`n    `"rlm-tools-bsl`": {`n      `"type`": `"http`",`n      `"url`": `"$mcpUrl`"`n    }`n  }`n}"
 Write-Host ""
 Write-Host "Service management:"
 Write-Host "  rlm-tools-bsl service status"

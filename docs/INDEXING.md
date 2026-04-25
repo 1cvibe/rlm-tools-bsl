@@ -50,13 +50,25 @@
 
 | Переменная                    | По умолчанию              | Описание                                                                                                                                                                                                                                                  |
 | ----------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RLM_INDEX_DIR`               | `~/.cache/rlm-tools-bsl/` | Каталог хранения индексов (Linux: `/home/user/.cache/rlm-tools-bsl/`, Windows: `C:\Users\user\.cache\rlm-tools-bsl\`). Внутри создаётся подкаталог с хешем пути конфигурации, например: `C:\Users\user\.cache\rlm-tools-bsl\a3f8b2c1d4e5\bsl_index.db` |
+| `RLM_INDEX_DIR`               | см. ниже                  | Каталог хранения индексов. **Precedence (v1.9.2+):** ① `RLM_INDEX_DIR` — явный override; ② `dirname(RLM_CONFIG_FILE)/index/` если задан `RLM_CONFIG_FILE` (для Windows-службы это пишет рядом с config/logs/cache, а не в `system32`); ③ `~/.cache/rlm-tools-bsl/` (Linux/macOS desktop, Windows desktop). Внутри создаётся подкаталог с хешем пути конфигурации, например: `<root>/a3f8b2c1d4e5/bsl_index.db` |
 | `RLM_INDEX_MAX_AGE_DAYS`      | `7`                       | Порог предупреждения о возрасте индекса (дни). Если индекс старше — статус `STALE_AGE`                                                                                                                                                                    |
 | `RLM_INDEX_SAMPLE_SIZE`       | `5`                       | Количество файлов для выборочной проверки свежести. `0` — отключить проверку                                                                                                                                                                              |
 | `RLM_INDEX_SAMPLE_THRESHOLD`  | `30`                      | Минимальное число модулей в индексе, при котором выполняется выборочная проверка                                                                                                                                                                          |
 | `RLM_INDEX_SKIP_SAMPLE_HOURS` | `24`                      | Если индекс моложе этого порога (часы), выборочная проверка пропускается                                                                                                                                                                                  |
 
 Переменные можно задать в `.env` файле или в окружении системы.
+
+### Расположение индекса при установке как Windows-служба
+
+Начиная с v1.9.2, если сервер запущен как Windows-служба под LocalSystem (стандартный сценарий `rlm-tools-bsl service install --env <path>`), индексы автоматически пишутся в `dirname(RLM_CONFIG_FILE)/index/`, рядом с `config/logs/cache`. До v1.9.2 индексы уезжали в профиль LocalSystem (`C:\Windows\System32\config\systemprofile\.cache\rlm-tools-bsl\`) и фактически терялись при следующем апгрейде службы.
+
+**Авто-миграция при первом старте v1.9.2.** Если в legacy-локации (`~/.cache/rlm-tools-bsl/<hash>/`) обнаруживаются папки с `bsl_index.db` или `method_index.db`, и новый root отличается (есть `RLM_CONFIG_FILE` без явного `RLM_INDEX_DIR`), такие папки автоматически переезжают в новый root. В логах одна строка: `migrate_legacy_index_root: migrated_legacy_index_dirs=N to=<new_root>`. На последующих запусках операция NOOP. Идемпотентна, не перезаписывает уже существующий индекс в целевой локации, не трогает legacy при заданном `RLM_INDEX_DIR` (явный пользовательский override уважается).
+
+Покрытые точки запуска: server.py (startup), docker-entrypoint.sh (перед auto-update индексов зарегистрированных проектов), CLI `rlm-bsl-index index build|update|info|drop`.
+
+### Docker-рекомендация для `RLM_CONFIG_FILE`
+
+В дефолтном `docker-compose.example.yml` `RLM_CONFIG_FILE` **не задан**: индексы лежат в `/home/rlm/.cache/rlm-tools-bsl/` (volume `rlm-index-cache`), поведение прежнее. Если же вы задаёте `RLM_CONFIG_FILE` явно (нестандартный сетап), то без `RLM_INDEX_DIR` индексы уедут в `dirname(RLM_CONFIG_FILE)/index/` — обычно это volume `rlm-config`, что нежелательно (медленнее, смешивается с конфигом). Рекомендация: либо НЕ задавайте `RLM_CONFIG_FILE` в Docker, либо явно задайте `RLM_INDEX_DIR=/home/rlm/.cache/rlm-tools-bsl`, чтобы индексы остались в volume `rlm-index-cache`.
 
 ## 3. MCP-тул `rlm_index`
 
