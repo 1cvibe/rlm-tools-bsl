@@ -598,6 +598,110 @@ _PREDEFINED_CATEGORIES: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Module-level helpers shared between bulk collector and pointwise refresh
+# ---------------------------------------------------------------------------
+
+# CF XML filename hints by host category (used by _find_metadata_xml fallback)
+_CF_XML_HINTS: dict[str, str] = {
+    "Documents": "Document",
+    "Catalogs": "Catalog",
+    "InformationRegisters": "RecordSet",
+    "AccumulationRegisters": "RecordSet",
+    "AccountingRegisters": "RecordSet",
+    "ChartsOfCharacteristicTypes": "ChartOfCharacteristicTypes",
+}
+
+
+def _find_metadata_xml(obj_dir: Path, category: str) -> Path | None:
+    """Find metadata XML for an object directory using all known layouts.
+
+    Priority order:
+        1. EDT  ``<obj_dir>/<name>.mdo``
+        2. CF sibling  ``<obj_dir>.parent/<name>.xml``  (works even if obj_dir
+           does not physically exist — Path.parent does not require existence)
+        3. CF Ext hint  ``<obj_dir>/Ext/<Hint>.xml``
+        4. CF Ext fallback — first ``*.xml`` in ``<obj_dir>/Ext``
+    """
+    obj_name = obj_dir.name
+    mdo = obj_dir / f"{obj_name}.mdo"
+    if mdo.is_file():
+        return mdo
+    sibling_xml = obj_dir.parent / f"{obj_name}.xml"
+    if sibling_xml.is_file():
+        return sibling_xml
+    hint = _CF_XML_HINTS.get(category)
+    if hint:
+        cf = obj_dir / "Ext" / f"{hint}.xml"
+        if cf.is_file():
+            return cf
+    ext_dir = obj_dir / "Ext"
+    if ext_dir.is_dir():
+        for fp in sorted(ext_dir.iterdir()):
+            if fp.suffix.lower() == ".xml" and fp.is_file():
+                return fp
+    return None
+
+
+# Categories that host per-object Commands (Catalogs/X/Commands/...)
+_CMD_HOST_CATS: tuple[str, ...] = (
+    "Catalogs",
+    "Documents",
+    "InformationRegisters",
+    "AccumulationRegisters",
+    "AccountingRegisters",
+    "ChartsOfCharacteristicTypes",
+    "ChartsOfAccounts",
+    "ChartsOfCalculationTypes",
+    "BusinessProcesses",
+    "Tasks",
+    "ExchangePlans",
+    "Reports",
+    "DataProcessors",
+)
+
+# ---------------------------------------------------------------------------
+# Pointwise incremental refresh — eligibility whitelist
+# ---------------------------------------------------------------------------
+# Categorical tables (object_attributes / predefined_items / object_synonyms /
+# metadata_references). All listed categories must be fully covered by per-object
+# refresh helpers, otherwise stale rows remain in tables not handled by the
+# pointwise path.
+_POINTWISE_ELIGIBLE_GROUP_A: frozenset[str] = frozenset(
+    {
+        "Catalogs",
+        "Documents",
+        "InformationRegisters",
+        "AccumulationRegisters",
+        "AccountingRegisters",
+        "ChartsOfAccounts",
+    }
+)
+# NB: ChartsOfCharacteristicTypes intentionally NOT in whitelist — it populates
+# the dedicated `characteristic_types` table via parse_pvh_characteristics; that
+# requires extra per-object support and is left for a future commit.
+
+# Global tables (one row per object, no `category` column).
+_POINTWISE_ELIGIBLE_GROUP_B: frozenset[str] = frozenset(
+    {
+        "EventSubscriptions",
+        "ScheduledJobs",
+        "XDTOPackages",
+    }
+)
+
+# Soft thresholds for falling back to category-wide rescan when too many objects
+# changed at once (tuning candidates — adjust based on real-project telemetry).
+_POINTWISE_MAX_OBJECTS = 50
+_POINTWISE_MAX_RATIO = 0.5
+
+# Map: Group B category -> SQL table that stores its rows.
+_GLOBAL_TABLE_BY_CATEGORY: dict[str, str] = {
+    "EventSubscriptions": "event_subscriptions",
+    "ScheduledJobs": "scheduled_jobs",
+    "XDTOPackages": "xdto_packages",
+}
+
+# ---------------------------------------------------------------------------
 # Git utilities for incremental delta detection
 # ---------------------------------------------------------------------------
 
@@ -1921,40 +2025,8 @@ def _collect_metadata_tables(
         )
 
     # --- Level-11: Object attributes (реквизиты, измерения, ресурсы, колонки ТЧ) ---
-    # Best-effort CF XML suffix hints (first attempt, NOT authoritative)
-    _CF_XML_HINTS: dict[str, str] = {
-        "Documents": "Document",
-        "Catalogs": "Catalog",
-        "InformationRegisters": "RecordSet",
-        "AccumulationRegisters": "RecordSet",
-        "AccountingRegisters": "RecordSet",
-        "ChartsOfCharacteristicTypes": "ChartOfCharacteristicTypes",
-    }
-
-    def _find_metadata_xml(obj_dir: Path, category: str) -> Path | None:
-        """Find metadata XML using robust fallback strategy."""
-        obj_name = obj_dir.name
-        # EDT: Name/Name.mdo
-        mdo = obj_dir / f"{obj_name}.mdo"
-        if mdo.is_file():
-            return mdo
-        # CF variant 1: Category/Name.xml (sibling file next to folder)
-        sibling_xml = obj_dir.parent / f"{obj_name}.xml"
-        if sibling_xml.is_file():
-            return sibling_xml
-        # CF variant 2: Name/Ext/{Hint}.xml
-        hint = _CF_XML_HINTS.get(category)
-        if hint:
-            cf = obj_dir / "Ext" / f"{hint}.xml"
-            if cf.is_file():
-                return cf
-        # CF fallback: first XML in Ext/
-        ext_dir = obj_dir / "Ext"
-        if ext_dir.is_dir():
-            for fp in sorted(ext_dir.iterdir()):
-                if fp.suffix.lower() == ".xml" and fp.is_file():
-                    return fp
-        return None
+    # NB: _find_metadata_xml + _CF_XML_HINTS теперь module-level (см. начало файла)
+    # — нужны и pointwise-пути в _update_git_fast.
 
     # Determine which attribute categories to scan
     _active_attr_cats = set(_ATTR_CATEGORIES) if collect_attrs_categories is None else collect_attrs_categories
@@ -2339,21 +2411,7 @@ def _collect_metadata_tables(
                             )
 
         # Per-object commands: Catalogs/X/Commands/*.xml or Catalogs/X/Commands/Y/Y.command
-        _CMD_HOST_CATS = (
-            "Catalogs",
-            "Documents",
-            "InformationRegisters",
-            "AccumulationRegisters",
-            "AccountingRegisters",
-            "ChartsOfCharacteristicTypes",
-            "ChartsOfAccounts",
-            "ChartsOfCalculationTypes",
-            "BusinessProcesses",
-            "Tasks",
-            "ExchangePlans",
-            "Reports",
-            "DataProcessors",
-        )
+        # _CMD_HOST_CATS module-level — переиспользуется pointwise (_emit_object_command_refs)
         for category in _CMD_HOST_CATS:
             if not _ref_allowed(category):
                 continue
@@ -2641,6 +2699,954 @@ def _insert_metadata_tables_selective(
             )
         except sqlite3.OperationalError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Pointwise incremental refresh — per-object updates inside git fast path
+# ---------------------------------------------------------------------------
+# Architecture: see plan tmp/wiggly-hopping-ember.md.  These helpers replace the
+# category-wide DELETE+rescan in _update_git_fast for a narrow whitelist of
+# categories so that touching one object does not trigger a 1000-object scan.
+
+
+class PointwiseRefreshFailed(Exception):
+    """Raised inside _refresh_object* when a single-object update cannot
+    complete (missing/empty file, parse error, ...).  The dispatcher rolls
+    back the SAVEPOINT and routes the category to the bulk fallback path.
+    """
+
+    def __init__(self, category: str, object_name: str, reason: str) -> None:
+        super().__init__(f"{category}/{object_name}: {reason}")
+        self.category = category
+        self.object_name = object_name
+        self.reason = reason
+
+
+class _PointwiseTelemetry:
+    """Lightweight counter aggregator used for one INFO line per update."""
+
+    def __init__(self) -> None:
+        self.pointwise_categories = 0
+        self.pointwise_objects = 0
+        self.fallback_categories = 0
+        self.reasons: dict[str, int] = {}
+
+    def note_pointwise(self, _category: str, n_objects: int) -> None:
+        self.pointwise_categories += 1
+        self.pointwise_objects += n_objects
+
+    def note_fallback(self, _category: str, reason: str, _exc: Exception | None = None) -> None:
+        self.fallback_categories += 1
+        self.reasons[reason] = self.reasons.get(reason, 0) + 1
+
+
+def _read_text(fp: Path) -> str | None:
+    try:
+        return fp.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+
+
+def _resolve_object_from_path(rel_path: str, base_path: str) -> tuple[str | None, str | None]:
+    """Resolve metadata path → (category, object_name).
+
+    Использует parse_bsl_path как primary, но НЕ ограничивается им: parse_bsl_path
+    знает только категории из format_detector.METADATA_CATEGORIES (категории-хосты
+    BSL-модулей), и не понимает чисто метаданные категории — EventSubscriptions,
+    ScheduledJobs, FunctionalOptions, DefinedTypes и т.п. Для них fallback берёт
+    первый сегмент пути и сверяет с _CATEGORY_RU (полный список indexable категорий).
+
+    Layouts:
+      EDT:           Category/<Name>/<Name>.mdo                — len>=3, name = parts[1]
+      CF Ext:        Category/<Name>/Ext/...                   — len>=3, name = parts[1]
+      CF sibling:    Category/<Name>.xml                       — len==2, name = stem
+      Root file:     Configuration.xml / outside categories    — return (None, None)
+
+    Возвращает (category, object_name) либо (category, None) для нераспознанного
+    файла внутри категории, либо (None, None) для путей вне категорий.
+    """
+    info = parse_bsl_path(rel_path, base_path)
+    if info.category and info.object_name:
+        return (info.category, info.object_name)
+
+    rel_parts = rel_path.replace("\\", "/").split("/")
+    if not rel_parts:
+        return (None, None)
+
+    # parse_bsl_path может не знать категорию (отсутствует в METADATA_CATEGORIES) —
+    # fallback на первый сегмент пути с проверкой по _CATEGORY_RU.
+    category = info.category
+    if not category and rel_parts[0] in _CATEGORY_RU:
+        category = rel_parts[0]
+    if not category:
+        return (None, None)
+
+    # CF sibling-only: Category/<Name>.xml (без объектного подкаталога).
+    if len(rel_parts) == 2 and rel_parts[0] == category:
+        filename = rel_parts[1]
+        if filename.lower().endswith(".xml"):
+            return (category, filename[: -len(".xml")])
+
+    # EDT mdo / CF Ext / любой layout с объектным подкаталогом.
+    if len(rel_parts) >= 3 and rel_parts[0] == category:
+        return (category, rel_parts[1])
+
+    return (category, None)
+
+
+def _build_changed_objects(
+    metadata_paths: set[str],
+    base_path: str,
+) -> tuple[dict[str, set[str]], set[str]]:
+    """Resolve flat list of metadata paths into ``{category: {object_names}}``.
+
+    Categories whose roots/unparseable paths cannot resolve to an object_name
+    are returned in *unresolved* — those force the bulk fallback path.
+    """
+    changed: dict[str, set[str]] = {}
+    unresolved: set[str] = set()
+    for path in metadata_paths:
+        category, object_name = _resolve_object_from_path(path, base_path)
+        if category is None:
+            continue
+        if object_name is None:
+            unresolved.add(category)
+            continue
+        changed.setdefault(category, set()).add(object_name)
+    return changed, unresolved
+
+
+def _get_optional_tables_state(conn: sqlite3.Connection) -> dict[str, bool]:
+    """Single check of optional tables/features used by the pointwise dispatcher.
+
+    Returns dict with: has_synonyms (feature flag), has_synonyms_table (physical
+    table exists), has_metadata_references_table (physical table exists).
+    """
+    row = conn.execute("SELECT value FROM index_meta WHERE key='has_synonyms'").fetchone()
+    if row is None:
+        has_synonyms = True  # default for legacy
+    else:
+        try:
+            value = row["value"]
+        except (IndexError, KeyError):
+            value = row[0]
+        has_synonyms = str(value) == "1"
+    existing = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('object_synonyms', 'metadata_references')"
+        )
+    }
+    return {
+        "has_synonyms": has_synonyms,
+        "has_synonyms_table": "object_synonyms" in existing,
+        "has_metadata_references_table": "metadata_references" in existing,
+    }
+
+
+def _category_object_count(conn: sqlite3.Connection, category: str) -> int:
+    """Inventory size used by the soft (relative) threshold check.
+
+    The source table depends on which table the category populates: Group A
+    rows go into ``object_attributes``/``predefined_items`` (with category
+    column), Group B rows go into dedicated single-table-per-category storage.
+    """
+    if category in {
+        "Catalogs",
+        "Documents",
+        "InformationRegisters",
+        "AccumulationRegisters",
+        "AccountingRegisters",
+    }:
+        sql = "SELECT COUNT(DISTINCT object_name) FROM object_attributes WHERE category=?"
+        params: tuple = (category,)
+    elif category == "ChartsOfAccounts":
+        sql = "SELECT COUNT(DISTINCT object_name) FROM predefined_items WHERE category=?"
+        params = (category,)
+    elif category == "EventSubscriptions":
+        sql, params = "SELECT COUNT(*) FROM event_subscriptions", ()
+    elif category == "ScheduledJobs":
+        sql, params = "SELECT COUNT(*) FROM scheduled_jobs", ()
+    elif category == "XDTOPackages":
+        sql, params = "SELECT COUNT(*) FROM xdto_packages", ()
+    else:
+        return 0
+    try:
+        row = conn.execute(sql, params).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except sqlite3.OperationalError:
+        return 0  # legacy index without the table → relative threshold off
+
+
+def _can_use_pointwise(
+    category: str,
+    objects: set[str],
+    unresolved: set[str],
+    conn: sqlite3.Connection,
+    telemetry: _PointwiseTelemetry,
+) -> bool:
+    """Decide pointwise vs bulk fallback for a single category."""
+    if category not in _POINTWISE_ELIGIBLE_GROUP_A and category not in _POINTWISE_ELIGIBLE_GROUP_B:
+        telemetry.note_fallback(category, "not_eligible")
+        return False
+    if category in unresolved:
+        telemetry.note_fallback(category, "unresolved_root")
+        return False
+    if not objects:
+        telemetry.note_fallback(category, "no_objects")
+        return False
+    total = _category_object_count(conn, category)
+    if total and len(objects) >= _POINTWISE_MAX_RATIO * total:
+        telemetry.note_fallback(category, "threshold_relative")
+        return False
+    if len(objects) >= _POINTWISE_MAX_OBJECTS:
+        telemetry.note_fallback(category, "threshold_absolute")
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Pointwise — line-number lookup for attribute-level metadata_references
+# (полный аналог _line_for_ref / _emit_refs из _collect_metadata_tables)
+# ---------------------------------------------------------------------------
+_POINTWISE_NAME_RE_CACHE: dict[str, re.Pattern] = {}
+
+
+def _pointwise_name_re(name: str) -> re.Pattern:
+    pat = _POINTWISE_NAME_RE_CACHE.get(name)
+    if pat is None:
+        pat = re.compile(rf"<\s*[Nn]ame\s*>{re.escape(name)}<\s*/\s*[Nn]ame\s*>")
+        _POINTWISE_NAME_RE_CACHE[name] = pat
+    return pat
+
+
+def _line_for_ref_pointwise(ref: dict, content_lines: list[str] | None) -> int | None:
+    if content_lines is None:
+        return None
+    suffix = ref.get("used_in_suffix", "")
+    if not suffix:
+        return None
+    target_name: str | None = None
+    if suffix.startswith(("Attribute.", "Dimension.", "Resource.")):
+        parts = suffix.split(".")
+        if len(parts) >= 2:
+            target_name = parts[1]
+    elif suffix.startswith("TabularSection.") and ".Attribute." in suffix:
+        after = suffix.split(".Attribute.", 1)[1]
+        target_name = after.split(".", 1)[0]
+    if not target_name:
+        return None
+    pat = _pointwise_name_re(target_name)
+    for idx, line in enumerate(content_lines, start=1):
+        if pat.search(line):
+            return idx
+    return None
+
+
+def _insert_references_for_object(
+    conn: sqlite3.Connection,
+    source_category: str,
+    source_object: str,
+    parsed_refs: list[dict],
+    rel_path: str,
+    *,
+    content_lines: list[str] | None = None,
+) -> None:
+    """Полный аналог локального _emit_refs из _collect_metadata_tables.
+
+    Применяет _CATEGORY_TO_TYPE_PREFIX, пропускает refs без ref_object,
+    собирает used_in (root + optional suffix), вычисляет line через
+    _line_for_ref_pointwise. Caller обязан проверить has_metadata_references_table.
+    """
+    if not parsed_refs:
+        return
+    type_prefix = _CATEGORY_TO_TYPE_PREFIX.get(source_category, source_category)
+    used_in_root = f"{type_prefix}.{source_object}"
+    rows: list[tuple] = []
+    for ref in parsed_refs:
+        ref_object = ref.get("ref_object", "")
+        if not ref_object:
+            continue
+        suffix = ref.get("used_in_suffix", "")
+        used_in = f"{used_in_root}.{suffix}" if suffix else used_in_root
+        line = _line_for_ref_pointwise(ref, content_lines)
+        rows.append(
+            (
+                source_object,
+                source_category,
+                ref_object,
+                ref.get("ref_kind", ""),
+                used_in,
+                rel_path,
+                line,
+            )
+        )
+    if rows:
+        conn.executemany(
+            "INSERT INTO metadata_references "
+            "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _insert_attributes_for_object(
+    conn: sqlite3.Connection,
+    category: str,
+    object_name: str,
+    parsed: dict,
+    rel_path: str,
+) -> None:
+    from rlm_tools_bsl.bsl_xml_parsers import normalize_type_string
+
+    rows: list[tuple] = []
+    for attr in parsed.get("attributes", []):
+        rows.append(
+            (
+                object_name,
+                category,
+                attr.get("name", ""),
+                attr.get("synonym", ""),
+                normalize_type_string(attr.get("type", "")),
+                "attribute",
+                None,
+                rel_path,
+            )
+        )
+    for dim in parsed.get("dimensions", []):
+        rows.append(
+            (
+                object_name,
+                category,
+                dim.get("name", ""),
+                dim.get("synonym", ""),
+                normalize_type_string(dim.get("type", "")),
+                "dimension",
+                None,
+                rel_path,
+            )
+        )
+    for res in parsed.get("resources", []):
+        rows.append(
+            (
+                object_name,
+                category,
+                res.get("name", ""),
+                res.get("synonym", ""),
+                normalize_type_string(res.get("type", "")),
+                "resource",
+                None,
+                rel_path,
+            )
+        )
+    for ts in parsed.get("tabular_sections", []):
+        ts_name = ts.get("name", "")
+        for ts_attr in ts.get("attributes", []):
+            rows.append(
+                (
+                    object_name,
+                    category,
+                    ts_attr.get("name", ""),
+                    ts_attr.get("synonym", ""),
+                    normalize_type_string(ts_attr.get("type", "")),
+                    "ts_attribute",
+                    ts_name,
+                    rel_path,
+                )
+            )
+    if rows:
+        conn.executemany(
+            "INSERT INTO object_attributes "
+            "(object_name, category, attr_name, attr_synonym, attr_type, "
+            "attr_kind, ts_name, source_file) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _find_predefined_file(base_path: str, category: str, object_name: str) -> Path | None:
+    """Найти файл с предопределёнными элементами объекта (CF: Ext/Predefined.xml,
+    EDT: <obj_dir>/<obj>.mdo)."""
+    obj_dir = Path(base_path) / category / object_name
+    cf = obj_dir / "Ext" / "Predefined.xml"
+    if cf.is_file():
+        return cf
+    mdo = obj_dir / f"{object_name}.mdo"
+    if mdo.is_file():
+        return mdo
+    return None
+
+
+def _insert_predefined_for_object(
+    conn: sqlite3.Connection,
+    category: str,
+    object_name: str,
+    items: list[dict],
+    rel_path: str,
+) -> None:
+    if not items:
+        return
+    rows: list[tuple] = []
+    for item in items:
+        types_json = json.dumps(item.get("types", []), ensure_ascii=False)
+        rows.append(
+            (
+                object_name,
+                category,
+                item.get("name", ""),
+                item.get("synonym", ""),
+                item.get("code", ""),
+                types_json,
+                1 if item.get("is_folder") else 0,
+                rel_path,
+            )
+        )
+    if rows:
+        conn.executemany(
+            "INSERT INTO predefined_items "
+            "(object_name, category, item_name, item_synonym, item_code, "
+            "types_json, is_folder, source_file) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _emit_predefined_refs(
+    conn: sqlite3.Connection,
+    category: str,
+    object_name: str,
+    items: list[dict],
+    rel_path: str,
+) -> None:
+    """Refs из types предопределённых (ref_kind='predefined_characteristic_type')."""
+    from rlm_tools_bsl.bsl_xml_parsers import canonicalize_type_ref
+
+    if not items:
+        return
+    type_prefix = _CATEGORY_TO_TYPE_PREFIX.get(category, category)
+    rows: list[tuple] = []
+    for item in items:
+        for type_str in item.get("types", []):
+            canon = canonicalize_type_ref(type_str)
+            if not canon:
+                continue
+            rows.append(
+                (
+                    object_name,
+                    category,
+                    canon,
+                    "predefined_characteristic_type",
+                    f"{type_prefix}.{object_name}.PredefinedItem.{item.get('name', '')}.Type",
+                    rel_path,
+                    None,
+                )
+            )
+    if rows:
+        conn.executemany(
+            "INSERT INTO metadata_references "
+            "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _emit_object_command_refs(
+    conn: sqlite3.Connection,
+    base_path: str,
+    category: str,
+    object_name: str,
+) -> None:
+    """Refs из per-object команд: Category/<obj>/Commands/* — ref_kind='command_parameter_type'."""
+    from rlm_tools_bsl.bsl_xml_parsers import parse_command_parameter_type
+
+    cmd_dir = Path(base_path) / category / object_name / "Commands"
+    if not cmd_dir.is_dir():
+        return
+    type_prefix = _CATEGORY_TO_TYPE_PREFIX.get(category, category)
+    rows: list[tuple] = []
+    for entry in sorted(cmd_dir.iterdir()):
+        cmd_files: list[Path] = []
+        if entry.is_file() and entry.suffix.lower() == ".xml":
+            cmd_files.append(entry)
+        elif entry.is_dir():
+            for cand in (entry / f"{entry.name}.command", entry / f"{entry.name}.mdo"):
+                if cand.is_file():
+                    cmd_files.append(cand)
+                    break
+        for cfp in cmd_files:
+            text = _read_text(cfp)
+            if not text:
+                continue
+            parsed_cmds = parse_command_parameter_type(text)
+            if not parsed_cmds:
+                continue
+            rel = cfp.relative_to(Path(base_path)).as_posix()
+            for ref_dict in parsed_cmds:
+                canon = ref_dict.get("ref_object", "")
+                cmd_name = ref_dict.get("command_name", "") or entry.stem
+                if not canon:
+                    continue
+                rows.append(
+                    (
+                        object_name,
+                        category,
+                        canon,
+                        "command_parameter_type",
+                        f"{type_prefix}.{object_name}.Command.{cmd_name}.CommandParameterType",
+                        rel,
+                        None,
+                    )
+                )
+    if rows:
+        conn.executemany(
+            "INSERT INTO metadata_references "
+            "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _insert_synonym_for_object(
+    conn: sqlite3.Connection,
+    category: str,
+    object_name: str,
+    parsed: dict,
+    rel_path: str,
+) -> None:
+    raw_synonym = parsed.get("synonym") or ""
+    if not raw_synonym:
+        return
+    prefix = _CATEGORY_RU.get(category, category)
+    synonym = f"{prefix}: {raw_synonym}"
+    conn.execute(
+        "INSERT INTO object_synonyms (object_name, category, synonym, file) VALUES (?, ?, ?, ?)",
+        (object_name, category, synonym, rel_path),
+    )
+
+
+def _refresh_object(
+    conn: sqlite3.Connection,
+    base_path: str,
+    category: str,
+    object_name: str,
+    opt: dict[str, bool],
+) -> None:
+    """Pointwise refresh — Group A category (Catalogs, Documents, registers, ChartsOfAccounts).
+
+    Удаляет старые строки во всех таблицах объекта и вставляет новые из
+    содержимого .mdo/.xml объекта. Если файл удалён — INSERT не выполняется.
+    """
+    from rlm_tools_bsl.bsl_xml_parsers import parse_metadata_xml, parse_predefined_items
+
+    # 1. DELETE по таблицам объекта.
+    conn.execute(
+        "DELETE FROM object_attributes WHERE category=? AND object_name=?",
+        (category, object_name),
+    )
+    conn.execute(
+        "DELETE FROM predefined_items WHERE category=? AND object_name=?",
+        (category, object_name),
+    )
+    if opt.get("has_metadata_references_table"):
+        conn.execute(
+            "DELETE FROM metadata_references WHERE source_category=? AND source_object=?",
+            (category, object_name),
+        )
+    if opt.get("has_synonyms") and opt.get("has_synonyms_table"):
+        conn.execute(
+            "DELETE FROM object_synonyms WHERE category=? AND object_name=?",
+            (category, object_name),
+        )
+
+    # 2. Найти файл объекта (EDT, CF sibling, CF Ext) — _find_metadata_xml сам
+    #    закрывает CF sibling-only через obj_dir.parent (Path.parent работает
+    #    даже на несуществующих путях).
+    obj_dir = Path(base_path) / category / object_name
+    file_path = _find_metadata_xml(obj_dir, category)
+    if file_path is None:
+        return  # объект удалён — DELETE уже сделан, выходим.
+
+    content = _read_text(file_path)
+    if not content:
+        raise PointwiseRefreshFailed(category, object_name, "empty content")
+    try:
+        parsed = parse_metadata_xml(content)
+    except Exception as exc:  # noqa: BLE001 — diagnostic shim
+        raise PointwiseRefreshFailed(category, object_name, f"parse error: {exc}") from exc
+    if not parsed:
+        raise PointwiseRefreshFailed(category, object_name, "parser returned empty")
+
+    rel = file_path.relative_to(Path(base_path)).as_posix()
+
+    # 4. Attributes (Group A subset с object_attributes).
+    if category in _ATTR_CATEGORIES:
+        _insert_attributes_for_object(conn, category, object_name, parsed, rel)
+
+    # 5. Predefined — отдельный source_file для CF (Predefined.xml).
+    if category in _PREDEFINED_CATEGORIES:
+        predefined_file = _find_predefined_file(base_path, category, object_name)
+        if predefined_file is not None:
+            pred_content = _read_text(predefined_file)
+            if pred_content:
+                try:
+                    items = parse_predefined_items(pred_content) or []
+                except Exception:  # noqa: BLE001
+                    items = []
+                pred_rel = predefined_file.relative_to(Path(base_path)).as_posix()
+                _insert_predefined_for_object(conn, category, object_name, items, pred_rel)
+                if opt.get("has_metadata_references_table"):
+                    _emit_predefined_refs(conn, category, object_name, items, pred_rel)
+
+    # 6. Synonyms (gated by feature + table existence).
+    if opt.get("has_synonyms") and opt.get("has_synonyms_table"):
+        _insert_synonym_for_object(conn, category, object_name, parsed, rel)
+
+    # 7-8. metadata_references — все DELETE/INSERT защищены has_metadata_references_table.
+    if opt.get("has_metadata_references_table"):
+        # Refs из parsed.references — bulk collector эмитит их ТОЛЬКО в loop по
+        # _ATTR_CATEGORIES ([bsl_index.py:1962-2055]). ChartsOfAccounts в этот loop
+        # не попадает (только в _PREDEFINED_CATEGORIES) — поэтому pointwise тоже
+        # не должен их эмитить, иначе CoA pointwise разойдётся с fresh full build.
+        if category in _ATTR_CATEGORIES:
+            _insert_references_for_object(
+                conn,
+                category,
+                object_name,
+                parsed.get("references", []),
+                rel,
+                content_lines=content.splitlines(),
+            )
+        if category in _CMD_HOST_CATS:
+            _emit_object_command_refs(conn, base_path, category, object_name)
+
+
+# ---------------------------------------------------------------------------
+# Pointwise — Group B (event_subscriptions / scheduled_jobs / xdto_packages)
+# ---------------------------------------------------------------------------
+
+
+def _find_global_metadata_file(base_path: str, category: str, object_name: str) -> Path | None:
+    """EventSubscriptions / ScheduledJobs: EDT (<obj>/<obj>.mdo) или CF sibling
+    (<Category>/<obj>.xml) или CF Ext fallback."""
+    obj_dir = Path(base_path) / category / object_name
+    return _find_metadata_xml(obj_dir, category)
+
+
+def _escape_for_sql_like(s: str) -> str:
+    """Escape SQL LIKE special chars (\\, %, _) using ``\\`` as ESCAPE char.
+
+    Used by deletion path to safely build prefix-match LIKE patterns from
+    user-provided category/object names without risking over-deletion when
+    the name contains ``_`` (single-char wildcard) or ``%`` (multi-char wildcard).
+    Backslashes are escaped FIRST so subsequent escape-prefixes are not double-escaped.
+    """
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _insert_global_object(
+    conn: sqlite3.Connection,
+    category: str,
+    parsed: dict,
+    rel_path: str,
+) -> None:
+    if category == "EventSubscriptions":
+        handler = parsed.get("handler") or ""
+        parts = handler.rsplit(".", 1)
+        handler_module = parts[0].replace("CommonModule.", "") if len(parts) > 1 else ""
+        handler_procedure = parts[-1] if parts else ""
+        source_types = parsed.get("source_types") or []
+        conn.execute(
+            "INSERT INTO event_subscriptions "
+            "(name, synonym, event, handler_module, handler_procedure, "
+            "source_types, source_count, file) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                parsed.get("name") or "",
+                parsed.get("synonym") or "",
+                parsed.get("event") or "",
+                handler_module,
+                handler_procedure,
+                json.dumps(source_types, ensure_ascii=False),
+                len(source_types),
+                rel_path,
+            ),
+        )
+    elif category == "ScheduledJobs":
+        method_name = parsed.get("method_name") or ""
+        parts = method_name.rsplit(".", 1)
+        handler_module = parts[0].replace("CommonModule.", "") if len(parts) > 1 else ""
+        handler_procedure = parts[-1] if parts else ""
+        restart = parsed.get("restart_on_failure") or {}
+        conn.execute(
+            "INSERT INTO scheduled_jobs "
+            "(name, synonym, method_name, handler_module, handler_procedure, "
+            "use, predefined, restart_count, restart_interval, file) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                parsed.get("name") or "",
+                parsed.get("synonym") or "",
+                method_name,
+                handler_module,
+                handler_procedure,
+                1 if parsed.get("use", True) else 0,
+                1 if parsed.get("predefined", False) else 0,
+                restart.get("count", 0),
+                restart.get("interval", 0),
+                rel_path,
+            ),
+        )
+
+
+def _insert_xdto_package(
+    conn: sqlite3.Connection,
+    parsed: dict,
+    rel_path: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO xdto_packages (name, namespace, types_json, file) VALUES (?, ?, ?, ?)",
+        (
+            parsed.get("name") or "",
+            parsed.get("namespace") or "",
+            json.dumps(parsed.get("types", []), ensure_ascii=False),
+            rel_path,
+        ),
+    )
+
+
+def _emit_event_subscription_source_refs(
+    conn: sqlite3.Connection,
+    parsed: dict,
+    rel_path: str,
+) -> None:
+    """Refs из source_types — ref_kind='event_subscription_source'."""
+    from rlm_tools_bsl.bsl_xml_parsers import canonicalize_type_ref
+
+    name = parsed.get("name") or ""
+    if not name:
+        return
+    rows: list[tuple] = []
+    for st in parsed.get("source_types") or []:
+        canon = canonicalize_type_ref(st)
+        if not canon:
+            continue
+        rows.append(
+            (
+                name,
+                "EventSubscriptions",
+                canon,
+                "event_subscription_source",
+                f"EventSubscription.{name}.Source",
+                rel_path,
+                None,
+            )
+        )
+    if rows:
+        conn.executemany(
+            "INSERT INTO metadata_references "
+            "(source_object, source_category, ref_object, ref_kind, used_in, path, line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _refresh_xdto_package(
+    conn: sqlite3.Connection,
+    base_path: str,
+    object_name: str,
+    opt: dict[str, bool],
+) -> None:
+    """Pointwise refresh для XDTOPackages: EDT (<obj>/<obj>.mdo + Package.xdto) или
+    CF sibling (XDTOPackages/<obj>.xml; Package.bin рядом игнорируется)."""
+    from rlm_tools_bsl.bsl_xml_parsers import parse_metadata_xml, parse_xdto_package_xml
+
+    pkg_dir = Path(base_path) / "XDTOPackages" / object_name
+    mdo = pkg_dir / f"{object_name}.mdo"
+    if mdo.is_file():
+        main_path: Path | None = mdo
+    else:
+        sibling = Path(base_path) / "XDTOPackages" / f"{object_name}.xml"
+        main_path = sibling if sibling.is_file() else None
+
+    # object_synonyms cleanup — всегда (bulk path делает category-wide DELETE,
+    # pointwise — точечно по (category, object_name)).
+    if opt.get("has_synonyms") and opt.get("has_synonyms_table"):
+        conn.execute(
+            "DELETE FROM object_synonyms WHERE category=? AND object_name=?",
+            ("XDTOPackages", object_name),
+        )
+
+    if main_path is None:
+        # Удаление: row.name могло быть != object_name (внутренний <Name> в XML),
+        # а row.file — любым из layouts, поддерживаемых _find_metadata_xml + bulk
+        # rglob: EDT <obj>/<obj>.mdo, CF sibling <obj>.xml, CF Ext <obj>/Ext/*.xml.
+        # Чистим по name + точным sibling-кандидатам + LIKE-prefix для всего,
+        # что лежит под <Category>/<object_name>/ (ловит произвольный CF Ext layout).
+        candidate_files = [
+            f"XDTOPackages/{object_name}/{object_name}.mdo",
+            f"XDTOPackages/{object_name}.xml",
+        ]
+        placeholders = ",".join("?" * len(candidate_files))
+        like_prefix = _escape_for_sql_like(f"XDTOPackages/{object_name}/") + "%"
+        conn.execute(
+            f"DELETE FROM xdto_packages WHERE name=? OR file IN ({placeholders}) "  # noqa: S608
+            f"OR file LIKE ? ESCAPE '\\'",
+            (object_name, *candidate_files, like_prefix),
+        )
+        if opt.get("has_metadata_references_table"):
+            conn.execute(
+                f"DELETE FROM metadata_references "  # noqa: S608
+                f"WHERE source_category=? AND (source_object=? "
+                f"OR path IN ({placeholders}) OR path LIKE ? ESCAPE '\\')",
+                ("XDTOPackages", object_name, *candidate_files, like_prefix),
+            )
+        return
+
+    main_content = _read_text(main_path)
+    if not main_content:
+        raise PointwiseRefreshFailed("XDTOPackages", object_name, "empty main content")
+
+    xdto_path = pkg_dir / "Package.xdto"
+    xdto_content = _read_text(xdto_path) if xdto_path.is_file() else ""
+    if xdto_content is None:
+        xdto_content = ""
+
+    try:
+        parsed = parse_xdto_package_xml(main_content, xdto_content)
+    except Exception as exc:  # noqa: BLE001
+        raise PointwiseRefreshFailed("XDTOPackages", object_name, f"parse error: {exc}") from exc
+    if not parsed:
+        raise PointwiseRefreshFailed("XDTOPackages", object_name, "parser returned empty")
+
+    rel = main_path.relative_to(Path(base_path)).as_posix()
+    parsed_name = parsed.get("name") or object_name
+    conn.execute(
+        "DELETE FROM xdto_packages WHERE name=? OR file=?",
+        (parsed_name, rel),
+    )
+    if opt.get("has_metadata_references_table"):
+        conn.execute(
+            "DELETE FROM metadata_references WHERE source_category=? AND (source_object=? OR path=?)",
+            ("XDTOPackages", parsed_name, rel),
+        )
+    _insert_xdto_package(conn, parsed, rel)
+    if opt.get("has_metadata_references_table"):
+        _insert_references_for_object(
+            conn,
+            "XDTOPackages",
+            parsed_name,
+            parsed.get("references", []) or [],
+            rel,
+        )
+
+    # object_synonyms — паритет с bulk (`_collect_object_synonyms` использует
+    # parse_metadata_xml, не parse_xdto_package_xml). Лишний разовый парсинг
+    # одного файла гарантирует совпадение Tier 5.
+    if opt.get("has_synonyms") and opt.get("has_synonyms_table"):
+        meta_parsed = parse_metadata_xml(main_content) or {}
+        _insert_synonym_for_object(conn, "XDTOPackages", object_name, meta_parsed, rel)
+
+
+def _refresh_global_object(
+    conn: sqlite3.Connection,
+    base_path: str,
+    category: str,
+    object_name: str,
+    opt: dict[str, bool],
+) -> None:
+    """Pointwise refresh — Group B (один объект / одна целевая таблица)."""
+    if category == "XDTOPackages":
+        _refresh_xdto_package(conn, base_path, object_name, opt)
+        return
+
+    from rlm_tools_bsl.bsl_xml_parsers import (
+        parse_event_subscription_xml,
+        parse_metadata_xml,
+        parse_scheduled_job_xml,
+    )
+
+    table = _GLOBAL_TABLE_BY_CATEGORY[category]
+    parser = parse_event_subscription_xml if category == "EventSubscriptions" else parse_scheduled_job_xml
+
+    # object_synonyms cleanup — всегда (Group B входит в _SYNONYM_CATEGORIES через
+    # _CATEGORY_RU; bulk path делает category-wide DELETE, pointwise — точечно).
+    if opt.get("has_synonyms") and opt.get("has_synonyms_table"):
+        conn.execute(
+            "DELETE FROM object_synonyms WHERE category=? AND object_name=?",
+            (category, object_name),
+        )
+
+    file_path = _find_global_metadata_file(base_path, category, object_name)
+    if file_path is None:
+        # Удаление: parsed недоступен, чистим по object_name И по возможным
+        # file-путям. row.name мог быть != object_name (внутренний <Name> в
+        # XML), а row.file — любой из layouts: EDT <obj>/<obj>.mdo, CF sibling
+        # <obj>.xml, CF Ext <obj>/Ext/*.xml (bulk-collector через rglob их
+        # поддерживает все). Чистим по name + точным sibling-кандидатам + LIKE
+        # prefix для всего, что лежит под <Category>/<object_name>/.
+        candidate_files = [
+            f"{category}/{object_name}/{object_name}.mdo",  # EDT
+            f"{category}/{object_name}.xml",  # CF sibling
+        ]
+        placeholders = ",".join("?" * len(candidate_files))
+        like_prefix = _escape_for_sql_like(f"{category}/{object_name}/") + "%"
+        conn.execute(
+            f"DELETE FROM {table} WHERE name=? OR file IN ({placeholders}) "  # noqa: S608
+            f"OR file LIKE ? ESCAPE '\\'",
+            (object_name, *candidate_files, like_prefix),
+        )
+        if opt.get("has_metadata_references_table"):
+            conn.execute(
+                f"DELETE FROM metadata_references "  # noqa: S608
+                f"WHERE source_category=? AND (source_object=? "
+                f"OR path IN ({placeholders}) OR path LIKE ? ESCAPE '\\')",
+                (category, object_name, *candidate_files, like_prefix),
+            )
+        return
+
+    content = _read_text(file_path)
+    if not content:
+        raise PointwiseRefreshFailed(category, object_name, "empty content")
+    try:
+        parsed = parser(content)
+    except Exception as exc:  # noqa: BLE001
+        raise PointwiseRefreshFailed(category, object_name, f"parse error: {exc}") from exc
+    if not parsed:
+        raise PointwiseRefreshFailed(category, object_name, "parser returned empty")
+
+    rel = file_path.relative_to(Path(base_path)).as_posix()
+    parsed_name = parsed.get("name") or object_name
+    # full collector хранит row.name из parsed XML — поэтому DELETE/INSERT
+    # идёт по parsed_name; дополнительно чистим по file/path, чтобы переименование
+    # внутреннего <Name> в том же файле не оставило stale row.
+    conn.execute(
+        f"DELETE FROM {table} WHERE name=? OR file=?",  # noqa: S608
+        (parsed_name, rel),
+    )
+    if opt.get("has_metadata_references_table"):
+        conn.execute(
+            "DELETE FROM metadata_references WHERE source_category=? AND (source_object=? OR path=?)",
+            (category, parsed_name, rel),
+        )
+
+    _insert_global_object(conn, category, parsed, rel)
+
+    if opt.get("has_metadata_references_table"):
+        _insert_references_for_object(
+            conn,
+            category,
+            parsed_name,
+            parsed.get("references", []) or [],
+            rel,
+        )
+        if category == "EventSubscriptions":
+            _emit_event_subscription_source_refs(conn, parsed, rel)
+
+    # object_synonyms — паритет с bulk: `_collect_object_synonyms` использует
+    # `parse_metadata_xml`, не специализированный парсер. Лишний один парсинг
+    # на объект гарантирует совпадение синонима с bulk path.
+    if opt.get("has_synonyms") and opt.get("has_synonyms_table"):
+        meta_parsed = parse_metadata_xml(content) or {}
+        _insert_synonym_for_object(conn, category, object_name, meta_parsed, rel)
 
 
 # ---------------------------------------------------------------------------
@@ -3069,6 +4075,7 @@ def _collect_object_synonyms(
             _collect_subsystems_recursive(cat_dir, cat, results)
             return results
 
+        seen: set[str] = set()
         for obj_dir in cat_dir.iterdir():
             if not obj_dir.is_dir():
                 continue
@@ -3076,11 +4083,13 @@ def _collect_object_synonyms(
             mdo = obj_dir / f"{obj_dir.name}.mdo"
             if mdo.is_file():
                 _parse_and_append(mdo, cat, obj_dir.name, results)
+                seen.add(obj_dir.name)
                 continue
             # CF: Category/ObjectName.xml (sibling of object directory)
             sibling_xml = cat_dir / f"{obj_dir.name}.xml"
             if sibling_xml.is_file():
                 _parse_and_append(sibling_xml, cat, obj_dir.name, results)
+                seen.add(obj_dir.name)
                 continue
             # CF fallback: ObjectName/Ext/*.xml (first canonical XML)
             ext_dir = obj_dir / "Ext"
@@ -3088,7 +4097,23 @@ def _collect_object_synonyms(
                 for xml in ext_dir.iterdir():
                     if xml.suffix.lower() == ".xml" and xml.is_file():
                         _parse_and_append(xml, cat, obj_dir.name, results)
+                        seen.add(obj_dir.name)
                         break
+
+        # CF sibling-only layout: Category/<Name>.xml без объектного подкаталога.
+        # Типично для EventSubscriptions в CF (Документооборот, частично ЕРП):
+        # все файлы лежат прямо в категории. Без этого прохода такие объекты
+        # пропускаются → object_synonyms не заполняется и business-name search
+        # не находит их до первого incremental update через pointwise-путь.
+        for fp in cat_dir.iterdir():
+            if not fp.is_file() or fp.suffix.lower() != ".xml":
+                continue
+            obj_name = fp.stem
+            if obj_name in seen:
+                continue
+            _parse_and_append(fp, cat, obj_name, results)
+            seen.add(obj_name)
+
         return results
 
     def _collect_subsystems_recursive(
@@ -3097,28 +4122,45 @@ def _collect_object_synonyms(
         results: list[tuple[str, str, str, str]],
     ) -> None:
         """Recursively collect synonyms from nested Subsystems."""
+        seen: set[str] = set()
         for obj_dir in parent_dir.iterdir():
             if not obj_dir.is_dir():
                 continue
             mdo = obj_dir / f"{obj_dir.name}.mdo"
             if mdo.is_file():
                 _parse_and_append(mdo, cat, obj_dir.name, results)
+                seen.add(obj_dir.name)
             else:
                 # CF: sibling XML at parent level
                 sibling_xml = parent_dir / f"{obj_dir.name}.xml"
                 if sibling_xml.is_file():
                     _parse_and_append(sibling_xml, cat, obj_dir.name, results)
+                    seen.add(obj_dir.name)
                 else:
                     ext_dir = obj_dir / "Ext"
                     if ext_dir.is_dir():
                         for xml in ext_dir.iterdir():
                             if xml.suffix.lower() == ".xml" and xml.is_file():
                                 _parse_and_append(xml, cat, obj_dir.name, results)
+                                seen.add(obj_dir.name)
                                 break
             # Recurse into nested Subsystems
             nested = obj_dir / "Subsystems"
             if nested.is_dir():
                 _collect_subsystems_recursive(nested, cat, results)
+
+        # CF sibling-only layout: Subsystems/<Parent>/Subsystems/<Name>.xml без
+        # объектного подкаталога. Тот же баг, что и в _collect_category — ловим
+        # plain .xml на каждом уровне иерархии. Дедуп через `seen`, чтобы
+        # объекты, уже найденные через подкаталог + sibling, не считались дважды.
+        for fp in parent_dir.iterdir():
+            if not fp.is_file() or fp.suffix.lower() != ".xml":
+                continue
+            obj_name = fp.stem
+            if obj_name in seen:
+                continue
+            _parse_and_append(fp, cat, obj_name, results)
+            seen.add(obj_name)
 
     # Parallel collection by category (I/O bound)
     target_cats = categories if categories is not None else _SYNONYM_CATEGORIES
@@ -4565,35 +5607,77 @@ class IndexBuilder:
         rights_changed = {p for p in git_changed if p.lower().endswith(".rights")}
         # .xdto → xdto_packages (via category detection from path)
         xdto_changed = {p for p in git_changed if p.lower().endswith(".xdto")}
+        # .command → metadata_references (per-object commands и CommonCommands).
+        # Только для metadata refresh; synonym-ветка использует obj_meta_changed
+        # без .command, чтобы чистые .command-дельты не триггерили category-wide
+        # synonym rescan (perf-регрессия).
+        command_changed = {p for p in git_changed if p.lower().endswith(".command")}
 
-        # Categories from .xml/.mdo/.xdto only (NOT .form/.rights)
+        # Categories from .xml/.mdo/.xdto only (NOT .form/.rights/.command) — synonym-ветка.
         obj_meta_changed = xml_mdo_changed | xdto_changed
-        changed_categories = {p.split("/")[0] for p in obj_meta_changed} if obj_meta_changed else set()
+        # Trigger set для metadata refresh (pointwise + bulk fallback) — включает .command.
+        metadata_trigger_set = obj_meta_changed | command_changed
+        changed_categories = {p.split("/")[0] for p in metadata_trigger_set} if metadata_trigger_set else set()
+        # Категории, разрешённые для synonym-ветки (без .command).
+        synonym_changed_categories = {p.split("/")[0] for p in obj_meta_changed} if obj_meta_changed else set()
 
-        # Any meta file changed (union of all trigger sets)
-        any_meta_changed = xml_mdo_changed | form_changed | rights_changed | xdto_changed
+        # Any meta file changed (union of all trigger sets — включает .command).
+        any_meta_changed = xml_mdo_changed | form_changed | rights_changed | xdto_changed | command_changed
 
-        if obj_meta_changed and has_metadata:
-            attrs_cats = changed_categories & (set(_ATTR_CATEGORIES) | set(_PREDEFINED_CATEGORIES))
-            ref_cats = changed_categories & _METADATA_REFERENCES_TRIGGER_CATEGORIES
+        # Telemetry и pointwise_categories инициализируются ДО has_metadata-guard:
+        # они используются финальным INFO-логом и фильтром synonym-ветки даже
+        # на путях без metadata (BSL-only / .form-only / has_metadata=False).
+        pointwise_telemetry = _PointwiseTelemetry()
+        pointwise_categories: set[str] = set()
 
-            md_tables = _collect_metadata_tables(
-                base_path,
-                collect_es="EventSubscriptions" in changed_categories,
-                collect_sj="ScheduledJobs" in changed_categories,
-                collect_fo="FunctionalOptions" in changed_categories,
-                collect_enums="Enums" in changed_categories,
-                collect_subs="Subsystems" in changed_categories,
-                collect_http="HTTPServices" in changed_categories,
-                collect_ws="WebServices" in changed_categories,
-                collect_xdto="XDTOPackages" in changed_categories,
-                collect_attrs_categories=attrs_cats,
-                collect_exchange_plans="ExchangePlans" in changed_categories,
-                collect_defined_types="DefinedTypes" in changed_categories,
-                collect_pvh_types="ChartsOfCharacteristicTypes" in changed_categories,
-                collect_metadata_refs_categories=ref_cats,
-            )
-            _insert_metadata_tables_selective(conn, md_tables, changed_categories)
+        if metadata_trigger_set and has_metadata:
+            # --- Pointwise dispatcher (Round 4: единый has_metadata guard) ---
+            opt = _get_optional_tables_state(conn)
+            changed_objects, unresolved_categories = _build_changed_objects(metadata_trigger_set, base_path)
+            for category in list(changed_categories):
+                objects = changed_objects.get(category, set())
+                if not _can_use_pointwise(category, objects, unresolved_categories, conn, pointwise_telemetry):
+                    continue
+                conn.execute("SAVEPOINT pw_cat")
+                try:
+                    for object_name in objects:
+                        if category in _POINTWISE_ELIGIBLE_GROUP_B:
+                            _refresh_global_object(conn, base_path, category, object_name, opt)
+                        else:
+                            _refresh_object(conn, base_path, category, object_name, opt)
+                except Exception as exc:  # noqa: BLE001 — любой сбой → fallback
+                    conn.execute("ROLLBACK TO pw_cat")
+                    conn.execute("RELEASE pw_cat")
+                    pointwise_telemetry.note_fallback(category, "refresh_exception", exc)
+                    logger.debug("Pointwise refresh failed for %s, falling back: %s", category, exc)
+                else:
+                    conn.execute("RELEASE pw_cat")
+                    pointwise_telemetry.note_pointwise(category, len(objects))
+                    pointwise_categories.add(category)
+
+            # --- Bulk fallback (only for categories not handled pointwise) ---
+            fallback_categories = changed_categories - pointwise_categories
+            if fallback_categories:
+                attrs_cats = fallback_categories & (set(_ATTR_CATEGORIES) | set(_PREDEFINED_CATEGORIES))
+                ref_cats = fallback_categories & _METADATA_REFERENCES_TRIGGER_CATEGORIES
+
+                md_tables = _collect_metadata_tables(
+                    base_path,
+                    collect_es="EventSubscriptions" in fallback_categories,
+                    collect_sj="ScheduledJobs" in fallback_categories,
+                    collect_fo="FunctionalOptions" in fallback_categories,
+                    collect_enums="Enums" in fallback_categories,
+                    collect_subs="Subsystems" in fallback_categories,
+                    collect_http="HTTPServices" in fallback_categories,
+                    collect_ws="WebServices" in fallback_categories,
+                    collect_xdto="XDTOPackages" in fallback_categories,
+                    collect_attrs_categories=attrs_cats,
+                    collect_exchange_plans="ExchangePlans" in fallback_categories,
+                    collect_defined_types="DefinedTypes" in fallback_categories,
+                    collect_pvh_types="ChartsOfCharacteristicTypes" in fallback_categories,
+                    collect_metadata_refs_categories=ref_cats,
+                )
+                _insert_metadata_tables_selective(conn, md_tables, fallback_categories)
 
         # form_elements: only if .form files changed
         if form_changed and has_metadata:
@@ -4613,9 +5697,12 @@ class IndexBuilder:
                 ("form_elements_count", str(len(fe_rows))),
             )
 
-        # object_synonyms: selective by category (only .xml/.mdo trigger)
+        # object_synonyms: selective by category (only .xml/.mdo trigger).
+        # Категории, обработанные pointwise (synonyms уже вставлены через
+        # _insert_synonym_for_object), исключаются — иначе category-wide DELETE
+        # перезаписал бы точечный результат.
         if obj_meta_changed and has_synonyms:
-            synonym_cats = changed_categories & _SYNONYM_CATEGORIES
+            synonym_cats = (synonym_changed_categories & _SYNONYM_CATEGORIES) - pointwise_categories
             if synonym_cats:
                 for cat in synonym_cats:
                     conn.execute("DELETE FROM object_synonyms WHERE category = ?", (cat,))
@@ -4708,6 +5795,17 @@ class IndexBuilder:
         conn.execute(
             "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
             ("git_dirty_paths", json.dumps(sorted(dirty_now), ensure_ascii=False)),
+        )
+
+        # Telemetry — одна INFO-строка с агрегатами pointwise/fallback.
+        logger.info(
+            "git fast path: pointwise refresh used for %d categories (%d objects), "
+            "fallback used for %d categories (reasons: %s), bsl modules incremental: %d",
+            pointwise_telemetry.pointwise_categories,
+            pointwise_telemetry.pointwise_objects,
+            pointwise_telemetry.fallback_categories,
+            dict(pointwise_telemetry.reasons),
+            len(added) + len(changed),
         )
 
         return {

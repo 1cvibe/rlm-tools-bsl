@@ -291,6 +291,69 @@ class TestCollector:
         results = _collect_object_synonyms(str(tmp_path))
         assert results == []
 
+    def test_collector_cf_sibling_only_layout(self, tmp_path):
+        """CF sibling-only layout: Category/<Name>.xml без объектного подкаталога.
+
+        Регрессионный тест (v1.9.3 finding на DO3): EventSubscriptions и другие
+        категории в CF могут лежать прямо в категории файлами без подкаталога
+        Name/. Старый collector итерировал только директории и пропускал такие
+        объекты (на DO3: 229 в event_subscriptions, 0 в object_synonyms). Фикс:
+        второй проход по plain .xml в cat_dir.
+        """
+        cat_dir = tmp_path / "Documents"
+        cat_dir.mkdir()
+        # Чистый sibling-only layout — НЕТ подкаталога ОрфанДокумент/
+        (cat_dir / "ОрфанДокумент.xml").write_text(_CF_DOCUMENT_XML, encoding="utf-8-sig")
+
+        results = _collect_object_synonyms(str(tmp_path))
+        names = {r[0] for r in results}
+        # _CF_DOCUMENT_XML содержит <Name>АвансовыйОтчет</Name> внутри XML,
+        # collector использует stem файла как object_name → "ОрфанДокумент"
+        assert "ОрфанДокумент" in names
+
+        by_name = {r[0]: r for r in results}
+        assert by_name["ОрфанДокумент"][1] == "Documents"
+        assert by_name["ОрфанДокумент"][2].startswith("Документ: ")
+        assert by_name["ОрфанДокумент"][3] == "Documents/ОрфанДокумент.xml"
+
+    def test_collector_subsystems_sibling_only_recursive(self, tmp_path):
+        """Codex Round 3: _collect_subsystems_recursive имел тот же sibling-only баг.
+
+        Subsystems могут быть вложенными: Subsystems/Parent/Subsystems/Child/...
+        Plain .xml на любом уровне иерархии ранее пропускался.
+        """
+        # Структура:
+        #   Subsystems/Корневая.xml                  (sibling-only top-level)
+        #   Subsystems/Контейнер/                    (dir с Subsystems/ внутри)
+        #     Subsystems/Вложенная.xml               (sibling-only nested)
+        sub_root = tmp_path / "Subsystems"
+        sub_root.mkdir()
+        (sub_root / "Корневая.xml").write_text(_CF_DOCUMENT_XML, encoding="utf-8-sig")
+
+        container = sub_root / "Контейнер"
+        container.mkdir()
+        nested = container / "Subsystems"
+        nested.mkdir()
+        (nested / "Вложенная.xml").write_text(_CF_DOCUMENT_XML, encoding="utf-8-sig")
+
+        results = _collect_object_synonyms(str(tmp_path))
+        names = {r[0] for r in results}
+        assert "Корневая" in names, f"top-level sibling-only Subsystem missed: {names}"
+        assert "Вложенная" in names, f"nested sibling-only Subsystem missed: {names}"
+
+    def test_collector_cf_sibling_no_double_count(self, tmp_path):
+        """Если объект уже найден через подкаталог + sibling.xml, второй проход
+        не должен добавить дубликат."""
+        cat_dir = tmp_path / "Documents"
+        obj_dir = cat_dir / "Контрагенты"
+        # Подкаталог + sibling .xml одновременно — типичный CF dual layout
+        obj_dir.mkdir(parents=True)
+        (cat_dir / "Контрагенты.xml").write_text(_CF_DOCUMENT_XML, encoding="utf-8-sig")
+
+        results = _collect_object_synonyms(str(tmp_path))
+        kontr_rows = [r for r in results if r[0] == "Контрагенты"]
+        assert len(kontr_rows) == 1, f"expected 1 row, got {len(kontr_rows)}: {kontr_rows}"
+
 
 # ---------------------------------------------------------------------------
 # IndexBuilder with synonyms
